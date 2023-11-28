@@ -1,0 +1,19 @@
+[package]
+name = "fastcore"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "fastcore"
+# "cdylib" is necessary to produce a shared library for Python to import from.
+crate-type = ["cdylib"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rand = "0.8.4"
+numpy = "0.19"
+
+[dependencies.pyo3]
+version = "0.19.0"
+features = ["abi3-py38"]

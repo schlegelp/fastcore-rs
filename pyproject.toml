@@ -1,0 +1,35 @@
+[project]
+name = "fastcore"
+# version = "0.1.0"
+description = "NAVis core functions reimplemented in Rust."
+readme = "README.md"
+requires-python = ">=3.8"
+license = {file = "LICENSE"}
+authors = [
+  {name = "Philipp Schlegel", email = "pms70@cam.ac.uk"},
+]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Natural Language :: English",
+  "Programming Language :: Rust",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+]
+
+dependencies = [
+    "numpy>=1.21.0",
+]
+
+[build-system]
+requires = ["maturin>=1.0,<2.0",  "numpy>=1.21"]
+build-backend = "maturin"
+
+[tool.maturin]
+module-name = "fastcore._fastcore"
+# "extension-module" tells pyo3 we want to build an extension module (skips linking against libpython.so)
+features = ["pyo3/extension-module"]
