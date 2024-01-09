@@ -21,7 +21,7 @@ def test_node_indices():
     # parents = np.array([-1, 10, 11, 12, 12], dtype=np.int32)
 
     start = time.time()
-    indices = fastcore._fastcore._node_indices(nodes, parents)
+    indices = fastcore._fastcore.node_indices(nodes, parents)
     dur = time.time() - start
 
     start = time.time()
@@ -41,17 +41,35 @@ def test_generate_segments():
     parents = swc[6].values.astype(np.int64)
 
     start = time.time()
-    segments = fastcore._fastcore._generate_segments(
-        fastcore._fastcore._node_indices(nodes, parents)
+    segments = fastcore._fastcore.generate_segments(
+        fastcore._fastcore.node_indices(nodes, parents)
     )
     dur = time.time() - start
 
-    #print("Segments:", segments)
+    # print("Segments:", segments)
     print(type(segments), type(segments[0]))
+    print(f"Timing: {dur:.4f}s")
+
+
+def test_geodesic_distance():
+    fp = Path(__file__).parent / "722817260.swc"
+    swc = pd.read_csv(fp, comment="#", header=None, sep=" ")
+    nodes = swc[0].values.astype(np.int64)
+    parents = swc[6].values.astype(np.int64)
+
+    start = time.time()
+    dists = fastcore._fastcore.geodesic_distances(
+        fastcore._fastcore.node_indices(nodes, parents)
+    )
+    dur = time.time() - start
+
+    print("Distances:", dists)
+    # print(type(segments), type(segments[0]))
     print(f"Timing: {dur:.4f}s")
 
 
 if __name__ == "__main__":
     test_node_indices()
     test_generate_segments()
+    test_geodesic_distance()
     print("Done")

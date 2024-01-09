@@ -1,7 +1,14 @@
 # fastcore-rs [WIP]
-Rust implementation of `navis` functions. This is an
-experiment to test replacing Cython with Rust for
-[navis-fastcore](https://github.com/navis-org/fastcore).
+Rust re-implementation of `navis` core functions. This is an experiment to test
+replacing Cython with Rust for
+[navis-fastcore](https://github.com/navis-org/fastcore) to enable cross-platform
+usage of the library.
+
+## TO-DOs
+- [x] geodesic distances
+- [x] generation of segments
+- [x] Nearest-neighbor lookup (via `bosque`)
+- [ ] shortest paths
 
 ## Build
 1. `cd` into directory
