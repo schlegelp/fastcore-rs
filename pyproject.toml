@@ -3,7 +3,7 @@ name = "fastcore"
 # version = "0.1.0"
 description = "NAVis core functions reimplemented in Rust."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 license = {file = "LICENSE"}
 authors = [
   {name = "Philipp Schlegel", email = "pms70@cam.ac.uk"},
@@ -15,7 +15,6 @@ classifiers = [
   "Natural Language :: English",
   "Programming Language :: Rust",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.8",
   "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
