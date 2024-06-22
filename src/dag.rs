@@ -365,21 +365,21 @@ fn geodesic_distances(
 ///    is a associated with
 fn synapse_flow_centrality(
     parents: &ArrayView1<i32>,
-    presynapses: &ArrayView1<i32>,
-    postsynapses: &ArrayView1<i32>,
-) -> Array1<i32> {
+    presynapses: &ArrayView1<u32>,
+    postsynapses: &ArrayView1<u32>,
+) -> Array1<u32> {
     let mut node: usize;
-    let mut n_pre: i32;
-    let mut n_post: i32;
-    let mut proximal_presynapses: Array1<i32> = Array::from_elem(parents.len(), 0);
-    let mut distal_presynapses: Array1<i32> = Array::from_elem(parents.len(), 0);
-    let mut proximal_postsynapses: Array1<i32> = Array::from_elem(parents.len(), 0);
-    let mut distal_postsynapses: Array1<i32> = Array::from_elem(parents.len(), 0);
-    let mut flow_centrality: Array1<i32> = Array::from_elem(parents.len(), 0);
+    let mut n_pre: u32;
+    let mut n_post: u32;
+    let mut proximal_presynapses: Array1<u32> = Array::from_elem(parents.len(), 0);
+    let mut distal_presynapses: Array1<u32> = Array::from_elem(parents.len(), 0);
+    let mut proximal_postsynapses: Array1<u32> = Array::from_elem(parents.len(), 0);
+    let mut distal_postsynapses: Array1<u32> = Array::from_elem(parents.len(), 0);
+    let mut flow_centrality: Array1<u32> = Array::from_elem(parents.len(), 0);
 
     // Walk from each node to the root node
     for idx in 0..parents.len() {
-        n_pre = presynapses[idx];  // number of presynapses for this node
+        n_pre = presynapses[idx]; // number of presynapses for this node
         n_post = postsynapses[idx]; // number of postsynapses for this node
 
         // Skip if this node has no presynapses or postsynapses
@@ -407,8 +407,8 @@ fn synapse_flow_centrality(
     // connected components, we need to calculate the number of total
     // presynapses and postsynapses on each connected component.
     let cc = connected_components(parents);
-    let mut cc_presynapses: HashMap<i32, i32> = HashMap::new();
-    let mut cc_postsynapses: HashMap<i32, i32> = HashMap::new();
+    let mut cc_presynapses: HashMap<i32, u32> = HashMap::new();
+    let mut cc_postsynapses: HashMap<i32, u32> = HashMap::new();
 
     // Go over nodes and add up presynapses and postsynapses for each
     // connected component
@@ -429,41 +429,40 @@ fn synapse_flow_centrality(
     }
 
     // Next calculate proximal pre- and postsynapses per connected component
-    let mut pre_total: i32;
-    let mut post_total: i32;
+    let mut pre_total: u32;
+    let mut post_total: u32;
     for idx in 0..parents.len() {
         pre_total = cc_presynapses[&cc[idx]];
         post_total = cc_postsynapses[&cc[idx]];
         proximal_presynapses[idx] = pre_total - distal_presynapses[idx];
         proximal_postsynapses[idx] = post_total - distal_postsynapses[idx];
-        }
+    }
 
     // Calculate flow centrality for each node
     for idx in 0..parents.len() {
         flow_centrality[idx] += proximal_presynapses[idx] * distal_postsynapses[idx];
         flow_centrality[idx] += proximal_postsynapses[idx] * distal_presynapses[idx];
-        }
+    }
 
     flow_centrality
 }
 
-
-// Compute synapse flow centrality for each node
+/// Compute synapse flow centrality for each node
 #[pyfunction]
 #[pyo3(name = "synapse_flow_centrality")]
 pub fn synapse_flow_centrality_py<'py>(
     py: Python<'py>,
     parents: PyReadonlyArray1<i32>,
-    presynapses: PyReadonlyArray1<i32>,
-    postsynapses: PyReadonlyArray1<i32>,
-) -> &'py PyArray1<i32> {
-    let flow: Array1<i32> =
-        synapse_flow_centrality(&parents.as_array(),
-                                &presynapses.as_array(),
-                                &postsynapses.as_array());
+    presynapses: PyReadonlyArray1<u32>,
+    postsynapses: PyReadonlyArray1<u32>,
+) -> &'py PyArray1<u32> {
+    let flow: Array1<u32> = synapse_flow_centrality(
+        &parents.as_array(),
+        &presynapses.as_array(),
+        &postsynapses.as_array(),
+    );
     flow.into_pyarray(py)
 }
-
 
 /// Find connected components in graph. Returns an array of the same length as
 /// `parents` where each node is assigned the ID of its root node.
