@@ -1,7 +1,7 @@
-use ndarray::{Array, Array1, Array2, Ix1, ArrayView1};
+use ndarray::{s, Array, Array1, Array2, ArrayView1};
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1};
-use pyo3::prelude::*;
 use pyo3::prelude::Python;
+use pyo3::prelude::*;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
@@ -44,8 +44,12 @@ pub fn node_indices<'py>(
     indices.into_pyarray(py)
 }
 
-// Extract leafs from parents
-fn find_leafs(parents: &Array1<i32>, sort_by_dist: bool) -> Vec<i32> {
+/// Extract leafs from parents
+fn find_leafs(
+    parents: &Array1<i32>,
+    sort_by_dist: bool,
+    weights: &Option<Array1<f32>>,
+) -> Vec<i32> {
     let parents_set: HashSet<_> = parents.iter().cloned().collect();
     let nodes: Vec<i32> = (0..parents.len() as i32).collect();
     let nodes = Array::from(nodes);
@@ -58,7 +62,7 @@ fn find_leafs(parents: &Array1<i32>, sort_by_dist: bool) -> Vec<i32> {
 
     if sort_by_dist {
         // Get the distance from each leaf node to the root node
-        let dists = all_dists_to_root(&parents, &Some(Array::from(leafs.clone())));
+        let dists = all_dists_to_root(&parents, &Some(Array::from(leafs.clone())), weights);
 
         // Sort `leafs` by `dists` in descending order
         let mut leafs: Vec<_> = leafs.iter().cloned().zip(dists).collect();
@@ -84,7 +88,15 @@ pub fn generate_segments(
     let mut i: usize;
     let mut node: i32;
 
-    let leafs = find_leafs(&x_parents.to_owned(), true);
+    let weights: Option<Array1<f32>> = if weights.is_some() {
+        Some(weights.unwrap().as_array().to_owned())
+    } else {
+        None
+    };
+
+    // Extract leafs from parents
+    // N.B. that this also sorts the leafs by distance to the root node!
+    let leafs = find_leafs(&x_parents.to_owned(), true, &weights);
 
     // println!("Found {} leafs among the {} nodes", leafs.len(), x_parents.len());
     // println!("Starting with {} segments", all_segments.len());
@@ -134,6 +146,7 @@ pub fn all_dists_to_root_py<'py>(
     py: Python<'py>,
     parents: PyReadonlyArray1<i32>,
     sources: Option<PyReadonlyArray1<i32>>,
+    weights: Option<PyReadonlyArray1<f32>>,
 ) -> &'py PyArray1<f32> {
     let x_sources: Array1<i32>;
     // If no sources, use all nodes as sources
@@ -143,13 +156,23 @@ pub fn all_dists_to_root_py<'py>(
     } else {
         x_sources = sources.unwrap().as_array().to_owned();
     }
-    let dists: Vec<f32> = all_dists_to_root(&parents.as_array().to_owned(), &Some(x_sources));
+    let weights: Option<Array1<f32>> = if weights.is_some() {
+        Some(weights.unwrap().as_array().to_owned())
+    } else {
+        None
+    };
+
+    let dists: Vec<f32> = all_dists_to_root(&parents.as_array().to_owned(), &Some(x_sources), &weights);
     dists.into_pyarray(py)
 }
 
 /// Return path length from each node to the root node.
 /// This is the pure rust implementation for internal use.
-fn all_dists_to_root(parents: &Array1<i32>, sources: &Option<Array1<i32>>) -> Vec<f32> {
+fn all_dists_to_root(
+    parents: &Array1<i32>,
+    sources: &Option<Array1<i32>>,
+    weights: &Option<Array1<f32>>,
+) -> Vec<f32> {
     let x_sources: Array1<i32>;
     // If no sources, use all nodes as sources
     if sources.is_none() {
@@ -161,13 +184,25 @@ fn all_dists_to_root(parents: &Array1<i32>, sources: &Option<Array1<i32>>) -> Ve
     let mut node: i32;
     let mut dists: Vec<f32> = vec![0.; x_sources.len()];
 
-    for i in 0..x_sources.len() {
-        node = x_sources[i];
-        while node >= 0 {
-            dists[i] += 1.;
-            node = parents[node as usize];
+    if weights.is_none() {
+        for i in 0..x_sources.len() {
+            node = x_sources[i];
+            while node >= 0 {
+                dists[i] += 1.;
+                node = parents[node as usize];
+            }
+        }
+    } else {
+        let weights = weights.as_ref().unwrap();
+        for i in 0..x_sources.len() {
+            node = x_sources[i];
+            while node >= 0 {
+                dists[i] += weights[node as usize];
+                node = parents[node as usize];
+            }
         }
     }
+
     dists
 }
 
@@ -242,7 +277,7 @@ fn geodesic_distances(
     let mut dists: Array2<f32> = Array::from_elem((parents.len(), parents.len()), -1.0);
 
     // Extract leafs from parents
-    let leafs = find_leafs(&parents, true);
+    let leafs = find_leafs(&parents, true, &None);
 
     // Walk from each node to the root node
     for idx1 in 0..parents.len() {
@@ -476,7 +511,7 @@ fn connected_components(parents: &ArrayView1<i32>) -> Array1<i32> {
         node = idx;
         loop {
             // Track this node both globally as well as for this component
-            seen[node] = true;  // global (not reset)
+            seen[node] = true; // global (not reset)
             component[node] = true; // local (reset at every iteration)
 
             // Stop if we reached the root node
@@ -498,14 +533,13 @@ fn connected_components(parents: &ArrayView1<i32>) -> Array1<i32> {
     components
 }
 
-// Compute synapse flow centrality for each node
+/// Compute synapse flow centrality for each node
 #[pyfunction]
 #[pyo3(name = "connected_components")]
 pub fn connected_components_py<'py>(
     py: Python<'py>,
-    parents: PyReadonlyArray1<i32>
+    parents: PyReadonlyArray1<i32>,
 ) -> &'py PyArray1<i32> {
-    let cc: Array1<i32> =
-        connected_components(&parents.as_array());
+    let cc: Array1<i32> = connected_components(&parents.as_array());
     cc.into_pyarray(py)
 }
