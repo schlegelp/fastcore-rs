@@ -175,13 +175,13 @@ fn all_dists_to_root(parents: &Array1<i32>, sources: &Option<Array1<i32>>) -> Ve
 #[pyfunction]
 #[pyo3(name = "dist_to_root")]
 pub fn dist_to_root_py(parents: PyReadonlyArray1<i32>, node: i32) -> f32 {
-    let dist = dist_to_root(&parents.as_array().to_owned(), node);
+    let dist = dist_to_root(&parents.as_array(), node);
     dist
 }
 
 // Return path length from a single node to the root.
 // This is the pure rust implementation for internal use.
-fn dist_to_root(parents: &Array1<i32>, node: i32) -> f32 {
+fn dist_to_root(parents: &ArrayView1<i32>, node: i32) -> f32 {
     let mut dist = 0.;
     let mut node = node;
     while node >= 0 {
@@ -206,20 +206,10 @@ pub fn geodesic_distances_py<'py>(
         x_sources =
             Array::from_iter(0..parents.len().expect("Failed to get lenght of parents") as i32);
     } else {
-        x_sources = sources
-            .unwrap()
-            .to_owned_array()
-            .into_dimensionality::<Ix1>()
-            .unwrap();
+        x_sources = sources.unwrap().as_array().to_owned();
     }
     let weights: Option<Array1<f32>> = if weights.is_some() {
-        Some(
-            weights
-                .unwrap()
-                .to_owned_array()
-                .into_dimensionality::<Ix1>()
-                .unwrap(),
-        )
+        Some(weights.unwrap().as_array().to_owned())
     } else {
         None
     };
@@ -228,21 +218,25 @@ pub fn geodesic_distances_py<'py>(
     dists.into_pyarray(py)
 }
 
-// Compute geodesic distances between all pairs of nodes
-// This is the pure rust implementation for internal use.
+/// Compute geodesic distances between all pairs of nodes
+/// This is the pure rust implementation for internal use.
+/// TODOs:
+///  - return condensed distance matrix instead of square matrix
+///  - use threading
+///  - use sources (not sure that's even possible)
 fn geodesic_distances(
     parents: &Array1<i32>,
     sources: &Option<Array1<i32>>,
     weights: &Option<Array1<f32>>,
 ) -> Array2<f32> {
-/*     let x_sources: Array1<i32>;
-    // If no sources, use all nodes as sources
-    if sources.is_none() {
-        x_sources = Array::from_iter(0..parents.len() as i32);
-    } else {
-        x_sources = sources.as_ref().unwrap().clone();
-    }
- */
+    /*     let x_sources: Array1<i32>;
+       // If no sources, use all nodes as sources
+       if sources.is_none() {
+           x_sources = Array::from_iter(0..parents.len() as i32);
+       } else {
+           x_sources = sources.as_ref().unwrap().clone();
+       }
+    */
     let mut node: usize;
     let mut d: f32;
     let mut dists: Array2<f32> = Array::from_elem((parents.len(), parents.len()), -1.0);
