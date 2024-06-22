@@ -1,5 +1,6 @@
 use pyo3::prelude::*;
 use pyo3::prelude::{pymodule, PyModule, PyResult, Python};
+use ndarray::Array2;
 
 
 mod nblast;
@@ -10,7 +11,7 @@ use dag::*;
 
 #[pyfunction]
 fn run_test() -> PyResult<()> {
-    let data: Vec<Vec<f64>>;
+    let data: Array2<f64>;
     let indices: Vec<[f64; 2]>;
     let columns: Vec<[f64; 2]>;
     (data, indices, columns) = nblast::load_smat();

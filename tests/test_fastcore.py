@@ -2,7 +2,11 @@ import fastcore
 import numpy as np
 import pandas as pd
 import time
+
 from pathlib import Path
+from collections import namedtuple
+
+Dotprop = namedtuple("Dotprop", ["points", "vect"])
 
 
 def _node_indices_py(A, B):
@@ -84,14 +88,14 @@ def _load_swc(file="722817260.swc", synapses=False):
             .node_id.value_counts()
             .reindex(nodes)
             .fillna(0)
-            .values.astype(np.int32, order="C", copy=False)
+            .values.astype(np.uint32, order="C", copy=False)
         )
         postsynapses = (
             connectors[connectors.type == "post"]
             .node_id.value_counts()
             .reindex(nodes)
             .fillna(0)
-            .values.astype(np.int32, order="C", copy=False)
+            .values.astype(np.uint32, order="C", copy=False)
         )
         return nodes, parents, presynapses, postsynapses
 
@@ -128,6 +132,27 @@ def test_nblast_single():
     dur = time.time() - start
 
     print(f"NBLAST score: {score} ({dur:.4f}s)")
+
+
+def test_nblast_multi():
+    # Load a neurons
+    fp = Path(__file__).parent / "722817260.swc"
+    swc = pd.read_csv(fp, comment="#", header=None, sep=" ")
+    xyz = swc[[2, 3, 4]].values.astype(np.float64) / 1000
+    vec = calculate_tangent_vectors(xyz, k=5)
+
+    N = 100  # number of neurons
+    dotprops = []
+    for i in range(N):
+        dp = Dotprop(xyz.copy(), vec.copy())
+        dp.points[:, 0] += i * 1  # add a 1 micron offset
+        dotprops.append(dp)
+
+    start = time.time()
+    scores = fastcore.nblast_allbyall(dotprops)
+    dur = time.time() - start
+
+    print(f"NBLAST all-by-all score ({dur:.4f}s):\n{scores}")
 
 
 def calculate_tangent_vectors(points, k):
@@ -171,7 +196,5 @@ def calculate_tangent_vectors(points, k):
 
 
 if __name__ == "__main__":
-    test_node_indices()
-    test_generate_segments()
-    test_geodesic_distance()
+    test_nblast_multi()
     print("Done")
