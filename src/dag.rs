@@ -73,7 +73,10 @@ fn find_leafs(parents: &Array1<i32>, sort_by_dist: bool) -> Vec<i32> {
 /// Generate linear segments while maximizing segment lengths.
 /// `parents` contains the index of the parent node for each node.
 #[pyfunction]
-pub fn generate_segments(parents: PyReadonlyArray1<i32>) -> Vec<Vec<i32>> {
+pub fn generate_segments(
+    parents: PyReadonlyArray1<i32>,
+    weights: Option<PyReadonlyArray1<f32>>,
+) -> Vec<Vec<i32>> {
     let x_parents = parents.as_array();
     let mut all_segments: Vec<Vec<i32>> = vec![];
     let mut current_segment = Array::from_elem(x_parents.len(), -1i32);
@@ -83,12 +86,12 @@ pub fn generate_segments(parents: PyReadonlyArray1<i32>) -> Vec<Vec<i32>> {
 
     let leafs = find_leafs(&x_parents.to_owned(), true);
 
-    // println!("Found {} leafs among the {} nodes", leafs.len(), nodes.len());
-
+    // println!("Found {} leafs among the {} nodes", leafs.len(), x_parents.len());
+    // println!("Starting with {} segments", all_segments.len());
     for (_idx, leaf) in leafs.iter().enumerate() {
         // Reset current_segment and counter
         i = 0;
-        current_segment.fill(-1);
+        // current_segment.fill(-1);
         // Start with this leaf node
         node = *leaf;
 
@@ -112,23 +115,19 @@ pub fn generate_segments(parents: PyReadonlyArray1<i32>) -> Vec<Vec<i32>> {
 
             // Get the parent of the current node
             node = x_parents[node as usize];
-
-            // Keep track of the current segment
-            // Note that we're truncating it to exclude -1 values (i.e. empties)
-            all_segments.push(
-                current_segment
-                    .iter()
-                    .filter(|&&x| x >= 0)
-                    .cloned()
-                    .collect(),
-            );
         }
+
+        // Keep track of the current segment
+        // Note that we're truncating it to exclude -1 values (i.e. empties)
+        // by keeping only the first `i` elements
+        all_segments.push(current_segment.slice(s![..i]).iter().cloned().collect());
     }
+    // println!("Found {} segments", all_segments.len());
     all_segments.sort_by(|a, b| b.len().cmp(&a.len()));
     all_segments
 }
 
-// Return path length from each node to the root node.
+/// Return path length from each node to the root node.
 #[pyfunction]
 #[pyo3(name = "all_dists_to_root")]
 pub fn all_dists_to_root_py<'py>(
