@@ -19,7 +19,7 @@ pub fn node_indices<'py>(
     nodes: PyReadonlyArray1<i64>,
     parents: PyReadonlyArray1<i64>,
 ) -> &'py PyArray1<i32> {
-    let mut indices: Vec<i32> = vec![-1; nodes.len()];
+    let mut indices: Vec<i32> = vec![-1; nodes.len().expect("Failed to get length of nodes")];
     let x_nodes = nodes.as_array();
     let x_parents = parents.as_array();
 
@@ -139,20 +139,17 @@ pub fn all_dists_to_root_py<'py>(
     let x_sources: Array1<i32>;
     // If no sources, use all nodes as sources
     if sources.is_none() {
-        x_sources = Array::from_iter(0..parents.len() as i32);
+        x_sources =
+            Array::from_iter(0..parents.len().expect("Failed to get length of parents") as i32);
     } else {
-        x_sources = sources
-            .unwrap()
-            .to_owned_array()
-            .into_dimensionality::<Ix1>()
-            .unwrap();
+        x_sources = sources.unwrap().as_array().to_owned();
     }
     let dists: Vec<f32> = all_dists_to_root(&parents.as_array().to_owned(), &Some(x_sources));
     dists.into_pyarray(py)
 }
 
-// Return path length from each node to the root node.
-// This is the pure rust implementation for internal use.
+/// Return path length from each node to the root node.
+/// This is the pure rust implementation for internal use.
 fn all_dists_to_root(parents: &Array1<i32>, sources: &Option<Array1<i32>>) -> Vec<f32> {
     let x_sources: Array1<i32>;
     // If no sources, use all nodes as sources
@@ -207,7 +204,8 @@ pub fn geodesic_distances_py<'py>(
     let x_sources: Array1<i32>;
     // If no sources, use all nodes as sources
     if sources.is_none() {
-        x_sources = Array::from_iter(0..parents.len() as i32);
+        x_sources =
+            Array::from_iter(0..parents.len().expect("Failed to get lenght of parents") as i32);
     } else {
         x_sources = sources
             .unwrap()
