@@ -147,6 +147,45 @@ def synapse_flow_centrality(node_ids, parent_ids, presynapses, postsynapses):
     return flow
 
 
+def parent_dist(node_ids, parent_ids, xyz, root_dist=None) -> None:
+    """Get child->parent distances for skeleton nodes.
+
+    Parameters
+    ----------
+    node_ids :   (N, ) array
+                 Array of int32 node IDs.
+    parent_ids : (N, ) array
+                 Array of parent IDs for each node. Root nodes' parents
+                 must be -1.
+    xyz :        (N, 3) array
+                 Array of coordinates for each node.
+    root_dist :  int | None
+                 ``parent_dist`` for the root's row. Set to ``None``, to leave
+                 at ``NaN`` or e.g. to ``0`` to set to 0.
+
+    Returns
+    -------
+    np.ndarray
+                 Array with distances in same order and size as node table.
+
+    """
+    # Note: this function is effectively a copy of the one in navis with the
+    # main difference being that it uses the fastcore implementation of
+    # _ids_to_indices which is ~5X faster than the pandas-based version
+    # in navis. Consider using this function for cable length calculations
+    # instead of the graph-based one.
+
+    # Convert parent IDs into indices
+    parent_ix = _ids_to_indices(node_ids, parent_ids)
+    not_root = parent_ix >= 0
+
+    # Calculate distances
+    w = np.full(len(parent_ix), root_dist, dtype=np.float32)
+    w[not_root] = np.sqrt(((xyz[not_root] - xyz[parent_ix[not_root]]) ** 2).sum(axis=1))
+
+    return w
+
+
 def _ids_to_indices(node_ids, parent_ids):
     """Convert node IDs to indices.
 
