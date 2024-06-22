@@ -7,6 +7,7 @@ __all__ = [
     "geodesic_matrix",
     "connected_components",
     "synapse_flow_centrality",
+    "segment_coords",
 ]
 
 
@@ -22,7 +23,7 @@ def generate_segments(node_ids, parent_ids, weights=None):
                  must be -1.
     weights :    (N, ) float32 array, optional
                  Array of distances for each child -> parent connection.
-                 If ``None`` all node to node distances are set to 1.
+                 If ``None`` all node-to-node distances are set to 1.
 
     Returns
     -------
@@ -42,6 +43,62 @@ def generate_segments(node_ids, parent_ids, weights=None):
     seg_ids = [node_ids[s] for s in segments]
 
     return seg_ids
+
+
+def segment_coords(
+    node_ids,
+    parent_ids,
+    coords,
+    modifier: None,
+    node_colors: None,
+):
+    """Generate coordinates for linear segments.
+
+    Parameters
+    ----------
+    node_ids :      (N, ) array
+                    Array node IDs.
+    parent_ids :    (N, ) array
+                    Array of parent IDs for each node. Root nodes' parents
+                    must be -1.
+    coords :        (N, 3) array
+                    Array of coordinates for each node.
+    node_colors :   (N, ) numpy.ndarray, optional
+                    A color for each node in `node_ids`. If provided, will
+                    also return a list of colors sorted to match coordinates.
+    modifier :      ints, optional
+                    Use e.g. to modify/invert x/y/z axes.
+
+    Returns
+    -------
+    seg_coords :    list of tuples
+                    [(x, y, z), (x, y, z), ... ]
+    colors :        list of colors
+                    If `node_colors` provided will return a copy of it sorted
+                    to match `seg_coords`.
+
+    """
+    # Convert parent IDs into indices
+    parent_ix = _ids_to_indices(node_ids, parent_ids)
+
+    # Get the actual paths, these are indices into `node_ids`
+    segments = _fastcore.generate_segments(parent_ix, weights=None)
+
+    # Translate into coordinates
+    seg_coords = [coords[s] for s in segments]
+
+    # Apply modifier if provided
+    if modifier is not None:
+        modifier = np.asarray(modifier)
+        seg_coords = [c * modifier for c in seg_coords]
+
+    # Apply colors if provided
+    if not isinstance(node_colors, type(None)):
+        colors = [node_colors[s] for s in segments]
+
+        return seg_coords, colors
+
+    return seg_coords
 
 
 def geodesic_matrix(node_ids, parent_ids, weights=None):
@@ -111,7 +168,7 @@ def synapse_flow_centrality(node_ids, parent_ids, presynapses, postsynapses):
 
     Please note that this implementation currently produces slightly different
     results than the implementation in navis. I'm not sure why that is but the
-    differences are negligible.
+    differences seem to be negligible.
 
     Parameters
     ----------
@@ -120,14 +177,14 @@ def synapse_flow_centrality(node_ids, parent_ids, presynapses, postsynapses):
     parent_ids : (N, ) array
                  Array of parent IDs for each node. Root nodes' parents
                  must be -1.
-    presynapses : (N, ) array
+    presynapses : (N, ) uint32 array
                  Array of number of presynapses associated with each node.
-    postsynapses : (N, ) array
+    postsynapses : (N, ) uint32 array
                  Array of number of postsynapses associated with each node.
 
     Returns
     -------
-    cc :        (N, ) int32 array
+    cc :        (N, ) uint32 array
                 Synapse flow centrality for each node.
 
     """
@@ -135,8 +192,8 @@ def synapse_flow_centrality(node_ids, parent_ids, presynapses, postsynapses):
     parent_ix = _ids_to_indices(node_ids, parent_ids)
 
     # Make sure we have the correct data types and order
-    presynapses = presynapses.astype(np.int32, order="C", copy=False)
-    postsynapses = postsynapses.astype(np.int32, order="C", copy=False)
+    presynapses = presynapses.astype(np.uint32, order="C", copy=False)
+    postsynapses = postsynapses.astype(np.uint32, order="C", copy=False)
 
     assert len(presynapses) == len(postsynapses) == len(node_ids)
 
