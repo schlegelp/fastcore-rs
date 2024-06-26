@@ -7,13 +7,22 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 /// For each node ID in `parents` find its index in `nodes`.
-///  - negative IDs (= parents of root nodes) will be passed through
-///  - there is no check whether all IDs in `parents` actually exist in `nodes`:
-///    if an ID in `parents` does not exist in `nodes` it gets a negative index
 ///
-/// # Arguments
-///  * nodes - array of node IDs
-///  * parents - array of parent IDs
+/// Notes:
+///
+/// - negative IDs (= parents of root nodes) will be passed through
+/// - there is no check whether all IDs in `parents` actually exist in `nodes`:
+///   if an ID in `parents` does not exist in `nodes` it gets a negative index
+///
+/// Arguments:
+///
+/// - `nodes`: array of node IDs
+/// - `parents`: array of parent IDs
+///
+/// Returns:
+///
+/// An array of indices for each node indicating the index of the parent node.
+///
 #[pyfunction]
 pub fn node_indices<'py>(
     py: Python<'py>,
@@ -45,7 +54,19 @@ pub fn node_indices<'py>(
     indices.into_pyarray(py)
 }
 
-/// Extract leafs from parents
+/// Extract leafs from parents.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent IDs
+/// - `sort_by_dist`: boolean indicating whether to sort the leafs by distance to the root node
+/// - `weights`: optional array of weights for each node; if not provided all nodes are assumed
+///              to have a weight of 1
+///
+/// Returns:
+///
+/// A vector of leaf nodes.
+///
 fn find_leafs(
     parents: &Array1<i32>,
     sort_by_dist: bool,
@@ -75,8 +96,62 @@ fn find_leafs(
     }
 }
 
+/// Extract branch points from parents.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent IDs
+///
+/// Returns:
+///
+/// A vector of branch points.
+///
+fn find_branch_points(parents: &Array1<i32>) -> Vec<i32> {
+    let mut branch_points: Vec<i32> = vec![];
+    let mut seen: HashSet<i32> = HashSet::new();
+    // Go over all nodes and add them to the branch_points vector if they've been seen before
+    for node in parents.iter() {
+        if seen.contains(node) {
+            branch_points.push(*node);
+        }
+        seen.insert(*node);
+    }
+    branch_points
+}
+
+/// Extract roots from parents.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent IDs
+///
+/// Returns:
+///
+/// A vector of root nodes.
+///
+fn find_roots(parents: &Array1<i32>) -> Vec<i32> {
+    let mut roots: Vec<i32> = vec![];
+    // Go over all nodes and add them to the roots vector
+    for (i, parent) in parents.iter().enumerate() {
+        if *parent < 0 {
+            roots.push(i as i32);
+        }
+    }
+    roots
+}
+
 /// Generate linear segments while maximizing segment lengths.
-/// `parents` contains the index of the parent node for each node.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent IDs
+/// - `weights`: optional array of weights for each node; if not provided all nodes are assumed
+///              to have a weight of 1
+///
+/// Returns:
+///
+/// A vector of vectors where each vector contains the nodes of a segment.
+///
 #[pyfunction]
 pub fn generate_segments(
     parents: PyReadonlyArray1<i32>,
@@ -141,6 +216,19 @@ pub fn generate_segments(
 }
 
 /// Return path length from each node to the root node.
+///
+/// This function wrangles the Python arrays into Rust arrays.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent IDs
+/// - `sources`: optional array of source IDs
+/// - `weights`: optional array of weights for each node
+///
+/// Returns:
+///
+/// A 1D array of f32 values indicating the distance between each node and the root.
+///
 #[pyfunction]
 #[pyo3(name = "all_dists_to_root")]
 pub fn all_dists_to_root_py<'py>(
@@ -163,12 +251,25 @@ pub fn all_dists_to_root_py<'py>(
         None
     };
 
-    let dists: Vec<f32> = all_dists_to_root(&parents.as_array().to_owned(), &Some(x_sources), &weights);
+    let dists: Vec<f32> =
+        all_dists_to_root(&parents.as_array().to_owned(), &Some(x_sources), &weights);
     dists.into_pyarray(py)
 }
 
 /// Return path length from each node to the root node.
+///
 /// This is the pure rust implementation for internal use.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent IDs
+/// - `sources`: optional array of source IDs
+/// - `weights`: optional array of weights for each node
+///
+/// Returns:
+///
+/// A vector of f32 values indicating the distance between each node and the root.
+///
 fn all_dists_to_root(
     parents: &Array1<i32>,
     sources: &Option<Array1<i32>>,
@@ -207,7 +308,16 @@ fn all_dists_to_root(
     dists
 }
 
-// Return path length from a single node to the root.
+/// Return path length from a single node to the root.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent IDs
+/// - `node`: node ID
+///
+/// Returns:
+///
+/// A f32 value indicating the distance between the node and the root.
 #[pyfunction]
 #[pyo3(name = "dist_to_root")]
 pub fn dist_to_root_py(parents: PyReadonlyArray1<i32>, node: i32) -> f32 {
@@ -716,22 +826,29 @@ fn walk_up_and_count_recursively(
     (source_dists, target_dists)
 }
 
-/// Calculate synapse flow centrality for each node
-/// This works by, for each connected component:
-/// 1. Walk from each node with a presynapse to the root node and for each node
-///    along the way count the number of presynapses distal to them; from that we
-///    can also infer the number of presynapses proximal to them.
-/// 2. Do the same for nodes with postsynapses.
-/// 3. For each node, multiply the number of proximal presynapses with the number
-///    of distal postsynapses and vice versa. That's the flow centrality for the
-///    segment between that node and its parent.
+/// Calculate synapse flow centrality for each node.
 ///
-/// # Arguments
-///  * parents - array of parent IDs
-///  * presynapses - array of i32 indicating how many presynapses a given node
-///    is associated with
-///  * postsynapses - array of i32 indicating how many postsynapses a given node
-///    is a associated with
+/// This works by, for each connected component:
+///  1. Walk from each node with a presynapse to the root node and for each node
+///     along the way count the number of presynapses distal to them; from that we
+///     can also infer the number of presynapses proximal to them.
+///  2. Do the same for nodes with postsynapses.
+///  3. For each node, multiply the number of proximal presynapses with the number
+///     of distal postsynapses and vice versa. That's the flow centrality for the
+///     segment between that node and its parent.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent IDs
+/// - `presynapses`: array of i32 indicating how many presynapses a given node
+///                  is associated with
+/// - `postsynapses`: array of i32 indicating how many postsynapses a given node
+///                   is a associated with
+///
+/// Returns:
+///
+/// An array of u32 values indicating the flow centrality for each node.
+///
 fn synapse_flow_centrality(
     parents: &ArrayView1<i32>,
     presynapses: &ArrayView1<u32>,
@@ -816,7 +933,20 @@ fn synapse_flow_centrality(
     flow_centrality
 }
 
-/// Compute synapse flow centrality for each node
+/// Compute synapse flow centrality for each node.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent IDs
+/// - `presynapses`: array of i32 indicating how many presynapses are associated with
+///                  a given node
+/// - `postsynapses`: array of i32 indicating how many postsynapses are associated with
+///                  a given node
+///
+/// Returns:
+///
+/// An array of u32 values indicating the flow centrality for each node.
+///
 #[pyfunction]
 #[pyo3(name = "synapse_flow_centrality")]
 pub fn synapse_flow_centrality_py<'py>(
@@ -833,8 +963,38 @@ pub fn synapse_flow_centrality_py<'py>(
     flow.into_pyarray(py)
 }
 
-/// Find connected components in graph. Returns an array of the same length as
-/// `parents` where each node is assigned the ID of its root node.
+/// Find connected components in tree.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent IDs
+///
+/// Returns:
+///
+/// An i32 array of the same length as `parents` where each node is assigned
+/// the ID of its root node.
+///
+#[pyfunction]
+#[pyo3(name = "connected_components")]
+pub fn connected_components_py<'py>(
+    py: Python<'py>,
+    parents: PyReadonlyArray1<i32>,
+) -> &'py PyArray1<i32> {
+    let cc: Array1<i32> = connected_components(&parents.as_array());
+    cc.into_pyarray(py)
+}
+
+/// Find connected components in tree.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent IDs
+///
+/// Returns:
+///
+/// An i32 array of the same length as `parents` where each node is assigned
+/// the ID of its root node.
+///
 fn connected_components(parents: &ArrayView1<i32>) -> Array1<i32> {
     let mut node: usize;
     let mut component: Array1<bool> = Array::from_elem(parents.len(), false);
@@ -876,13 +1036,23 @@ fn connected_components(parents: &ArrayView1<i32>) -> Array1<i32> {
     components
 }
 
-/// Compute synapse flow centrality for each node
-#[pyfunction]
-#[pyo3(name = "connected_components")]
-pub fn connected_components_py<'py>(
-    py: Python<'py>,
-    parents: PyReadonlyArray1<i32>,
-) -> &'py PyArray1<i32> {
-    let cc: Array1<i32> = connected_components(&parents.as_array());
-    cc.into_pyarray(py)
+/// Compute parent -> childs mapping.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent IDs
+///
+/// Returns:
+///
+/// A vector of vectors where each vector contains the children of a node.
+/// For example parent array `[-1, 0, 1, 1]` would return `[[1], [2, 3], [], []]`.
+///
+fn extract_parent_child(parents: &Array1<i32>) -> Vec<Vec<i32>> {
+    let mut parent_child: Vec<Vec<i32>> = vec![vec![]; parents.len()];
+    for (i, parent) in parents.iter().enumerate() {
+        if *parent >= 0 {
+            parent_child[*parent as usize].push(i as i32);
+        }
+    }
+    parent_child
 }
