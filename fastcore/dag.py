@@ -101,7 +101,9 @@ def segment_coords(
     return seg_coords
 
 
-def geodesic_matrix(node_ids, parent_ids, weights=None):
+def geodesic_matrix(
+    node_ids, parent_ids, directed=False, sources=None, targets=None, weights=None
+):
     """Calculate all-by-all geodesic distances.
 
     This implementation is up to 100x faster than the implementation in navis
@@ -114,24 +116,41 @@ def geodesic_matrix(node_ids, parent_ids, weights=None):
     parent_ids : (N, ) array
                  Array of parent IDs for each node. Root nodes' parents
                  must be -1.
+    directed :   bool, optional
+                 If ``True`` will only return distances in the direction of
+                 the child -> parent (i.e. toward root) relationship.
+    sources :    iterable, optional
+                 Source node IDs. If ``None`` all nodes are used as sources.
+    targets :    iterable, optional
+                 Target node IDs. If ``None`` all nodes are used as targets.
     weights :    (N, ) float32 array, optional
                  Array of distances for each child -> parent connection.
                  If ``None`` all node to node distances are set to 1.
 
     Returns
     -------
-    matrix :    (N, N) float32 (double) array
-                All-by-all geodesic distances.
+    matrix :    float32 (double) array
+                Geodesic distances. Unreachable nodes are set to -1.
 
     """
     # Convert parent IDs into indices
     parent_ix = _ids_to_indices(node_ids, parent_ids)
 
     if weights is not None:
-        assert weights.dtype == np.float32
+        weights = np.asarray(weights, dtype=np.float32, order="C")
+        assert len(weights) == len(node_ids), "`weights` must have the same length as `node_ids`"
+
+    if sources is not None:
+        sources = np.asarray(sources, dtype=np.int32)
+        assert len(sources), "`sources` must not be empty"
+    if targets is not None:
+        targets = np.asarray(targets, dtype=np.int32)
+        assert len(targets), "`targets` must not be empty"
 
     # Get the actual path
-    dists = _fastcore.geodesic_distances(parent_ix, weights=weights)
+    dists = _fastcore.geodesic_distances(
+        parent_ix, sources=sources, targets=targets, weights=weights, directed=directed
+    )
 
     return dists
 
