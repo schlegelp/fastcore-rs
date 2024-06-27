@@ -12,7 +12,7 @@ __all__ = [
 
 
 def generate_segments(node_ids, parent_ids, weights=None):
-    """Generate segments maximizing segment lengths.
+    """Generate linear segments maximizing segment lengths.
 
     Parameters
     ----------
@@ -31,6 +31,15 @@ def generate_segments(node_ids, parent_ids, weights=None):
                  Segments as list of arrays, sorted from longest to shortest.
                  Each segment starts with a leaf and stops with a branch point
                  or root node.
+
+    Examples
+    --------
+    >>> import fastcore
+    >>> import numpy as np
+    >>> node_ids = np.arange(7)
+    >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5])
+    >>> fastcore.generate_segments(node_ids, parent_ids)
+    [array([6, 5, 4, 1, 0]), array([3, 2, 1])]
 
     """
     # Convert parent IDs into indices
@@ -53,6 +62,8 @@ def segment_coords(
 ):
     """Generate coordinates for linear segments.
 
+    This is useful for plotting the skeleton of a neuron.
+
     Parameters
     ----------
     node_ids :      (N, ) array
@@ -73,6 +84,23 @@ def segment_coords(
     colors :        list of colors
                     If `node_colors` provided will return a copy of it sorted
                     to match `seg_coords`.
+
+    Examples
+    --------
+    >>> import fastcore
+    >>> import numpy as np
+    >>> node_ids = np.arange(7)
+    >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5])
+    >>> coords = np.random.rand(7, 3)
+    >>> fastcore.segment_coords(node_ids, parent_ids, coords)
+    [array([[5.30713899e-01, 8.26450947e-01, 2.46805326e-01],
+            [1.54144332e-04, 9.07823578e-01, 3.20199043e-01],
+            [6.64580597e-01, 3.23724555e-01, 3.18361918e-01],
+            [7.16579499e-01, 8.65568868e-02, 7.15686948e-01],
+            [5.94874740e-01, 5.95528161e-01, 8.14234930e-01]]),
+    array([[0.47814894, 0.84468164, 0.2765942 ],
+            [0.21748528, 0.36673489, 0.81449368],
+            [0.7165795 , 0.08655689, 0.71568695]])]
 
     """
     # Convert parent IDs into indices
@@ -96,10 +124,15 @@ def segment_coords(
 def geodesic_matrix(
     node_ids, parent_ids, directed=False, sources=None, targets=None, weights=None
 ):
-    """Calculate all-by-all geodesic distances.
+    """Calculate geodesic ("along-the-arbor") distances.
 
-    This implementation is up to 100x faster than the implementation in navis
-    (which uses scipy's `csgraph`).
+    Notes
+    -----
+    Under-the-hood, this uses two different implementations depending on whether
+    a full all-by-all or a partial (via `sources`/`targets`) matrix is requested.
+    The partial implementation is faster and more memory efficient for small-ish
+    subsets of nodes. However, for subsets that include a large portion of the
+    nodes, it may be faster to calculate the full matrix and then subset it.
 
     Parameters
     ----------
@@ -110,7 +143,7 @@ def geodesic_matrix(
                  must be -1.
     directed :   bool, optional
                  If ``True`` will only return distances in the direction of
-                 the child -> parent (i.e. toward root) relationship.
+                 the child -> parent (i.e. towards the root) relationship.
     sources :    iterable, optional
                  Source node IDs. If ``None`` all nodes are used as sources.
     targets :    iterable, optional
@@ -124,13 +157,36 @@ def geodesic_matrix(
     matrix :    float32 (double) array
                 Geodesic distances. Unreachable nodes are set to -1.
 
+    Examples
+    --------
+    >>> import fastcore
+    >>> import numpy as np
+    >>> node_ids = np.arange(7)
+    >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5])
+    >>> fastcore.geodesic_matrix(node_ids, parent_ids)
+    array([[0., 1., 2., 3., 2., 3., 4.],
+           [1., 0., 1., 2., 1., 2., 3.],
+           [2., 1., 0., 1., 2., 3., 4.],
+           [3., 2., 1., 0., 3., 4., 5.],
+           [2., 1., 2., 3., 0., 1., 2.],
+           [3., 2., 3., 4., 1., 0., 1.],
+           [4., 3., 4., 5., 2., 1., 0.]], dtype=float32)
+    >>> fastcore.geodesic_matrix(
+    ...     node_ids, parent_ids,
+    ...     sources=[0, 1], targets=[5, 6]
+    ...     )
+    array([[3., 4.],
+           [2., 3.]], dtype=float32)
+
     """
     # Convert parent IDs into indices
     parent_ix = _ids_to_indices(node_ids, parent_ids)
 
     if weights is not None:
         weights = np.asarray(weights, dtype=np.float32, order="C")
-        assert len(weights) == len(node_ids), "`weights` must have the same length as `node_ids`"
+        assert len(weights) == len(
+            node_ids
+        ), "`weights` must have the same length as `node_ids`"
 
     if sources is not None:
         sources = np.asarray(sources, dtype=np.int32)
@@ -162,6 +218,23 @@ def connected_components(node_ids, parent_ids):
     -------
     cc :        (N, ) int32 array
                 For each node the node ID of its root.
+
+    Examples
+    --------
+    Fully connected neuron:
+
+    >>> import fastcore
+    >>> import numpy as np
+    >>> node_ids = np.arange(7)
+    >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5])
+    >>> fastcore.connected_components(node_ids, parent_ids)
+    array([0, 0, 0, 0, 0, 0, 0])
+
+    Introduce a break:
+
+    >>> parent_ids[4] = -1
+    >>> fastcore.connected_components(node_ids, parent_ids)
+    array([0, 0, 0, 0, 4, 4, 4])
 
     """
     # Convert parent IDs into indices
