@@ -1,5 +1,8 @@
+[![docs](https://github.com/schlegelp/fastcore-rs/actions/workflows/docs.yaml/badge.svg)](https://schlegelp.github.io/fastcore-rs/)
+
+
 # fastcore-rs
-Rust re-implementation of `navis` core functions.
+Rust re-implementation of `navis` core functions. Check out the [documentation](https://schlegelp.github.io/fastcore-rs/).
 
 ## TO-DOs
 - [x] geodesic distances
