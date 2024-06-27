@@ -1,22 +1,20 @@
 [![docs](https://github.com/schlegelp/fastcore-rs/actions/workflows/docs.yaml/badge.svg)](https://schlegelp.github.io/fastcore-rs/)
 
-
 # fastcore-rs
-Rust re-implementation of `navis` core functions. Check out the [documentation](https://schlegelp.github.io/fastcore-rs/).
+Rust re-implementation of `navis` core functions. Check out the [documentation](https://schlegelp.github.io/fastcore-rs/) for details.
 
 ## TO-DOs
 - [x] geodesic distances
-- [x] generation of segments
-- [x] nearest-neighbor lookup (via `bosque`)
+- [x] connected components
+- [x] generation of linear segments
 - [x] synapse flow centrality
-- [ ] CI tests
 - [ ] flow centrality
-- [ ] NBLAST
+- [ ] CI tests
+- [ ] NBLAST (started prototype)
 - [ ] shortest paths
 - [ ] classify nodes
 - [ ] cater for `i32` node IDs which are currently cast up to `i64`
-- [ ] faster version of `segments_to_coords`
-- [ ] faster version of `connectected_subgraph`
+- [ ] faster version of `navis.connected_subgraph`
 
 ### Additional Notes
 - internally, we use `i32` to represent node indices which means we can't
@@ -24,7 +22,7 @@ Rust re-implementation of `navis` core functions. Check out the [documentation](
 
 ## Install
 
-We provide precompiled binaries for all major Python versions, chip architectures and operating systems.
+We provide precompiled binaries for all major Python versions, CPU architectures and operating systems.
 
 From [PyPI](https://pypi.org/project/navis-fastcore):
 
