@@ -49,8 +49,7 @@ def segment_coords(
     node_ids,
     parent_ids,
     coords,
-    modifier: None,
-    node_colors: None,
+    node_colors=None,
 ):
     """Generate coordinates for linear segments.
 
@@ -66,8 +65,6 @@ def segment_coords(
     node_colors :   (N, ) numpy.ndarray, optional
                     A color for each node in `node_ids`. If provided, will
                     also return a list of colors sorted to match coordinates.
-    modifier :      ints, optional
-                    Use e.g. to modify/invert x/y/z axes.
 
     Returns
     -------
@@ -86,11 +83,6 @@ def segment_coords(
 
     # Translate into coordinates
     seg_coords = [coords[s] for s in segments]
-
-    # Apply modifier if provided
-    if modifier is not None:
-        modifier = np.asarray(modifier)
-        seg_coords = [c * modifier for c in seg_coords]
 
     # Apply colors if provided
     if not isinstance(node_colors, type(None)):
