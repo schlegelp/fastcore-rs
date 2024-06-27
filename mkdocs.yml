@@ -1,0 +1,64 @@
+site_name: navis-fastcore
+site_url: https://schlegelp.github.io/fastcore-rs/
+
+repo_name: schlegelp/fastcore-rs
+repo_url: https://github.com/schlegelp/fastcore-rs
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - content.tabs.link
+    - content.code.annotate
+    - navigation.indexes
+    - navigation.instant
+    - content.code.copy
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+
+plugins:
+  # the privacy plugin will bundle external assets (like Google Fonts)
+  # this should make the website GDPR compliant
+  - privacy
+  # the social plugin generates social cards for each page of the project
+  # which are used as previews when sharing links to the documentation
+  - social
+  - section-index
+  - search:
+      separator: '[\s\-\_,:!=\[\]()"/]+|(?!\b)(?=[A-Z][a-z])|\.(?!\d)|&[lg]t;'
+  - autorefs
+  #- literate-nav
+  - minify:
+      minify_html: true
+      minify_js: true
+      minify_css: true
+      htmlmin_opts:
+        remove_comments: true
+      # css_files:
+      #   - stylesheets/extra.css
+  - mkdocstrings:
+      handlers:
+        python:
+          import:
+            - https://docs.python.org/3/objects.inv
+            - https://numpy.org/doc/stable/objects.inv
+          options:
+            show_root_heading: true # default is false
+            docstring_style: "numpy"
+            line_length: 50 # default is 60
+            # show_if_no_docstring: true # default is false
+            # show_signature: false  # default is true
+            show_signature_annotations: true # default is false
+            annotations_path: "source" # default is 'brief'
+            show_bases: false # default is true
+            show_source: false # default is true
+            docstring_section_style: "spacy" # default is "table" but the tables end up being too wide
+  - glightbox
+  - caption
