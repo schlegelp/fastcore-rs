@@ -24,6 +24,12 @@ dependencies = [
     "numpy>=1.21.0",
 ]
 
+[project.urls]
+Documentation = "https://schlegelp.github.io/fastcore-rs/"
+Repository = "https://github.com/schlegelp/fastcore-rs"
+Issues = "https://github.com/schlegelp/fastcore-rs/issues"
+Changelog = "https://github.com/schlegelp/fastcore-rs/blob/master/CHANGELOG.md"
+
 [build-system]
 requires = ["maturin>=1.0,<2.0",  "numpy>=1.21"]
 build-backend = "maturin"
