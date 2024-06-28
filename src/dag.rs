@@ -844,6 +844,8 @@ fn walk_up_and_count_recursively(
 ///                  is associated with
 /// - `postsynapses`: array of i32 indicating how many postsynapses a given node
 ///                   is a associated with
+/// - `mode`: string indicating whether to calculate the "centrifugal", "centripetal"
+///           or the "sum" of both flow centrality
 ///
 /// Returns:
 ///
@@ -853,7 +855,23 @@ fn synapse_flow_centrality(
     parents: &ArrayView1<i32>,
     presynapses: &ArrayView1<u32>,
     postsynapses: &ArrayView1<u32>,
+    mode: String,
 ) -> Array1<u32> {
+    // Translate `mode` to integer
+    let mode_int: u32;
+    if mode == "centrifugal" {
+        mode_int = 0;
+    } else if mode == "centripetal" {
+        mode_int = 1;
+    } else if mode == "sum" {
+        mode_int = 2;
+    } else {
+        panic!(
+            "Invalid mode: {}. Must be either 'centrifugal', 'centripetal' or 'sum'",
+            mode
+        );
+    }
+
     let mut node: usize;
     let mut n_pre: u32;
     let mut n_post: u32;
@@ -898,8 +916,9 @@ fn synapse_flow_centrality(
 
     // Go over nodes and add up presynapses and postsynapses for each
     // connected component
+    let mut cc_id: i32;
     for idx in 0..parents.len() {
-        let cc_id = cc[idx];
+        cc_id = cc[idx];
         n_pre = presynapses[idx];
         n_post = postsynapses[idx];
         if cc_presynapses.contains_key(&cc_id) {
@@ -926,8 +945,15 @@ fn synapse_flow_centrality(
 
     // Calculate flow centrality for each node
     for idx in 0..parents.len() {
-        flow_centrality[idx] += proximal_presynapses[idx] * distal_postsynapses[idx];
-        flow_centrality[idx] += proximal_postsynapses[idx] * distal_presynapses[idx];
+        if mode_int == 0 {
+            flow_centrality[idx] = proximal_postsynapses[idx] * distal_presynapses[idx];
+        } else if mode_int == 1 {
+            flow_centrality[idx] = proximal_presynapses[idx] * distal_postsynapses[idx];
+
+        } else {
+            flow_centrality[idx] = proximal_presynapses[idx] * distal_postsynapses[idx]
+                + proximal_postsynapses[idx] * distal_presynapses[idx];
+        }
     }
 
     flow_centrality
@@ -954,11 +980,13 @@ pub fn synapse_flow_centrality_py<'py>(
     parents: PyReadonlyArray1<i32>,
     presynapses: PyReadonlyArray1<u32>,
     postsynapses: PyReadonlyArray1<u32>,
+    mode: String,
 ) -> &'py PyArray1<u32> {
     let flow: Array1<u32> = synapse_flow_centrality(
         &parents.as_array(),
         &presynapses.as_array(),
         &postsynapses.as_array(),
+        mode,
     );
     flow.into_pyarray(py)
 }

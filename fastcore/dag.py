@@ -217,7 +217,7 @@ def connected_components(node_ids, parent_ids):
     Returns
     -------
     cc :        (N, ) int32 array
-                For each node the node ID of its root.
+                For each node the node ID of its root (= connected component ID).
 
     Examples
     --------
@@ -247,7 +247,7 @@ def connected_components(node_ids, parent_ids):
     return node_ids[cc]
 
 
-def synapse_flow_centrality(node_ids, parent_ids, presynapses, postsynapses):
+def synapse_flow_centrality(node_ids, parent_ids, presynapses, postsynapses, mode='sum'):
     """Calculate synapse flow centrality for this neuron.
 
     Please note that this implementation currently produces slightly different
@@ -265,6 +265,12 @@ def synapse_flow_centrality(node_ids, parent_ids, presynapses, postsynapses):
                  Array of number of presynapses associated with each node.
     postsynapses : (N, ) uint32 array
                  Array of number of postsynapses associated with each node.
+    mode :       "centrifugal" | "centripetal" | "sum"
+                 The mode to calculate the flow centrality. "centrifugal" will
+                 calculate the flow from the root to the leaves, "centripetal"
+                 will calculate the flow from the leaves to the root, and "sum"
+                 will calculate the sum of both.
+
 
     Returns
     -------
@@ -282,9 +288,9 @@ def synapse_flow_centrality(node_ids, parent_ids, presynapses, postsynapses):
     assert len(presynapses) == len(postsynapses) == len(node_ids)
 
     # Get connected components - this returns indices, not node IDs
-    flow = _fastcore.synapse_flow_centrality(parent_ix, presynapses, postsynapses)
+    flow = _fastcore.synapse_flow_centrality(parent_ix, presynapses, postsynapses, mode)
 
-    # Return the root node ID for each node
+    # Return the flow for each node
     return flow
 
 
