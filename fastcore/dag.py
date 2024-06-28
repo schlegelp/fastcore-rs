@@ -3,10 +3,11 @@ import numpy as np
 from . import _fastcore
 
 __all__ = [
-    "generate_segments",
     "geodesic_matrix",
     "connected_components",
     "synapse_flow_centrality",
+    "generate_segments",
+    "break_segments",
     "segment_coords",
 ]
 
@@ -45,8 +46,46 @@ def generate_segments(node_ids, parent_ids, weights=None):
     # Convert parent IDs into indices
     parent_ix = _ids_to_indices(node_ids, parent_ids)
 
-    # Get the actual path
+    # Get the segments (this will be a list of arrays of node indices)
     segments = _fastcore.generate_segments(parent_ix, weights=weights)
+
+    # Map node indices back to IDs
+    seg_ids = [node_ids[s] for s in segments]
+
+    return seg_ids
+
+
+def break_segments(node_ids, parent_ids):
+    """Break neuron into linear segments connecting ends, branches and root.
+
+    Parameters
+    ----------
+    node_ids :   (N, ) array
+                 Array node IDs.
+    parent_ids : (N, ) array
+                 Array of parent IDs for each node. Root nodes' parents
+                 must be -1.
+
+    Returns
+    -------
+    segments :   list of arrays
+                 Segments as list of arrays.
+
+    Examples
+    --------
+    >>> import fastcore
+    >>> import numpy as np
+    >>> node_ids = np.arange(7)
+    >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5])
+    >>> fastcore.break_segments(node_ids, parent_ids)
+    [array([1, 0]), array([3, 2]), array([6, 5, 4])]
+
+    """
+    # Convert parent IDs into indices
+    parent_ix = _ids_to_indices(node_ids, parent_ids)
+
+    # Get the segments (this will be a list of arrays of node indices)
+    segments = _fastcore.break_segments(parent_ix)
 
     # Map node indices back to IDs
     seg_ids = [node_ids[s] for s in segments]
@@ -106,7 +145,7 @@ def segment_coords(
     # Convert parent IDs into indices
     parent_ix = _ids_to_indices(node_ids, parent_ids)
 
-    # Get the actual paths, these are indices into `node_ids`
+    # Get the segments (this will be a list of arrays of node indices)
     segments = _fastcore.generate_segments(parent_ix, weights=None)
 
     # Translate into coordinates
@@ -195,7 +234,7 @@ def geodesic_matrix(
         targets = np.asarray(targets, dtype=np.int32)
         assert len(targets), "`targets` must not be empty"
 
-    # Get the actual path
+    # Calculate distances
     dists = _fastcore.geodesic_distances(
         parent_ix, sources=sources, targets=targets, weights=weights, directed=directed
     )

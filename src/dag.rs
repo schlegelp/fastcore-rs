@@ -158,26 +158,38 @@ fn find_roots(parents: &ArrayView1<i32>) -> Vec<i32> {
 /// A vector of vectors where each vector contains the nodes of a segment.
 ///
 #[pyfunction]
-pub fn generate_segments(
+#[pyo3(name = "generate_segments")]
+pub fn generate_segments_py(
     parents: PyReadonlyArray1<i32>,
     weights: Option<PyReadonlyArray1<f32>>,
 ) -> Vec<Vec<i32>> {
-    let x_parents = parents.as_array();
-    let mut all_segments: Vec<Vec<i32>> = vec![];
-    let mut current_segment = Array::from_elem(x_parents.len(), -1i32);
-    let mut seen = Array::from_elem(x_parents.len(), false);
-    let mut i: usize;
-    let mut node: i32;
-
     let weights: Option<Array1<f32>> = if weights.is_some() {
         Some(weights.unwrap().as_array().to_owned())
     } else {
         None
     };
 
+    let all_segments = generate_segments(&parents.as_array(), weights);
+
+    all_segments
+}
+
+fn generate_segments(parents: &ArrayView1<i32>, weights: Option<Array1<f32>>) -> Vec<Vec<i32>> {
+    let mut all_segments: Vec<Vec<i32>> = vec![];
+    let mut current_segment = Array::from_elem(parents.len(), -1i32);
+    let mut seen = Array::from_elem(parents.len(), false);
+    let mut i: usize;
+    let mut node: i32;
+
+    let weights: Option<Array1<f32>> = if weights.is_some() {
+        Some(weights.unwrap().to_owned())
+    } else {
+        None
+    };
+
     // Extract leafs from parents
     // N.B. that this also sorts the leafs by distance to the root node!
-    let leafs = find_leafs(&x_parents.to_owned(), true, &weights);
+    let leafs = find_leafs(parents, true, &weights);
 
     // println!("Found {} leafs among the {} nodes", leafs.len(), x_parents.len());
     // println!("Starting with {} segments", all_segments.len());
@@ -207,7 +219,7 @@ pub fn generate_segments(
             seen[node as usize] = true;
 
             // Get the parent of the current node
-            node = x_parents[node as usize];
+            node = parents[node as usize];
         }
 
         // Keep track of the current segment
@@ -217,6 +229,76 @@ pub fn generate_segments(
     }
     // println!("Found {} segments", all_segments.len());
     all_segments.sort_by(|a, b| b.len().cmp(&a.len()));
+    all_segments
+}
+
+
+#[pyfunction]
+#[pyo3(name = "break_segments")]
+pub fn break_segments_py(
+    parents: PyReadonlyArray1<i32>,
+) -> Vec<Vec<i32>> {
+    let all_segments = break_segments(&parents.as_array());
+
+    all_segments
+}
+
+/// Break neuron into linear segments connecting leafs, branch points and root(s).
+///
+fn break_segments(parents: &ArrayView1<i32>) -> Vec<Vec<i32>> {
+    let mut all_segments: Vec<Vec<i32>> = vec![];
+    let mut current_segment = Array::from_elem(parents.len(), -1i32);
+    let mut i: usize;
+    let mut node: i32;
+
+    // First, figure out which nodes are leafs, branch points and roots
+    let mut is_branch_leaf = Array::from_elem(parents.len(), false);
+
+    for leaf in find_leafs(parents, false, &None) {
+        is_branch_leaf[leaf as usize] = true;
+    }
+    for branch in find_branch_points(parents) {
+        is_branch_leaf[branch as usize] = true;
+    }
+
+    for idx in 0..parents.len() {
+        // If this node is neither a leaf nor a branch point, skip it
+        if !is_branch_leaf[idx] {
+            continue;
+        }
+        // Same if this is a root node
+        if parents[idx] < 0 {
+            continue;
+        }
+
+        // Reset current_segment and counter
+        i = 0;
+
+        // Iterate until we reach the next branch point or the root node
+        node = idx as i32;
+        while node >= 0 {
+            // Add the current node to the current segment
+            current_segment[i] = node;
+
+            // Stop if this node is a branch point and
+            // we're not at the start of the segment
+            if is_branch_leaf[node as usize] && i > 0 {
+                break;
+            }
+
+            // Increment counter
+            i += 1;
+
+            // Get the parent of the current node
+            node = parents[node as usize];
+        }
+
+        // Keep track of the current segment
+        // Note that we're truncating it to exclude -1 values (i.e. empties)
+        // by keeping only the first `i` elements
+        all_segments.push(current_segment.slice(s![..i]).iter().cloned().collect());
+    }
+
     all_segments
 }
 
