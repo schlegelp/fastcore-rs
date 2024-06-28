@@ -793,12 +793,12 @@ fn walk_up_and_count_recursively(
 
             // Next, we need to add these distances to the local source/target distances
             // AND add the current distance
-            for (i, branch) in branch_sources_dists.iter().enumerate() {
+            for branch in branch_sources_dists.iter() {
                 for (source_ix, d1) in branch.iter() {
                     source_dists.push((*source_ix, d1 + d));
                 }
             }
-            for (i, branch) in branch_targets_dists.iter().enumerate() {
+            for branch in branch_targets_dists.iter() {
                 for (target_ix, d2) in branch.iter() {
                     target_dists.push((*target_ix, d2 + d));
                 }
