@@ -26,7 +26,8 @@ fn run_test() -> PyResult<()> {
 fn fastcore(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_test, m)?)?;
     m.add_function(wrap_pyfunction!(node_indices, m)?)?;
-    m.add_function(wrap_pyfunction!(generate_segments, m)?)?;
+    m.add_function(wrap_pyfunction!(generate_segments_py, m)?)?;
+    m.add_function(wrap_pyfunction!(break_segments_py, m)?)?;
     m.add_function(wrap_pyfunction!(all_dists_to_root_py, m)?)?;
     m.add_function(wrap_pyfunction!(dist_to_root_py, m)?)?;
     m.add_function(wrap_pyfunction!(top_nn_py, m)?)?;
