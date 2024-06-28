@@ -68,13 +68,12 @@ pub fn node_indices<'py>(
 /// A vector of leaf nodes.
 ///
 fn find_leafs(
-    parents: &Array1<i32>,
+    parents: &ArrayView1<i32>,
     sort_by_dist: bool,
     weights: &Option<Array1<f32>>,
 ) -> Vec<i32> {
     let parents_set: HashSet<_> = parents.iter().cloned().collect();
-    let nodes: Vec<i32> = (0..parents.len() as i32).collect();
-    let nodes = Array::from(nodes);
+    let nodes: Array1<i32> = Array::from_iter(0..parents.len() as i32);
     // Find all leaf nodes (i.e. all nodes that are not contained in `parents`)
     let leafs: Vec<_> = nodes
         .iter()
@@ -84,7 +83,7 @@ fn find_leafs(
 
     if sort_by_dist {
         // Get the distance from each leaf node to the root node
-        let dists = all_dists_to_root(&parents, &Some(Array::from(leafs.clone())), weights);
+        let dists = all_dists_to_root(parents, &Some(Array::from(leafs.clone())), weights);
 
         // Sort `leafs` by `dists` in descending order
         let mut leafs: Vec<_> = leafs.iter().cloned().zip(dists).collect();
@@ -106,15 +105,21 @@ fn find_leafs(
 ///
 /// A vector of branch points.
 ///
-fn find_branch_points(parents: &Array1<i32>) -> Vec<i32> {
+fn find_branch_points(parents: &ArrayView1<i32>) -> Vec<i32> {
     let mut branch_points: Vec<i32> = vec![];
-    let mut seen: HashSet<i32> = HashSet::new();
+    let mut seen: Array1<bool> = Array::from_elem(parents.len(), false);
     // Go over all nodes and add them to the branch_points vector if they've been seen before
     for node in parents.iter() {
-        if seen.contains(node) {
-            branch_points.push(*node);
+        // Skip root nodes
+        if *node < 0 {
+            continue;
         }
-        seen.insert(*node);
+
+        if seen[*node as usize] {
+            branch_points.push(*node);
+        } else {
+            seen[*node as usize] = true;
+        }
     }
     branch_points
 }
@@ -129,7 +134,7 @@ fn find_branch_points(parents: &Array1<i32>) -> Vec<i32> {
 ///
 /// A vector of root nodes.
 ///
-fn find_roots(parents: &Array1<i32>) -> Vec<i32> {
+fn find_roots(parents: &ArrayView1<i32>) -> Vec<i32> {
     let mut roots: Vec<i32> = vec![];
     // Go over all nodes and add them to the roots vector
     for (i, parent) in parents.iter().enumerate() {
@@ -251,8 +256,7 @@ pub fn all_dists_to_root_py<'py>(
         None
     };
 
-    let dists: Vec<f32> =
-        all_dists_to_root(&parents.as_array().to_owned(), &Some(x_sources), &weights);
+    let dists: Vec<f32> = all_dists_to_root(&parents.as_array(), &Some(x_sources), &weights);
     dists.into_pyarray(py)
 }
 
@@ -271,7 +275,7 @@ pub fn all_dists_to_root_py<'py>(
 /// A vector of f32 values indicating the distance between each node and the root.
 ///
 fn all_dists_to_root(
-    parents: &Array1<i32>,
+    parents: &ArrayView1<i32>,
     sources: &Option<Array1<i32>>,
     weights: &Option<Array1<f32>>,
 ) -> Vec<f32> {
@@ -280,7 +284,7 @@ fn all_dists_to_root(
     if sources.is_none() {
         x_sources = Array::from_iter(0..parents.len() as i32);
     } else {
-        x_sources = sources.as_ref().unwrap().clone();
+        x_sources = sources.as_ref().unwrap().to_owned();
     }
 
     let mut node: i32;
@@ -385,16 +389,11 @@ pub fn geodesic_distances_py<'py>(
     let dists: Array2<f32>;
     // If no sources and targets, use the more efficient full implementation
     if sources.is_none() && targets.is_none() {
-        dists = geodesic_distances_all_by_all(&parents.as_array().to_owned(), &weights, directed);
+        dists = geodesic_distances_all_by_all(&parents.as_array(), &weights, directed);
     // If sources and/or targets use the partial implementation
     } else {
-        dists = geodesic_distances_partial(
-            &parents.as_array().to_owned(),
-            &sources,
-            &targets,
-            &weights,
-            directed,
-        );
+        dists =
+            geodesic_distances_partial(&parents.as_array(), &sources, &targets, &weights, directed);
     }
     dists.into_pyarray(py)
 }
@@ -416,18 +415,10 @@ pub fn geodesic_distances_py<'py>(
 /// A 2D array of f32 values indicating the distances between all pairs of nodes.
 ///
 fn geodesic_distances_all_by_all(
-    parents: &Array1<i32>,
+    parents: &ArrayView1<i32>,
     weights: &Option<Array1<f32>>,
     directed: bool,
 ) -> Array2<f32> {
-    /*     let x_sources: Array1<i32>;
-       // If no sources, use all nodes as sources
-       if sources.is_none() {
-           x_sources = Array::from_iter(0..parents.len() as i32);
-       } else {
-           x_sources = sources.as_ref().unwrap().clone();
-       }
-    */
     let mut node: usize;
     let mut d: f32;
     let mut dists: Array2<f32> = Array::from_elem((parents.len(), parents.len()), -1.0);
@@ -468,7 +459,7 @@ fn geodesic_distances_all_by_all(
     }
 
     // Extract leafs from parents
-    let leafs = find_leafs(&parents, true, &None);
+    let leafs = find_leafs(parents, true, &None);
 
     // Above, we calculated the "forward" distances but we're still missing
     // the distances between nodes on separate branches. Our approach now is:
@@ -562,7 +553,7 @@ fn geodesic_distances_all_by_all(
 /// A 2D array of f32 values indicating the distances between sources and targets.
 ///
 fn geodesic_distances_partial(
-    parents: &Array1<i32>,
+    parents: &ArrayView1<i32>,
     sources: &Option<Array1<i32>>,
     targets: &Option<Array1<i32>>,
     weights: &Option<Array1<f32>>,
@@ -608,7 +599,7 @@ fn geodesic_distances_partial(
     let mut dists: Array2<f32> = Array::from_elem((sources.len(), targets.len()), -1.0);
 
     // Get a list of leafs
-    let leafs = find_leafs(&parents, true, weights);
+    let leafs = find_leafs(&parents.view(), true, weights);
 
     // Prepare some more variables
     let mut node: usize;
@@ -949,7 +940,6 @@ fn synapse_flow_centrality(
             flow_centrality[idx] = proximal_postsynapses[idx] * distal_presynapses[idx];
         } else if mode_int == 1 {
             flow_centrality[idx] = proximal_presynapses[idx] * distal_postsynapses[idx];
-
         } else {
             flow_centrality[idx] = proximal_presynapses[idx] * distal_postsynapses[idx]
                 + proximal_postsynapses[idx] * distal_presynapses[idx];
@@ -1075,7 +1065,7 @@ fn connected_components(parents: &ArrayView1<i32>) -> Array1<i32> {
 /// A vector of vectors where each vector contains the children of a node.
 /// For example parent array `[-1, 0, 1, 1]` would return `[[1], [2, 3], [], []]`.
 ///
-fn extract_parent_child(parents: &Array1<i32>) -> Vec<Vec<i32>> {
+fn extract_parent_child(parents: &ArrayView1<i32>) -> Vec<Vec<i32>> {
     let mut parent_child: Vec<Vec<i32>> = vec![vec![]; parents.len()];
     for (i, parent) in parents.iter().enumerate() {
         if *parent >= 0 {
