@@ -14,7 +14,7 @@ e.g. the excellent [natverse](https://natverse.org/).
 At this point `fastcore` covers two areas where re-implementation
 made immediate sense:
 
-1. [Operations on directed acyclic graphs (= skeletons)](DAG/index.md)
+1. [Operations on roote tree graphs (= skeletons)](Trees/index.md)
 2. [NBLAST to get around the limitations of multi-processing in Python (experimental)](NBLAST/index.md)
 
 Details & available functions can be found the respective sections!
