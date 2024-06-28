@@ -1,18 +1,18 @@
-# Operations on Directed Acyclic Graphs
+# Operations on Tree Graphs
 
-Neurons can be represented as centerline skeletons which themselves can
-be treated as trees or "directed acyclic graphs" (DAG) where each node
+Neurons can be represented as centerline skeletons which themselves are
+rooted trees or "directed acyclic graphs" (DAG) where each node
 has *at most* a single parent (root nodes will have no parents).
 
 ![Representing a neuron as directed acyclic graph.](../_static/skeletons.png)
 
-DAGs have two huge advantages over general graphs:
+Rooted trees have two huge advantages over general graphs:
 
 First, they are super compact and can, at the minimum, be represented by
 just a single vector of parent indices (with root nodes having negative
 indices).
 
-![Directed acyclic graphs are compact.](../_static/dag.png)
+![Rooted tree graphs are compact.](../_static/dag.png)
 
 Second, they are much easier/faster to traverse because we can make
 certain assumptions that we can't for general graphs. For example,
