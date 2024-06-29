@@ -124,6 +124,23 @@ fn find_branch_points(parents: &ArrayView1<i32>) -> Vec<i32> {
     branch_points
 }
 
+/// Count the number of children per node.
+///
+/// This will tell us whether a node is a leaf, a branch point or something else.
+fn number_of_children(parents: &ArrayView1<i32>) -> Array1<i32> {
+    let mut n_children: Array1<i32> = Array::from_elem(parents.len(), 0);
+    // Go over all nodes and add them to the branch_points vector if they've been seen before
+    for node in parents.iter() {
+        // Skip root nodes
+        if *node < 0 {
+            continue;
+        }
+
+        n_children[*node as usize] += 1;
+    }
+    n_children
+}
+
 /// Extract roots from parents.
 ///
 /// Arguments:
@@ -232,12 +249,9 @@ fn generate_segments(parents: &ArrayView1<i32>, weights: Option<Array1<f32>>) ->
     all_segments
 }
 
-
 #[pyfunction]
 #[pyo3(name = "break_segments")]
-pub fn break_segments_py(
-    parents: PyReadonlyArray1<i32>,
-) -> Vec<Vec<i32>> {
+pub fn break_segments_py(parents: PyReadonlyArray1<i32>) -> Vec<Vec<i32>> {
     let all_segments = break_segments(&parents.as_array());
 
     all_segments
@@ -1155,4 +1169,88 @@ fn extract_parent_child(parents: &ArrayView1<i32>) -> Vec<Vec<i32>> {
         }
     }
     parent_child
+}
+
+/// Prune terminal twigs below a given size threshold.
+///
+/// Returns the indices of nodes to keep.
+#[pyfunction]
+#[pyo3(name = "prune_twigs")]
+pub fn prune_twigs_py(
+    parents: PyReadonlyArray1<i32>,
+    threshold: f32,
+    weights: Option<PyReadonlyArray1<f32>>,
+) ->Vec<i32> {
+    let weights: Option<Array1<f32>> = if weights.is_some() {
+        Some(weights.unwrap().as_array().to_owned())
+    } else {
+        None
+    };
+
+    prune_twigs(&parents.as_array(), threshold, &weights)
+}
+
+fn prune_twigs(
+    parents: &ArrayView1<i32>,
+    threshold: f32,
+    weights: &Option<Array1<f32>>,
+) -> Vec<i32> {
+    let mut d: f32;
+    let mut node: i32;
+    let mut keep: Array1<bool> = Array::from_elem(parents.len(), true);
+    let mut twig: Vec<i32> = vec![];
+
+    let n_children = number_of_children(parents);
+
+    // Iterate over leaf nodes
+    for _node in 0..parents.len() {
+        node = _node as i32;
+        // Skip if not a leaf node
+        if n_children[node as usize] > 0 {
+            continue;
+        }
+
+        // Reset distance and twig
+        d = 0.0;
+        twig.clear();
+        while node >= 0 {
+            // Stop if this twig is already above threshold
+            if d > threshold {
+                break;
+            }
+
+            // Stop if this node has more than one child (i.e. it's a branch point)
+            if n_children[node as usize] > 1 {
+                break;
+            }
+
+            // Track this node
+            twig.push(node);
+
+            // Move on to the next node
+            d += if weights.is_some() {
+                weights.as_ref().unwrap()[node as usize]
+            } else {
+                1.0
+            };
+            node = parents[node as usize];
+
+        }
+
+        // Mark twig nodes for removal
+        if d <= threshold {
+            for node in twig.iter() {
+                keep[*node as usize] = false;
+            }
+        }
+    }
+
+    // Return indices of nodes to keep
+    let mut keep_indices: Vec<i32> = vec![];
+    for (i, k) in keep.iter().enumerate() {
+        if *k {
+            keep_indices.push(i as i32);
+        }
+    }
+    keep_indices
 }

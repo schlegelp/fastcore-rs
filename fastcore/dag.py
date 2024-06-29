@@ -9,6 +9,7 @@ __all__ = [
     "generate_segments",
     "break_segments",
     "segment_coords",
+    "prune_twigs"
 ]
 
 
@@ -401,3 +402,44 @@ def _ids_to_indices(node_ids, parent_ids):
     parent_ids = parent_ids.astype("long", order="C", copy=False)
 
     return _fastcore.node_indices(node_ids, parent_ids)
+
+
+def prune_twigs(node_ids, parent_ids, threshold, weights=None):
+    """Prune twigs shorter than a given threshold.
+
+    Parameters
+    ----------
+    node_ids :   (N, ) array
+                 Array node IDs.
+    parent_ids : (N, ) array
+                 Array of parent IDs for each node. Root nodes' parents
+                 must be -1.
+    threshold :  float
+                 Twigs shorter than this threshold will be pruned.
+    weights :    (N, ) float32 array, optional
+                 Array of distances for each child -> parent connection.
+                 If ``None`` all node-to-node distances are set to 1.
+
+    Returns
+    -------
+    keep :       (N, ) bool array
+                 Node IDs to keep.
+
+    Examples
+    --------
+    >>> import fastcore
+    >>> import numpy as np
+    >>> node_ids = np.arange(7)
+    >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5])
+    >>> fastcore.prune_twigs(node_ids, parent_ids, 2)
+    array([0, 1, 4, 5, 6])
+
+    """
+    # Convert parent IDs into indices
+    parent_ix = _ids_to_indices(node_ids, parent_ids)
+
+    # Get the segments (this will be a list of arrays of node indices)
+    keep_idx = _fastcore.prune_twigs(parent_ix, threshold, weights=weights)
+
+    # Map node indices back to IDs
+    return node_ids[keep_idx]

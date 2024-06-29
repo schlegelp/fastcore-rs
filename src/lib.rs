@@ -36,6 +36,7 @@ fn fastcore(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(nblast_allbyall_py, m)?)?;
     m.add_function(wrap_pyfunction!(synapse_flow_centrality_py, m)?)?;
     m.add_function(wrap_pyfunction!(connected_components_py, m)?)?;
+    m.add_function(wrap_pyfunction!(prune_twigs_py, m)?)?;
 
     Ok(())
 }
