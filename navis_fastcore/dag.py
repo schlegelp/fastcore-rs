@@ -9,7 +9,7 @@ __all__ = [
     "generate_segments",
     "break_segments",
     "segment_coords",
-    "prune_twigs"
+    "prune_twigs",
 ]
 
 
@@ -119,8 +119,7 @@ def segment_coords(
 
     Returns
     -------
-    seg_coords :    list of tuples
-                    [(x, y, z), (x, y, z), ... ]
+    seg_coords :    list of arrays
     colors :        list of colors
                     If `node_colors` provided will return a copy of it sorted
                     to match `seg_coords`.
@@ -162,7 +161,12 @@ def segment_coords(
 
 
 def geodesic_matrix(
-    node_ids, parent_ids, directed=False, sources=None, targets=None, weights=None
+    node_ids,
+    parent_ids,
+    directed=False,
+    sources=None,
+    targets=None,
+    weights=None,
 ):
     """Calculate geodesic ("along-the-arbor") distances.
 
@@ -199,7 +203,7 @@ def geodesic_matrix(
 
     Examples
     --------
-    >>> import fastcore
+    >>> import navis_fastcore as fastcore
     >>> import numpy as np
     >>> node_ids = np.arange(7)
     >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5])
@@ -228,16 +232,21 @@ def geodesic_matrix(
             node_ids
         ), "`weights` must have the same length as `node_ids`"
 
+    # Translate sources and targets into indices (if provided)
     if sources is not None:
-        sources = np.asarray(sources, dtype=np.int32)
+        sources = np.where(np.isin(node_ids, sources))[0].astype(np.int32)
         assert len(sources), "`sources` must not be empty"
     if targets is not None:
-        targets = np.asarray(targets, dtype=np.int32)
+        targets = np.where(np.isin(node_ids, targets))[0].astype(np.int32)
         assert len(targets), "`targets` must not be empty"
 
     # Calculate distances
     dists = _fastcore.geodesic_distances(
-        parent_ix, sources=sources, targets=targets, weights=weights, directed=directed
+        parent_ix,
+        sources=sources,
+        targets=targets,
+        weights=weights,
+        directed=directed,
     )
 
     return dists
@@ -287,7 +296,9 @@ def connected_components(node_ids, parent_ids):
     return node_ids[cc]
 
 
-def synapse_flow_centrality(node_ids, parent_ids, presynapses, postsynapses, mode='sum'):
+def synapse_flow_centrality(
+    node_ids, parent_ids, presynapses, postsynapses, mode="sum"
+):
     """Calculate synapse flow centrality for this neuron.
 
     Please note that this implementation currently produces slightly different
