@@ -741,6 +741,12 @@ fn geodesic_distances_partial(
         // Fill in the forward distances
         for (source, d1) in this_sources.iter() {
             for (target, d2) in this_targets.iter() {
+                // If we only want the directed distances, skip if d1 > d2
+                // (i.e. the source is further down the path than the target)
+                if directed && d1 > d2 {
+                    continue;
+                }
+
                 // The distance between the two is the absolute value of the difference
                 dists[[
                     source_to_index[&(*source as i32)],
