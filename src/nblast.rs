@@ -89,10 +89,15 @@ fn top_nn_split(
 pub fn load_smat() -> (Array2<f64>, Vec<[f64; 2]>, Vec<[f64; 2]>) {
     // Get the current filepath should be src/nblast.rs
     // The mat should be in the same directory as the module
-    let filepath = PathBuf::from("../fastcore/fastcore.data/smat_fcwb.csv");
+    // let filepath = PathBuf::from("../fastcore/fastcore.data/smat_fcwb.csv");
     // println!("smat file path: {:?}", filepath);
 
-    let mut rdr = csv::Reader::from_path(filepath).unwrap();
+    // This statically includes the smat file as a byte array
+    let data = include_bytes!("../navis_fastcore/fastcore.data/smat_fcwb.csv");
+
+    // let mut rdr = csv::Reader::from_path(filepath).unwrap();
+    let mut rdr = csv::Reader::from_reader(data.as_ref());
+
     let mut smat: Vec<Vec<f64>> = vec![];
     let mut bins_vec: Vec<[f64; 2]> = vec![];
     let mut bins_dist: Vec<[f64; 2]> = vec![];
