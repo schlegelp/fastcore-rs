@@ -1,3 +1,3 @@
 # Connected Components
 
-::: fastcore.connected_components
+::: navis_fastcore.connected_components

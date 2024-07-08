@@ -1,3 +1,3 @@
 # Synapse Flow
 
-::: fastcore.synapse_flow_centrality
+::: navis_fastcore.synapse_flow_centrality
