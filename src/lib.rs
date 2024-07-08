@@ -38,6 +38,7 @@ fn fastcore(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(connected_components_py, m)?)?;
     m.add_function(wrap_pyfunction!(prune_twigs_py, m)?)?;
     m.add_function(wrap_pyfunction!(strahler_index_py, m)?)?;
+    m.add_function(wrap_pyfunction!(classify_nodes_py, m)?)?;
 
     Ok(())
 }

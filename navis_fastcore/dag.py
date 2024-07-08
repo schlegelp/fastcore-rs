@@ -11,6 +11,7 @@ __all__ = [
     "segment_coords",
     "prune_twigs",
     "strahler_index",
+    "classify_nodes"
 ]
 
 
@@ -434,7 +435,7 @@ def prune_twigs(node_ids, parent_ids, threshold, weights=None):
 
     Returns
     -------
-    keep :       (N, ) bool array
+    keep :       (M, ) integer array
                  Node IDs to keep.
 
     Examples
@@ -486,7 +487,7 @@ def strahler_index(
 
     Returns
     -------
-    strahler_index :    (N, ) bool array
+    strahler_index :    (N, ) int array
                         Strahler Index for each node.
 
     Examples
@@ -510,10 +511,50 @@ def strahler_index(
     if min_twig_size is not None:
         min_twig_size = np.int32(min_twig_size)
 
-    # Get the segments (this will be a list of arrays of node indices)
+    # Get the Strahler indices
     strahler_index = _fastcore.strahler_index(
         parent_ix, min_twig_size=min_twig_size, to_ignore=to_ignore, method=method
     )
 
     # Map node indices back to IDs
     return strahler_index
+
+
+def classify_nodes(node_ids, parent_ids):
+    """Classify nodes.
+
+    Note to self: this function is not significantly faster than the
+    pandas/numpy-based implementation in navis which is already pretty
+    fast. May need to test on larger neurons to see if there is a difference.
+
+    Parameters
+    ----------
+    node_ids :          (N, ) array
+                        Array node IDs.
+    parent_ids :        (N, ) array
+                        Array of parent IDs for each node. Root nodes' parents
+                        must be -1.
+
+    Returns
+    -------
+    node_type :         (N, ) integer array
+                        Node types:
+                         - 0: root
+                         - 1: leaf
+                         - 2: branch point
+                         - 3: slab (intermediate node)
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> node_ids = np.arange(8)
+    >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5, 5])
+    >>> fastcore.classify_nodes(node_ids, parent_ids)
+    array([2, 2, 1, 1, 2, 2, 1, 1], dtype=int32)
+
+    """
+    # Convert parent IDs into indices
+    parent_ix = _ids_to_indices(node_ids, parent_ids)
+
+    return _fastcore.classify_nodes(parent_ix)

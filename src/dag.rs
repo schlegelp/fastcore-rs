@@ -1268,6 +1268,9 @@ fn prune_twigs(
 /// Arguments:
 ///
 /// - `parents`: array of parent IDs
+/// - `method`: "greedy" | "standard"
+/// - `to_ignore`: optional array of node IDs to ignore (must be leafs)
+/// - `min_twig_size`: optional integer indicating the minimum twig size
 ///
 /// Returns:
 ///
@@ -1433,4 +1436,80 @@ fn strahler_index(
     }
 
     strahler
+}
+
+/// Classify nodes into roots, leaves, branch points and slabs.
+///
+/// This function wrangles the Python arrays into Rust arrays.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent IDs
+///
+/// Returns:
+///
+/// A 1D array of integer values indicating the node type:
+/// - 0: root
+/// - 1: leaf
+/// - 2: branch point
+/// - 3: slab
+///
+#[pyfunction]
+#[pyo3(name = "classify_nodes")]
+pub fn classify_nodes_py<'py>(
+    py: Python<'py>,
+    parents: PyReadonlyArray1<i32>,
+) -> &'py PyArray1<i32> {
+    let node_types: Array1<i32> = classify_nodes(&parents.as_array());
+    node_types.into_pyarray(py)
+}
+
+/// Classify nodes.
+fn classify_nodes(parents: &ArrayView1<i32>) -> Array1<i32> {
+    // Vector for the node types
+    let mut node_types: Array1<i32> = Array::from_elem(parents.len(), -1);
+
+    // Get all leaf nodes
+    let leafs = find_leafs(parents, true, &None);
+
+    // Walk from each leaf to the root node
+    for l in leafs.iter() {
+        let mut node = *l as usize;
+
+        node_types[node] = 1; // leaf
+
+        // Walk towards the root
+        loop {
+            // If this is a branch point it means we've already seen it before
+            // and we can break here
+            if node_types[node] == 2 {
+                break
+            // If this node is already a slab, we know we're visiting it for the
+            // second time which means it's actually a branch point
+            } else if node_types[node] == 3 {
+                node_types[node] = 2;
+
+                // If this node is not a root, we can stop here
+                if parents[node] >= 0 {
+                    break;
+                }
+            // If this node is unvisited (-1) we mark it as a slab
+            } else if node_types[node] < 0 {
+                node_types[node] = 3;
+            }
+
+            // If this node's parent is -1, it's a root and we can stop early
+            // Important thing to keep in mind here: roots can also be branch points
+            // or leafs
+            if parents[node] < 0 {
+                node_types[node] = 0;
+                break;
+            }
+
+            // Move to next node
+            node = parents[node] as usize;
+        }
+    }
+
+    node_types
 }

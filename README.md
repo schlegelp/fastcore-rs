@@ -9,11 +9,11 @@ Rust re-implementation of `navis` core functions. Check out the [documentation](
 - [x] generation of linear segments
 - [x] synapse flow centrality
 - [x] Strahler index
+- [x] classify nodes
 - [ ] flow centrality
 - [ ] CI tests
-- [ ] NBLAST (started prototype)
+- [ ] NBLAST (started a prototype)
 - [ ] shortest paths
-- [ ] classify nodes
 - [ ] cater for `i32` node IDs which are currently cast up to `i64`
 - [ ] faster version of `navis.connected_subgraph`
 
