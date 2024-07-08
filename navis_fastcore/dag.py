@@ -10,6 +10,7 @@ __all__ = [
     "break_segments",
     "segment_coords",
     "prune_twigs",
+    "strahler_index",
 ]
 
 
@@ -454,3 +455,65 @@ def prune_twigs(node_ids, parent_ids, threshold, weights=None):
 
     # Map node indices back to IDs
     return node_ids[keep_idx]
+
+
+def strahler_index(
+    node_ids, parent_ids, method="standard", to_ignore=None, min_twig_size=None
+):
+    """Calculcate Strahler Index.
+
+    Parameters
+    ----------
+    node_ids :          (N, ) array
+                        Array node IDs.
+    parent_ids :        (N, ) array
+                        Array of parent IDs for each node. Root nodes' parents
+                        must be -1.
+    method :            'standard' | 'greedy', optional
+                        Method used to calculate Strahler indices: 'standard'
+                        will use the method described above; 'greedy' will
+                        always increase the index at converging branches
+                        whether these branches have the same index or not.
+    to_ignore :         iterable, optional
+                        List of node IDs to ignore. Must be the FIRST node
+                        of the branch. Excluded branches will not contribute
+                        to Strahler index calculations and instead be assigned
+                        the SI of their parent branch.
+    min_twig_size :     int, optional
+                        If provided, will ignore twigs with fewer nodes than
+                        this. Instead, they will be assigned the SI of their
+                        parent branch.
+
+    Returns
+    -------
+    strahler_index :    (N, ) bool array
+                        Strahler Index for each node.
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> node_ids = np.arange(8)
+    >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5, 5])
+    >>> fastcore.strahler_index(node_ids, parent_ids)
+    array([2, 2, 1, 1, 2, 2, 1, 1], dtype=int32)
+
+    """
+    # Convert parent IDs into indices
+    parent_ix = _ids_to_indices(node_ids, parent_ids)
+
+    # Convert to_ignore to indices
+    if to_ignore is not None:
+        to_ignore = np.where(np.isin(node_ids, to_ignore))[0].astype(np.int32)
+
+    # Convert min_twig_size to int32
+    if min_twig_size is not None:
+        min_twig_size = np.int32(min_twig_size)
+
+    # Get the segments (this will be a list of arrays of node indices)
+    strahler_index = _fastcore.strahler_index(
+        parent_ix, min_twig_size=min_twig_size, to_ignore=to_ignore, method=method
+    )
+
+    # Map node indices back to IDs
+    return strahler_index

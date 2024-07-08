@@ -8,6 +8,7 @@ Rust re-implementation of `navis` core functions. Check out the [documentation](
 - [x] connected components
 - [x] generation of linear segments
 - [x] synapse flow centrality
+- [x] Strahler index
 - [ ] flow centrality
 - [ ] CI tests
 - [ ] NBLAST (started prototype)

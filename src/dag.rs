@@ -3,6 +3,7 @@ use ndarray::{s, Array, Array1, Array2, ArrayView1};
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1};
 use pyo3::prelude::Python;
 use pyo3::prelude::*;
+use std::cmp;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
@@ -1186,7 +1187,7 @@ pub fn prune_twigs_py(
     parents: PyReadonlyArray1<i32>,
     threshold: f32,
     weights: Option<PyReadonlyArray1<f32>>,
-) ->Vec<i32> {
+) -> Vec<i32> {
     let weights: Option<Array1<f32>> = if weights.is_some() {
         Some(weights.unwrap().as_array().to_owned())
     } else {
@@ -1240,7 +1241,6 @@ fn prune_twigs(
                 1.0
             };
             node = parents[node as usize];
-
         }
 
         // Mark twig nodes for removal
@@ -1259,4 +1259,178 @@ fn prune_twigs(
         }
     }
     keep_indices
+}
+
+/// Calculate Strahler Index.
+///
+/// This function wrangles the Python arrays into Rust arrays.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent IDs
+///
+/// Returns:
+///
+/// A 1D array of i32 values indicating the Strahler Index for each node.
+///
+#[pyfunction]
+#[pyo3(name = "strahler_index")]
+pub fn strahler_index_py<'py>(
+    py: Python<'py>,
+    parents: PyReadonlyArray1<i32>,
+    method: String,
+    to_ignore: Option<PyReadonlyArray1<i32>>,
+    min_twig_size: Option<i32>,
+) -> &'py PyArray1<i32> {
+    if method != "standard" && method != "greedy" {
+        panic!(
+            "Invalid method: {}. Must be either 'standard' or 'greedy'",
+            method
+        );
+    }
+
+    let to_ignore: Option<Vec<i32>> = if to_ignore.is_some() {
+        Some(to_ignore.unwrap().as_array().to_owned().to_vec())
+    } else {
+        None
+    };
+
+    let min_twig_size: Option<i32> = if min_twig_size.is_some() {
+        Some(min_twig_size.unwrap())
+    } else {
+        None
+    };
+
+    let strahler: Array1<i32> = strahler_index(
+        &parents.as_array(),
+        method == "greedy",
+        &to_ignore,
+        &min_twig_size,
+    );
+    strahler.into_pyarray(py)
+}
+
+/// Calculate Strahler Index.
+fn strahler_index(
+    parents: &ArrayView1<i32>,
+    greedy: bool,
+    to_ignore: &Option<Vec<i32>>,
+    min_twig_size: &Option<i32>,
+) -> Array1<i32> {
+    // Vector for the Strahler indices
+    let mut strahler: Array1<i32> = Array::from_elem(parents.len(), 0);
+
+    // Vector for twigs that are too small and will be ignored -> need to be backfilled later
+    // Contains tuples of (node, first branch point)
+    let mut to_backfill: Vec<(usize, usize)> = vec![];
+
+    // Get all leaf nodes
+    let leafs = find_leafs(parents, true, &None);
+
+    // Get childs per node
+    let children = extract_parent_child(parents);
+
+    // Get all branch points
+    let mut is_branch_point: Array1<bool> = Array::from_elem(parents.len(), false);
+    for bp in find_branch_points(parents) {
+        is_branch_point[bp as usize] = true;
+    }
+
+    for l in leafs.iter() {
+        // Skip if this leaf is to be ignored
+        if to_ignore.is_some() && to_ignore.as_ref().unwrap().contains(l) {
+            // Find the first branch point
+            let mut node = *l as usize;
+            while parents[node] >= 0 {
+                if is_branch_point[node] {
+                    to_backfill.push((*l as usize, node));
+                    break;
+                }
+                node = parents[node] as usize;
+            }
+
+            continue;
+        }
+        let mut d: i32 = 1;
+        let mut node = *l as usize;
+        let mut si: i32 = 1; // start SI with 1
+
+        // Walk towards the root
+        loop {
+            // If this is a branch point and we have already seen it before
+            // we need to decide how to proceed
+            if is_branch_point[node] {
+                // If this is (the first) branch point and we haven't reached
+                // the min twig size yet
+                if min_twig_size.is_some() && d < min_twig_size.unwrap() {
+                    // Add leaf to list of small twigs
+                    to_backfill.push((*l as usize, node));
+                    break;
+                // If this branch point has been seen before
+                } else if strahler[node] > 0 {
+                    // Standard method
+                    if !greedy {
+                        // If Strahler index of the branch point is the same as the current Strahler index
+                        // we increment the Strahler index
+                        if strahler[node] == si {
+                            // Check if at least two of this branch point's children also have the same SI
+                            let mut n = 0;
+                            for child in children[node].iter() {
+                                if strahler[*child as usize] == si {
+                                    n += 1;
+                                }
+                            }
+                            if n >= 2 {
+                                si += 1;
+                            }
+                        // If the subsequent Strahler index is equal or higher we can break here
+                        } else if strahler[node] >= si {
+                            break;
+                        }
+                        // If it is lower, we need to propagate the higher Strahler index
+
+                        // Greedy method: always increment Strahler index
+                    } else {
+                        si = strahler[node] + 1;
+                    }
+                }
+            }
+
+            // Write the Strahler Index to the node
+            strahler[node] = si;
+
+            // Stop if we reached the root
+            if parents[node] < 0 {
+                break;
+            }
+
+            // Move to next node
+            node = parents[node] as usize;
+
+            // Track distance travelled (in case we have a min twig size threshold)
+            d += 1;
+        }
+    }
+
+    // Fill the small twigs/to ignore with the Strahler index of the first branch point
+    for (leaf, bp) in to_backfill.iter() {
+        // Strahler index of the first branch point
+        let si = strahler[*bp];
+        // Walk towards the root
+        let mut node = *leaf;
+        loop {
+            // Write the Strahler Index to the node
+            strahler[node] = si;
+
+            // Stop if we reached the root
+            if is_branch_point[node] || parents[node] < 0 {
+                break;
+            }
+
+            // Move to next node
+            node = parents[node] as usize;
+        }
+    }
+
+    strahler
 }
