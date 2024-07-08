@@ -6,8 +6,8 @@ These functions
 
 ## Generate Segments
 
-::: fastcore.generate_segments
+::: navis_fastcore.generate_segments
 
 ## Segment Coordinates
 
-::: fastcore.segment_coords
+::: navis_fastcore.segment_coords
