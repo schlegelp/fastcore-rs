@@ -1,6 +1,6 @@
 [package]
 name = "navis-fastcore"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2021"
 include = ["fastcore.data/smat_fcwb.csv"]
 
