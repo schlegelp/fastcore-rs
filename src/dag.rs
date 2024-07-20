@@ -3,7 +3,6 @@ use ndarray::{s, Array, Array1, Array2, ArrayView1};
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1};
 use pyo3::prelude::Python;
 use pyo3::prelude::*;
-use std::cmp;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
