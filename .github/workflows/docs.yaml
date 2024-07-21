@@ -6,7 +6,7 @@ on:
       - main
 defaults:
  run:
-  working-directory: ./app
+  working-directory: ./py
 permissions:
   contents: write
 jobs:

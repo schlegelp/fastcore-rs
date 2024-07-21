@@ -40,11 +40,12 @@ jobs:
           args: --release --out dist
           sccache: 'true'
           manylinux: auto
+          working-directory: py
       - name: Upload wheels
         uses: actions/upload-artifact@v3
         with:
           name: wheels
-          path: dist
+          path: py/dist
 
   windows:
     runs-on: windows-latest
@@ -63,11 +64,12 @@ jobs:
           target: ${{ matrix.target }}
           args: --release --out dist
           sccache: 'true'
+          working-directory: py
       - name: Upload wheels
         uses: actions/upload-artifact@v3
         with:
           name: wheels
-          path: dist
+          path: py/dist
 
   macos:
     runs-on: macos-latest
@@ -85,11 +87,12 @@ jobs:
           target: ${{ matrix.target }}
           args: --release --out dist
           sccache: 'true'
+          working-directory: py
       - name: Upload wheels
         uses: actions/upload-artifact@v3
         with:
           name: wheels
-          path: dist
+          path: py/dist
 
   sdist:
     runs-on: ubuntu-latest
@@ -100,11 +103,12 @@ jobs:
         with:
           command: sdist
           args: --out dist
+          working-directory: py
       - name: Upload sdist
         uses: actions/upload-artifact@v3
         with:
           name: wheels
-          path: dist
+          path: py/dist
 
   release:
     name: Release
@@ -122,3 +126,4 @@ jobs:
         with:
           command: upload
           args: --non-interactive --skip-existing *
+          working-directory: py
