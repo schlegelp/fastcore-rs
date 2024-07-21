@@ -21,18 +21,6 @@ Rust re-implementation of `navis` and `nat` core functions.
 - internally, we use `i32` to represent node indices which means we can't
   process neurons with more than 2,147,483,647 nodes (should be fine though)
 
-## Install
-
-We provide precompiled binaries for all major Python versions, CPU architectures and operating systems.
-
-From [PyPI](https://pypi.org/project/navis-fastcore):
-
-```bash
-pip install navis-fastcore
-```
-
-If that fails, try building from source (see below).
-
 ## Usage
 
 See the README for the [navis](./py) and [nat](./R/nat.fastcore/) wrappers for instructions on installation and usage.
