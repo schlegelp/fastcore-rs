@@ -2,9 +2,9 @@
 name = "navis-fastcore"
 version = "0.0.3"
 description = "NAVis core functions reimplemented in Rust."
-readme = "README.md"
+readme = "../README.md"
 requires-python = ">=3.9"
-license = {file = "LICENSE"}
+license = {file = "../LICENSE"}
 authors = [
   {name = "Philipp Schlegel", email = "pms70@cam.ac.uk"},
 ]

@@ -1,55 +1,10 @@
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray2};
 use ndarray::{Array1, Array2};
 use ndarray::parallel::prelude::*;
-use pyo3::prelude::*;
-use pyo3::prelude::{PyResult, Python};
-use std::path::PathBuf;
 use kiddo::SquaredEuclidean;
 use kiddo::immutable::float::kdtree::ImmutableKdTree;
 
-// Use bosque to run a nearest neighbor search
-// Note: in my tests this was not faster than pykdtree. That said, there might
-// still be mileage if we can use it threaded instead of multi-process.
-// See https://pyo3.rs/v0.20.2/parallelism on how to release the GIL.
-#[pyfunction]
-#[pyo3(signature = (pos, query, parallel=true), name = "top_nn")]
-pub fn top_nn_py<'py>(
-    py: Python<'py>,
-    pos: PyReadonlyArray2<f64>,
-    query: PyReadonlyArray2<f64>,
-    parallel: bool,
-) -> PyResult<(Py<PyArray1<f64>>, Py<PyArray1<usize>>)> {
-    // Turn the input arrays into vectors of arrays (this is what bosque expects)
-    let mut pos_array: Vec<[f64; 3]> = pos
-        .as_array()
-        .rows()
-        .into_iter()
-        .map(|row| [row[0], row[1], row[2]])
-        .collect();
-
-    // Turn the query array into a vector of arrays (this is what bosque expects)
-    let query_array: Vec<[f64; 3]> = query
-        .as_array()
-        .rows()
-        .into_iter()
-        .map(|row| [row[0], row[1], row[2]])
-        .collect();
-
-    bosque::tree::build_tree(&mut pos_array);
-
-    // Unzip the results into two vectors, one for distances and one for indices
-    let (distances, indices): (Vec<f64>, Vec<usize>) =
-        top_nn_split(&pos_array, &query_array, parallel);
-
-    // Turn the vectors into numpy arrays
-    let distances_py: Py<PyArray1<f64>> = distances.into_pyarray(py).to_owned();
-    let indices_py: Py<PyArray1<usize>> = indices.into_pyarray(py).to_owned();
-
-    Ok((distances_py, indices_py))
-}
-
 // Get the nearest neighbor for each query point
-fn top_nn(
+pub fn top_nn(
     pos_array: &Vec<[f64; 3]>,
     query_array: &Vec<[f64; 3]>,
     parallel: bool,
@@ -72,7 +27,7 @@ fn top_nn(
 }
 
 // Get top nearest neighbors but split results into distances and indices
-fn top_nn_split(
+pub fn top_nn_split(
     pos_array: &Vec<[f64; 3]>,
     query_array: &Vec<[f64; 3]>,
     parallel: bool,
@@ -80,6 +35,8 @@ fn top_nn_split(
     let results = top_nn(pos_array, query_array, parallel);
 
     // Unzip the results into two vectors, one for distances and one for indices
+    // I have checked whether unzipping afterwards instead of right away makes
+    // much of a difference and it doesn't seem do so.
     let (distances, indices): (Vec<f64>, Vec<usize>) = results.into_iter().unzip();
 
     (distances, indices)
@@ -93,7 +50,7 @@ pub fn load_smat() -> (Array2<f64>, Vec<[f64; 2]>, Vec<[f64; 2]>) {
     // println!("smat file path: {:?}", filepath);
 
     // This statically includes the smat file as a byte array
-    let data = include_bytes!("../navis_fastcore/fastcore.data/smat_fcwb.csv");
+    let data = include_bytes!("../fastcore.data/smat_fcwb.csv");
 
     // let mut rdr = csv::Reader::from_path(filepath).unwrap();
     let mut rdr = csv::Reader::from_reader(data.as_ref());
@@ -212,7 +169,7 @@ fn calc_dotproducts(
 }
 
 // Run NBLAST for a single query - target pair
-fn nblast_single(
+pub fn nblast_single(
     query_array: Vec<[f64; 3]>,
     query_vec: &Vec<[f64; 3]>,
     mut target_array: Vec<[f64; 3]>,
@@ -251,92 +208,8 @@ fn nblast_single(
     }
 }
 
-// Run a single NBLAST query
-#[pyfunction]
-#[pyo3(name = "nblast_single")]
-pub fn nblast_single_py<'py>(
-    query_array_py: PyReadonlyArray2<f64>,
-    query_vec_py: PyReadonlyArray2<f64>,
-    target_array_py: PyReadonlyArray2<f64>,
-    target_vec_py: PyReadonlyArray2<f64>,
-    parallel: bool,
-) -> f64 {
-    // Turn the input arrays into vectors of arrays (this is what bosque expects)
-    let query_array: Vec<[f64; 3]> = query_array_py
-        .as_array()
-        .rows()
-        .into_iter()
-        .map(|row| [row[0], row[1], row[2]])
-        .collect();
-    let query_vec: Vec<[f64; 3]> = query_vec_py
-        .as_array()
-        .rows()
-        .into_iter()
-        .map(|row| [row[0], row[1], row[2]])
-        .collect();
-    let target_array: Vec<[f64; 3]> = target_array_py
-        .as_array()
-        .rows()
-        .into_iter()
-        .map(|row| [row[0], row[1], row[2]])
-        .collect();
-    let target_vec: Vec<[f64; 3]> = target_vec_py
-        .as_array()
-        .rows()
-        .into_iter()
-        .map(|row| [row[0], row[1], row[2]])
-        .collect();
-
-    let score = nblast_single(
-        query_array,
-        &query_vec,
-        target_array,
-        &target_vec,
-        true,
-        parallel,
-        true
-    );
-
-    score
-}
-
-// Run an all-by-all NBLAST query
-#[pyfunction]
-#[pyo3(name = "nblast_allbyall")]
-pub fn nblast_allbyall_py<'py>(
-    py: Python<'py>,
-    points_py: Vec<PyReadonlyArray2<f64>>,
-    vecs_py: Vec<PyReadonlyArray2<f64>>,
-) -> &'py PyArray2<f32> {
-    // Convert points_py to a vector of arrays and build the trees right away
-    let mut points: Vec<Vec<[f64; 3]>> = vec![];
-    for point_set in points_py.iter() {
-        let mut tree: Vec<[f64; 3]> = point_set.as_array().rows().into_iter().map(|row| [row[0], row[1], row[2]]).collect();
-        bosque::tree::build_tree(&mut tree);
-        points.push(tree);
-    }
-    // Convert vecs_py to a vector of arrays
-    let vecs: Vec<Vec<[f64; 3]>> = vecs_py
-        .iter()
-        .map(|x| {
-            x.as_array()
-                .rows()
-                .into_iter()
-                .map(|row| [row[0], row[1], row[2]])
-                .collect()
-        })
-        .collect();
-    // Run the NBLAST
-    //let dists = nblast_allbyall(points, vecs);
-    let dists = nblast_allbyall(points, vecs);
-
-    // Turn `scores` into Python array and return it
-    dists.into_pyarray(py)
-
-}
-
-// Run all-by-all NBLAST query
-fn nblast_allbyall(
+// Run all-by-all NBLAST query using bosque as the backend
+pub fn nblast_allbyall_bosque(
     points: Vec<Vec<[f64; 3]>>,
     vecs: Vec<Vec<[f64; 3]>>,
 ) -> Array2<f32> {
@@ -351,6 +224,8 @@ fn nblast_allbyall(
     // Load the scoring matrix
     let (smat, bins_vec, bins_dist) = load_smat();
 
+    rayon::ThreadPoolBuilder::new().num_threads(10).build_global().unwrap();
+
     // Go over each cell of the matrix and run a single query-target NBLAST
     dists.par_map_inplace(|x| {
         let i = *x as usize;
@@ -362,6 +237,8 @@ fn nblast_allbyall(
         // 1. Avoid splitting results in the top_nn function and instead return a single vector of tuples
         // 2. Have only one loop over the results that calculates both dotprods as well as the final score
         // Scratch that: tried and didn't seem to be making much of a difference
+        // Notes:
+        // - the vast majority of time (99.9%) is spend in this function -> we need to see if we can optimize this
         let (distances, indices) = top_nn_split(&points[row_ix], &points[col_ix], false);
 
         // Calculate dotproducts for nearest neighbor vectors
@@ -382,7 +259,7 @@ fn nblast_allbyall(
 }
 
 // Run all-by-all NBLAST query using kiddo as NN backend
-fn nblast_allbyall_kiddo(
+pub fn nblast_allbyall_kiddo(
     points: Vec<Vec<[f64; 3]>>,
     vecs: Vec<Vec<[f64; 3]>>,
 ) -> Array2<f32> {
@@ -400,19 +277,19 @@ fn nblast_allbyall_kiddo(
     // For some reason we have to convert points like this
     // let points2: Vec[] = points.iter().map(|p| vec![p[0], p[1], p[2]]).collect();
 
-    println!("Trying to make one tree!");
-    let entries = vec![
-    [0f64, 0f64, 0f64],
-    [1f64, 1f64, 1f64],
-    [2f64, 2f64, 2f64],
-    [3f64, 3f64, 3f64]
-    ];
-    let p = vec![points[0][0], points[0][1], points[0][2]];
-    println!("p: {:?}", p);
-    let p2 = points[0].as_slice().to_vec();
-    println!("p2: {:?}", p2);
-    let tree: ImmutableKdTree<f64, usize, 3, 32> = ImmutableKdTree::new_from_slice(&p);
-    println!("Made one tree!");
+    // println!("Trying to make one tree!");
+    // let entries = vec![
+    // [0f64, 0f64, 0f64],
+    // [1f64, 1f64, 1f64],
+    // [2f64, 2f64, 2f64],
+    // [3f64, 3f64, 3f64]
+    // ];
+    // let p = vec![points[0][0], points[0][1], points[0][2]];
+    // println!("p: {:?}", p);
+    // let p2 = points[0].as_slice().to_vec();
+    // println!("p2: {:?}", p2);
+    // let tree: ImmutableKdTree<f64, usize, 3, 32> = ImmutableKdTree::new_from_slice(&p);
+    // println!("Made one tree!");
 
     // Prepare the trees
     let trees: Vec<ImmutableKdTree<f64, usize, 3, 32>> = points
@@ -420,7 +297,7 @@ fn nblast_allbyall_kiddo(
         .map(|point_set| ImmutableKdTree::new_from_slice(point_set.as_slice()))
         .collect();
 
-    println!("Trees: {:?}", trees.len());
+    // println!("Trees: {:?}", trees.len());
 
     // Go over each cell of the matrix and run a single query-target NBLAST
     dists.par_map_inplace(|x| {

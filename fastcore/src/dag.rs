@@ -1,58 +1,9 @@
 use itertools::Itertools;
 use ndarray::{s, Array, Array1, Array2, ArrayView1};
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1};
-use pyo3::prelude::Python;
-use pyo3::prelude::*;
+use num::Float;
 use std::collections::HashMap;
 use std::collections::HashSet;
-
-/// For each node ID in `parents` find its index in `nodes`.
-///
-/// Notes:
-///
-/// - negative IDs (= parents of root nodes) will be passed through
-/// - there is no check whether all IDs in `parents` actually exist in `nodes`:
-///   if an ID in `parents` does not exist in `nodes` it gets a negative index
-///
-/// Arguments:
-///
-/// - `nodes`: array of node IDs
-/// - `parents`: array of parent IDs
-///
-/// Returns:
-///
-/// An array of indices for each node indicating the index of the parent node.
-///
-#[pyfunction]
-pub fn node_indices<'py>(
-    py: Python<'py>,
-    nodes: PyReadonlyArray1<i64>,
-    parents: PyReadonlyArray1<i64>,
-) -> &'py PyArray1<i32> {
-    let mut indices: Vec<i32> = vec![-1; nodes.len().expect("Failed to get length of nodes")];
-    let x_nodes = nodes.as_array();
-    let x_parents = parents.as_array();
-
-    // Create a HashMap where the keys are nodes and the values are indices
-    let node_to_index: HashMap<_, _> = x_nodes
-        .iter()
-        .enumerate()
-        .map(|(index, node)| (*node, index as i32))
-        .collect();
-
-    for (i, parent) in x_parents.iter().enumerate() {
-        if *parent < 0 {
-            indices[i] = -1;
-            continue;
-        }
-        // Use the HashMap to find the index of the parent node
-        if let Some(index) = node_to_index.get(parent) {
-            indices[i] = *index;
-        }
-    }
-
-    indices.into_pyarray(py)
-}
+use std::ops::AddAssign;
 
 /// Extract leafs from parents.
 ///
@@ -67,15 +18,18 @@ pub fn node_indices<'py>(
 ///
 /// A vector of leaf nodes.
 ///
-fn find_leafs(
+fn find_leafs<T>(
     parents: &ArrayView1<i32>,
     sort_by_dist: bool,
-    weights: &Option<Array1<f32>>,
-) -> Vec<i32> {
+    weights: &Option<Array1<T>>,
+) -> Vec<i32>
+where
+    T: Float + AddAssign,
+{
     let parents_set: HashSet<_> = parents.iter().cloned().collect();
     let nodes: Array1<i32> = Array::from_iter(0..parents.len() as i32);
     // Find all leaf nodes (i.e. all nodes that are not contained in `parents`)
-    let leafs: Vec<_> = nodes
+    let leafs: Vec<i32> = nodes
         .iter()
         .filter(|&node| !parents_set.contains(node))
         .cloned()
@@ -86,9 +40,9 @@ fn find_leafs(
         let dists = all_dists_to_root(parents, &Some(Array::from(leafs.clone())), weights);
 
         // Sort `leafs` by `dists` in descending order
-        let mut leafs: Vec<_> = leafs.iter().cloned().zip(dists).collect();
+        let mut leafs: Vec<(i32, T)> = leafs.iter().cloned().zip(dists).collect();
         leafs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        let leafs: Vec<_> = leafs.iter().map(|(leaf_id, _dist)| *leaf_id).collect();
+        let leafs: Vec<i32> = leafs.iter().map(|(leaf_id, _dist)| *leaf_id).collect();
         leafs
     } else {
         leafs
@@ -174,31 +128,19 @@ fn find_roots(parents: &ArrayView1<i32>) -> Vec<i32> {
 ///
 /// A vector of vectors where each vector contains the nodes of a segment.
 ///
-#[pyfunction]
-#[pyo3(name = "generate_segments")]
-pub fn generate_segments_py(
-    parents: PyReadonlyArray1<i32>,
-    weights: Option<PyReadonlyArray1<f32>>,
-) -> Vec<Vec<i32>> {
-    let weights: Option<Array1<f32>> = if weights.is_some() {
-        Some(weights.unwrap().as_array().to_owned())
-    } else {
-        None
-    };
-
-    let all_segments = generate_segments(&parents.as_array(), weights);
-
-    all_segments
-}
-
-fn generate_segments(parents: &ArrayView1<i32>, weights: Option<Array1<f32>>) -> Vec<Vec<i32>> {
+pub fn generate_segments<T>(
+    parents: &ArrayView1<i32>,
+    weights: Option<Array1<T>>
+) -> Vec<Vec<i32>>
+where T: Float + AddAssign,
+{
     let mut all_segments: Vec<Vec<i32>> = vec![];
     let mut current_segment = Array::from_elem(parents.len(), -1i32);
     let mut seen = Array::from_elem(parents.len(), false);
     let mut i: usize;
     let mut node: i32;
 
-    let weights: Option<Array1<f32>> = if weights.is_some() {
+    let weights: Option<Array1<T>> = if weights.is_some() {
         Some(weights.unwrap().to_owned())
     } else {
         None
@@ -249,17 +191,9 @@ fn generate_segments(parents: &ArrayView1<i32>, weights: Option<Array1<f32>>) ->
     all_segments
 }
 
-#[pyfunction]
-#[pyo3(name = "break_segments")]
-pub fn break_segments_py(parents: PyReadonlyArray1<i32>) -> Vec<Vec<i32>> {
-    let all_segments = break_segments(&parents.as_array());
-
-    all_segments
-}
-
 /// Break neuron into linear segments connecting leafs, branch points and root(s).
 ///
-fn break_segments(parents: &ArrayView1<i32>) -> Vec<Vec<i32>> {
+pub fn break_segments(parents: &ArrayView1<i32>) -> Vec<Vec<i32>> {
     let mut all_segments: Vec<Vec<i32>> = vec![];
     let mut current_segment = Array::from_elem(parents.len(), -1i32);
     let mut i: usize;
@@ -268,7 +202,7 @@ fn break_segments(parents: &ArrayView1<i32>) -> Vec<Vec<i32>> {
     // First, figure out which nodes are leafs, branch points and roots
     let mut is_branch_leaf = Array::from_elem(parents.len(), false);
 
-    for leaf in find_leafs(parents, false, &None) {
+    for leaf in find_leafs(parents, false, &None::<Array1<f32>>) {
         is_branch_leaf[leaf as usize] = true;
     }
     for branch in find_branch_points(parents) {
@@ -318,46 +252,6 @@ fn break_segments(parents: &ArrayView1<i32>) -> Vec<Vec<i32>> {
 
 /// Return path length from each node to the root node.
 ///
-/// This function wrangles the Python arrays into Rust arrays.
-///
-/// Arguments:
-///
-/// - `parents`: array of parent IDs
-/// - `sources`: optional array of source IDs
-/// - `weights`: optional array of weights for each node
-///
-/// Returns:
-///
-/// A 1D array of f32 values indicating the distance between each node and the root.
-///
-#[pyfunction]
-#[pyo3(name = "all_dists_to_root")]
-pub fn all_dists_to_root_py<'py>(
-    py: Python<'py>,
-    parents: PyReadonlyArray1<i32>,
-    sources: Option<PyReadonlyArray1<i32>>,
-    weights: Option<PyReadonlyArray1<f32>>,
-) -> &'py PyArray1<f32> {
-    let x_sources: Array1<i32>;
-    // If no sources, use all nodes as sources
-    if sources.is_none() {
-        x_sources =
-            Array::from_iter(0..parents.len().expect("Failed to get length of parents") as i32);
-    } else {
-        x_sources = sources.unwrap().as_array().to_owned();
-    }
-    let weights: Option<Array1<f32>> = if weights.is_some() {
-        Some(weights.unwrap().as_array().to_owned())
-    } else {
-        None
-    };
-
-    let dists: Vec<f32> = all_dists_to_root(&parents.as_array(), &Some(x_sources), &weights);
-    dists.into_pyarray(py)
-}
-
-/// Return path length from each node to the root node.
-///
 /// This is the pure rust implementation for internal use.
 ///
 /// Arguments:
@@ -370,11 +264,14 @@ pub fn all_dists_to_root_py<'py>(
 ///
 /// A vector of f32 values indicating the distance between each node and the root.
 ///
-fn all_dists_to_root(
+pub fn all_dists_to_root<T>(
     parents: &ArrayView1<i32>,
     sources: &Option<Array1<i32>>,
-    weights: &Option<Array1<f32>>,
-) -> Vec<f32> {
+    weights: &Option<Array1<T>>,
+) -> Vec<T>
+where
+    T: Float + AddAssign,
+{
     let x_sources: Array1<i32>;
     // If no sources, use all nodes as sources
     if sources.is_none() {
@@ -384,13 +281,13 @@ fn all_dists_to_root(
     }
 
     let mut node: i32;
-    let mut dists: Vec<f32> = vec![0.; x_sources.len()];
+    let mut dists: Vec<T> = vec![T::zero(); x_sources.len()];
 
     if weights.is_none() {
         for i in 0..x_sources.len() {
             node = x_sources[i];
-            while node >= 0 {
-                dists[i] += 1.;
+            while parents[node as usize] >= 0 {
+                dists[i] += T::one();
                 node = parents[node as usize];
             }
         }
@@ -398,7 +295,7 @@ fn all_dists_to_root(
         let weights = weights.as_ref().unwrap();
         for i in 0..x_sources.len() {
             node = x_sources[i];
-            while node >= 0 {
+            while parents[node as usize] >= 0 {
                 dists[i] += weights[node as usize];
                 node = parents[node as usize];
             }
@@ -418,16 +315,7 @@ fn all_dists_to_root(
 /// Returns:
 ///
 /// A f32 value indicating the distance between the node and the root.
-#[pyfunction]
-#[pyo3(name = "dist_to_root")]
-pub fn dist_to_root_py(parents: PyReadonlyArray1<i32>, node: i32) -> f32 {
-    let dist = dist_to_root(&parents.as_array(), node);
-    dist
-}
-
-// Return path length from a single node to the root.
-// This is the pure rust implementation for internal use.
-fn dist_to_root(parents: &ArrayView1<i32>, node: i32) -> f32 {
+pub fn dist_to_root(parents: &ArrayView1<i32>, node: i32) -> f32 {
     let mut dist = 0.;
     let mut node = node;
     while node >= 0 {
@@ -435,63 +323,6 @@ fn dist_to_root(parents: &ArrayView1<i32>, node: i32) -> f32 {
         node = parents[node as usize];
     }
     dist
-}
-
-/// Compute geodesic distances along the tree.
-///
-/// This function wrangles the Python arrays into Rust arrays and then calls the
-/// appropriate geodesic distance function.
-///
-/// Arguments:
-///
-/// - `parents`: array of parent IDs
-/// - `sources`: optional array of source IDs
-/// - `targets`: optional array of target IDs
-/// - `weights`: optional array of weights for each node
-/// - `directed`: boolean indicating whether to return only the directed (child -> parent) distances
-///
-/// Returns:
-///
-/// A 2D array of f32 values indicating the distances between sources and targets.
-///
-#[pyfunction]
-#[pyo3(name = "geodesic_distances", signature = (parents, sources, targets, weights, directed=false))]
-pub fn geodesic_distances_py<'py>(
-    py: Python<'py>,
-    parents: PyReadonlyArray1<i32>,
-    sources: Option<PyReadonlyArray1<i32>>,
-    targets: Option<PyReadonlyArray1<i32>>,
-    weights: Option<PyReadonlyArray1<f32>>,
-    directed: bool,
-) -> &'py PyArray2<f32> {
-    let weights: Option<Array1<f32>> = if weights.is_some() {
-        Some(weights.unwrap().as_array().to_owned())
-    } else {
-        None
-    };
-
-    // Unwrap sources and targets and rewrap them as Option
-    let sources = if sources.is_some() {
-        Some(sources.unwrap().as_array().to_owned())
-    } else {
-        None
-    };
-    let targets = if targets.is_some() {
-        Some(targets.unwrap().as_array().to_owned())
-    } else {
-        None
-    };
-
-    let dists: Array2<f32>;
-    // If no sources and targets, use the more efficient full implementation
-    if sources.is_none() && targets.is_none() {
-        dists = geodesic_distances_all_by_all(&parents.as_array(), &weights, directed);
-    // If sources and/or targets use the partial implementation
-    } else {
-        dists =
-            geodesic_distances_partial(&parents.as_array(), &sources, &targets, &weights, directed);
-    }
-    dists.into_pyarray(py)
 }
 
 /// Compute geodesic distances between all pairs of nodes
@@ -510,14 +341,18 @@ pub fn geodesic_distances_py<'py>(
 ///
 /// A 2D array of f32 values indicating the distances between all pairs of nodes.
 ///
-fn geodesic_distances_all_by_all(
+pub fn geodesic_distances_all_by_all<T>(
     parents: &ArrayView1<i32>,
-    weights: &Option<Array1<f32>>,
+    weights: &Option<Array1<T>>,
     directed: bool,
-) -> Array2<f32> {
+) -> Array2<T>
+where
+    T: Float + AddAssign,
+{
     let mut node: usize;
-    let mut d: f32;
-    let mut dists: Array2<f32> = Array::from_elem((parents.len(), parents.len()), -1.0);
+    let mut d: T;
+    let mut dists: Array2<T> =
+        Array::from_elem((parents.len(), parents.len()), T::from(-1.0).unwrap());
 
     // Walk from each node to the root node.
     // We're basically brute forcing the "forward" (child -> parent) distances here
@@ -526,7 +361,7 @@ fn geodesic_distances_all_by_all(
     // This requires a lot more book keeping though and I'm not (yet) sure that's worth it.
     for idx1 in 0..parents.len() {
         node = idx1; // start with the distance between the node and itself
-        d = 0.0;
+        d = T::zero();
         // Keep going until we hit the root
         loop {
             dists[[idx1, node]] = d;
@@ -536,10 +371,10 @@ fn geodesic_distances_all_by_all(
             }
 
             // Track distance travelled
-            d += if weights.is_some() {
-                weights.as_ref().unwrap()[node]
+            d += if let Some(w) = weights {
+                w[node]
             } else {
-                1.0
+                T::one()
             };
             if parents[node] < 0 {
                 break;
@@ -555,7 +390,7 @@ fn geodesic_distances_all_by_all(
     }
 
     // Extract leafs from parents
-    let leafs = find_leafs(parents, true, &None);
+    let leafs = find_leafs(parents, true, weights);
 
     // Above, we calculated the "forward" distances but we're still missing
     // the distances between nodes on separate branches. Our approach now is:
@@ -578,12 +413,12 @@ fn geodesic_distances_all_by_all(
 
         // Find the first common branch point
         node = l2;
-        while parents[node] >= 0 && dists[[l1, node]] < 0.0 {
+        while parents[node] >= 0 && dists[[l1, node]] < T::zero() {
             node = parents[node] as usize;
         }
 
         // If the dist is still <0 then these two leafs never converge
-        if dists[[l1, node]] < 0.0 {
+        if dists[[l1, node]] < T::zero() {
             continue;
         }
         // Now walk towards the common branch point for both leafs and
@@ -592,12 +427,12 @@ fn geodesic_distances_all_by_all(
         node2 = l2;
         while node1 != node {
             // Stop early if we meet a node pair we've already visited
-            if dists[[node1, node2]] >= 0.0 {
+            if dists[[node1, node2]] >= T::zero() {
                 break;
             }
             while node2 != node {
                 // Stop early if we meet a node pair we've already visited
-                if dists[[node1, node2]] >= 0.0 {
+                if dists[[node1, node2]] >= T::zero() {
                     break;
                 }
                 d = dists[[node1, node]] + dists[[node2, node]];
@@ -648,13 +483,16 @@ fn geodesic_distances_all_by_all(
 ///
 /// A 2D array of f32 values indicating the distances between sources and targets.
 ///
-fn geodesic_distances_partial(
+pub fn geodesic_distances_partial<T>(
     parents: &ArrayView1<i32>,
     sources: &Option<Array1<i32>>,
     targets: &Option<Array1<i32>>,
-    weights: &Option<Array1<f32>>,
+    weights: &Option<Array1<T>>,
     directed: bool,
-) -> Array2<f32> {
+) -> Array2<T>
+where
+    T: Float + AddAssign,
+{
     // If no sources, use all nodes as sources
     let sources = if sources.is_none() {
         Array::from_iter(0..parents.len() as i32)
@@ -692,25 +530,26 @@ fn geodesic_distances_partial(
     }
 
     // Prepare the distance matrix filled with -1
-    let mut dists: Array2<f32> = Array::from_elem((sources.len(), targets.len()), -1.0);
+    let mut dists: Array2<T> =
+        Array::from_elem((sources.len(), targets.len()), T::from(-1.0).unwrap());
 
     // Get a list of leafs
     let leafs = find_leafs(&parents.view(), true, weights);
 
     // Prepare some more variables
     let mut node: usize;
-    let mut d: f32;
+    let mut d: T;
 
     // From each leaf walk towards the root and track the forward distances
     // N.B. We could be a bit more clever by using stop conditions to avoid going over
     // the same part of the tree twice but so far this part doesn't seem to be the bottle neck
     for leaf in leafs.iter() {
         node = *leaf as usize; // start with the distance between the node and itself
-        d = 0.0;
+        d = T::zero();
 
         // Prepare vector to track (node, distance) tuples
-        let mut this_sources: Vec<(usize, f32)> = vec![];
-        let mut this_targets: Vec<(usize, f32)> = vec![];
+        let mut this_sources: Vec<(usize, T)> = vec![];
+        let mut this_targets: Vec<(usize, T)> = vec![];
 
         // Walk towards the root
         loop {
@@ -727,7 +566,7 @@ fn geodesic_distances_partial(
             d += if weights.is_some() {
                 weights.as_ref().unwrap()[node]
             } else {
-                1.0
+                T::one()
             };
 
             // Stop if we reached the root
@@ -751,7 +590,7 @@ fn geodesic_distances_partial(
                 dists[[
                     source_to_index[&(*source as i32)],
                     target_to_index[&(*target as i32)],
-                ]] = (d1 - d2).abs();
+                ]] = (*d1 - *d2).abs();
             }
         }
     }
@@ -771,7 +610,7 @@ fn geodesic_distances_partial(
     for root in find_roots(parents) {
         let (_, _) = walk_up_and_count_recursively(
             root,
-            0.0,
+            T::zero(),
             &children,
             &is_target,
             &is_source,
@@ -807,25 +646,28 @@ fn geodesic_distances_partial(
 /// and the second contains the distances from targets to the root node. The distances are
 /// tuples of (index in the distance matrix, distance).
 ///
-fn walk_up_and_count_recursively(
+fn walk_up_and_count_recursively<T>(
     start_node: i32,
-    start_dist: f32,
+    start_dist: T,
     children: &Vec<Vec<i32>>,
     is_target: &Array1<bool>,
     is_source: &Array1<bool>,
-    weights: &Option<Array1<f32>>,
-    dists: &mut Array2<f32>,
+    weights: &Option<Array1<T>>,
+    dists: &mut Array2<T>,
     source_to_index: &HashMap<i32, usize>,
     target_to_index: &HashMap<i32, usize>,
-) -> (Vec<(usize, f32)>, Vec<(usize, f32)>) {
+) -> (Vec<(usize, T)>, Vec<(usize, T)>)
+where
+    T: Float + AddAssign,
+{
     // Track the distance and the source/target distances on this subtree
     // These vectors contain (node index into dists array, distance to root)
-    let mut source_dists: Vec<(usize, f32)> = vec![];
-    let mut target_dists: Vec<(usize, f32)> = vec![];
+    let mut source_dists: Vec<(usize, T)> = vec![];
+    let mut target_dists: Vec<(usize, T)> = vec![];
 
     // Walk up the tree and track the distances
     let mut node = start_node as usize;
-    let mut d: f32 = start_dist;
+    let mut d: T = start_dist;
     loop {
         // If this node is a source, track the distance
         if is_source[node] {
@@ -843,14 +685,14 @@ fn walk_up_and_count_recursively(
         // If this node is a branch point, we need to recurse into the children
         if children[node].len() > 1 {
             // We need to keep track of the distances from each of the branches
-            let mut branch_sources_dists: Vec<Vec<(usize, f32)>> = vec![];
-            let mut branch_targets_dists: Vec<Vec<(usize, f32)>> = vec![];
+            let mut branch_sources_dists: Vec<Vec<(usize, T)>> = vec![];
+            let mut branch_targets_dists: Vec<Vec<(usize, T)>> = vec![];
 
             for child in children[node].iter() {
                 let child_dist = if weights.is_some() {
                     weights.as_ref().unwrap()[*child as usize]
                 } else {
-                    1.0
+                    T::one()
                 };
                 let (child_sources, child_targets) = walk_up_and_count_recursively(
                     *child,
@@ -878,7 +720,7 @@ fn walk_up_and_count_recursively(
                     }
                     for (source_ix, d1) in branch1.iter() {
                         for (target_ix, d2) in branch2.iter() {
-                            dists[[*source_ix, *target_ix]] = d1 + d2;
+                            dists[[*source_ix, *target_ix]] = *d1 + *d2;
                         }
                     }
                 }
@@ -888,12 +730,12 @@ fn walk_up_and_count_recursively(
             // AND add the current distance
             for branch in branch_sources_dists.iter() {
                 for (source_ix, d1) in branch.iter() {
-                    source_dists.push((*source_ix, d1 + d));
+                    source_dists.push((*source_ix, *d1 + d));
                 }
             }
             for branch in branch_targets_dists.iter() {
                 for (target_ix, d2) in branch.iter() {
-                    target_dists.push((*target_ix, d2 + d));
+                    target_dists.push((*target_ix, *d2 + d));
                 }
             }
 
@@ -907,7 +749,7 @@ fn walk_up_and_count_recursively(
         d += if weights.is_some() {
             weights.as_ref().unwrap()[node]
         } else {
-            1.0
+            T::one()
         };
     }
 
@@ -944,7 +786,7 @@ fn walk_up_and_count_recursively(
 ///
 /// An array of u32 values indicating the flow centrality for each node.
 ///
-fn synapse_flow_centrality(
+pub fn synapse_flow_centrality(
     parents: &ArrayView1<i32>,
     presynapses: &ArrayView1<u32>,
     postsynapses: &ArrayView1<u32>,
@@ -1051,38 +893,6 @@ fn synapse_flow_centrality(
     flow_centrality
 }
 
-/// Compute synapse flow centrality for each node.
-///
-/// Arguments:
-///
-/// - `parents`: array of parent IDs
-/// - `presynapses`: array of i32 indicating how many presynapses are associated with
-///                  a given node
-/// - `postsynapses`: array of i32 indicating how many postsynapses are associated with
-///                  a given node
-///
-/// Returns:
-///
-/// An array of u32 values indicating the flow centrality for each node.
-///
-#[pyfunction]
-#[pyo3(name = "synapse_flow_centrality")]
-pub fn synapse_flow_centrality_py<'py>(
-    py: Python<'py>,
-    parents: PyReadonlyArray1<i32>,
-    presynapses: PyReadonlyArray1<u32>,
-    postsynapses: PyReadonlyArray1<u32>,
-    mode: String,
-) -> &'py PyArray1<u32> {
-    let flow: Array1<u32> = synapse_flow_centrality(
-        &parents.as_array(),
-        &presynapses.as_array(),
-        &postsynapses.as_array(),
-        mode,
-    );
-    flow.into_pyarray(py)
-}
-
 /// Find connected components in tree.
 ///
 /// Arguments:
@@ -1094,28 +904,7 @@ pub fn synapse_flow_centrality_py<'py>(
 /// An i32 array of the same length as `parents` where each node is assigned
 /// the ID of its root node.
 ///
-#[pyfunction]
-#[pyo3(name = "connected_components")]
-pub fn connected_components_py<'py>(
-    py: Python<'py>,
-    parents: PyReadonlyArray1<i32>,
-) -> &'py PyArray1<i32> {
-    let cc: Array1<i32> = connected_components(&parents.as_array());
-    cc.into_pyarray(py)
-}
-
-/// Find connected components in tree.
-///
-/// Arguments:
-///
-/// - `parents`: array of parent IDs
-///
-/// Returns:
-///
-/// An i32 array of the same length as `parents` where each node is assigned
-/// the ID of its root node.
-///
-fn connected_components(parents: &ArrayView1<i32>) -> Array1<i32> {
+pub fn connected_components(parents: &ArrayView1<i32>) -> Array1<i32> {
     let mut node: usize;
     let mut component: Array1<bool> = Array::from_elem(parents.len(), false);
     let mut components: Array1<i32> = Array::from_elem(parents.len(), 0);
@@ -1180,31 +969,19 @@ fn extract_parent_child(parents: &ArrayView1<i32>) -> Vec<Vec<i32>> {
 /// Prune terminal twigs below a given size threshold.
 ///
 /// Returns the indices of nodes to keep.
-#[pyfunction]
-#[pyo3(name = "prune_twigs")]
-pub fn prune_twigs_py(
-    parents: PyReadonlyArray1<i32>,
-    threshold: f32,
-    weights: Option<PyReadonlyArray1<f32>>,
-) -> Vec<i32> {
-    let weights: Option<Array1<f32>> = if weights.is_some() {
-        Some(weights.unwrap().as_array().to_owned())
-    } else {
-        None
-    };
-
-    prune_twigs(&parents.as_array(), threshold, &weights)
-}
-
-fn prune_twigs(
+pub fn prune_twigs<T>(
     parents: &ArrayView1<i32>,
     threshold: f32,
-    weights: &Option<Array1<f32>>,
-) -> Vec<i32> {
-    let mut d: f32;
+    weights: &Option<Array1<T>>,
+) -> Vec<i32>
+where
+    T: Float + AddAssign,
+{
+    let mut d: T;
     let mut node: i32;
     let mut keep: Array1<bool> = Array::from_elem(parents.len(), true);
     let mut twig: Vec<i32> = vec![];
+    let threshold = T::from(threshold).unwrap();
 
     let n_children = number_of_children(parents);
 
@@ -1217,7 +994,7 @@ fn prune_twigs(
         }
 
         // Reset distance and twig
-        d = 0.0;
+        d = T::zero();
         twig.clear();
         while node >= 0 {
             // Stop if this twig is already above threshold
@@ -1237,7 +1014,7 @@ fn prune_twigs(
             d += if weights.is_some() {
                 weights.as_ref().unwrap()[node as usize]
             } else {
-                1.0
+                T::one()
             };
             node = parents[node as usize];
         }
@@ -1275,45 +1052,7 @@ fn prune_twigs(
 ///
 /// A 1D array of i32 values indicating the Strahler Index for each node.
 ///
-#[pyfunction]
-#[pyo3(name = "strahler_index")]
-pub fn strahler_index_py<'py>(
-    py: Python<'py>,
-    parents: PyReadonlyArray1<i32>,
-    method: String,
-    to_ignore: Option<PyReadonlyArray1<i32>>,
-    min_twig_size: Option<i32>,
-) -> &'py PyArray1<i32> {
-    if method != "standard" && method != "greedy" {
-        panic!(
-            "Invalid method: {}. Must be either 'standard' or 'greedy'",
-            method
-        );
-    }
-
-    let to_ignore: Option<Vec<i32>> = if to_ignore.is_some() {
-        Some(to_ignore.unwrap().as_array().to_owned().to_vec())
-    } else {
-        None
-    };
-
-    let min_twig_size: Option<i32> = if min_twig_size.is_some() {
-        Some(min_twig_size.unwrap())
-    } else {
-        None
-    };
-
-    let strahler: Array1<i32> = strahler_index(
-        &parents.as_array(),
-        method == "greedy",
-        &to_ignore,
-        &min_twig_size,
-    );
-    strahler.into_pyarray(py)
-}
-
-/// Calculate Strahler Index.
-fn strahler_index(
+pub fn strahler_index(
     parents: &ArrayView1<i32>,
     greedy: bool,
     to_ignore: &Option<Vec<i32>>,
@@ -1327,7 +1066,7 @@ fn strahler_index(
     let mut to_backfill: Vec<(usize, usize)> = vec![];
 
     // Get all leaf nodes
-    let leafs = find_leafs(parents, true, &None);
+    let leafs = find_leafs(parents, true, &None::<Array1<f32>>);
 
     // Get childs per node
     let children = extract_parent_child(parents);
@@ -1453,23 +1192,12 @@ fn strahler_index(
 /// - 2: branch point
 /// - 3: slab
 ///
-#[pyfunction]
-#[pyo3(name = "classify_nodes")]
-pub fn classify_nodes_py<'py>(
-    py: Python<'py>,
-    parents: PyReadonlyArray1<i32>,
-) -> &'py PyArray1<i32> {
-    let node_types: Array1<i32> = classify_nodes(&parents.as_array());
-    node_types.into_pyarray(py)
-}
-
-/// Classify nodes.
-fn classify_nodes(parents: &ArrayView1<i32>) -> Array1<i32> {
+pub fn classify_nodes(parents: &ArrayView1<i32>) -> Array1<i32> {
     // Vector for the node types
     let mut node_types: Array1<i32> = Array::from_elem(parents.len(), -1);
 
     // Get all leaf nodes
-    let leafs = find_leafs(parents, true, &None);
+    let leafs = find_leafs(parents, true, &None::<Array1<f32>>);
 
     // Walk from each leaf to the root node
     for l in leafs.iter() {
@@ -1482,7 +1210,7 @@ fn classify_nodes(parents: &ArrayView1<i32>) -> Array1<i32> {
             // If this is a branch point it means we've already seen it before
             // and we can break here
             if node_types[node] == 2 {
-                break
+                break;
             // If this node is already a slab, we know we're visiting it for the
             // second time which means it's actually a branch point
             } else if node_types[node] == 3 {

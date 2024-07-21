@@ -1,0 +1,13 @@
+[package]
+name = 'nat_fastcore'
+version = '0.1.0'
+edition = '2021'
+
+[lib]
+crate-type = [ 'staticlib' ]
+name = 'nat_fastcore'
+
+[dependencies]
+extendr-api = { version = "0.7.0", features = ["ndarray"] }
+fastcore = { workspace=true }
+ndarray = { version = "0.15", features = ["rayon"] }
