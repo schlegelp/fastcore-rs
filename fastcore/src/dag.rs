@@ -228,14 +228,14 @@ pub fn break_segments(parents: &ArrayView1<i32>) -> Vec<Vec<i32>> {
             // Add the current node to the current segment
             current_segment[i] = node;
 
-            // Stop if this node is a branch point and
-            // we're not at the start of the segment
-            if is_branch_leaf[node as usize] && i > 0 {
-                break;
-            }
-
             // Increment counter
             i += 1;
+
+            // Stop if this node is a branch point and
+            // we're not at the start of the segment
+            if is_branch_leaf[node as usize] && i > 1 {
+                break;
+            }
 
             // Get the parent of the current node
             node = parents[node as usize];
