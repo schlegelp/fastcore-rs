@@ -2,7 +2,7 @@
 
 # navis-fastcore
 
-`fastcore` wrappers for `navis`.
+`fastcore` Python wrappers for `navis`.
 
 ## Install
 
