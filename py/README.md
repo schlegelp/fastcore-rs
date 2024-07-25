@@ -18,12 +18,16 @@ If that fails, try building from source (see below).
 
 ## Usage
 
+`navis-fastcore` itself does not depend on `navis`. This is to allow
+using `fastcore` in libraries other than `navis`. Please see the
+[docs](https://schlegelp.github.io/fastcore-rs/) for examples.
+
 `navis` will automatically use `fastcore` if it is available.
 The integration is still work in progress, so for now you
 should install `navis` from Github to make sure you have the
 latest version.
 
-## Build
+## Building from source
 
 1. [Install rust](https://www.rust-lang.org/tools/install)
 2. Clone this repository
