@@ -2,8 +2,8 @@ Package: nat.fastcore
 Title: Re-implmentation of nat core functions in Rust
 Version: 0.0.4
 Authors@R:
-    person("First", "Last", , "first.last@example.com", role = c("aut", "cre"),
-           comment = c(ORCID = "YOUR-ORCID-ID"))
+    person("Philipp", "Schlegel", , "pms70@cam.ac.uk", role = c("aut", "cre"),
+           comment = c(ORCID = "0000-0002-5633-1314"))
 Description: What the package does (one paragraph).
 License: `use_mit_license()`, `use_gpl3_license()` or friends to pick a
     license
