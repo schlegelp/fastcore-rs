@@ -38,7 +38,7 @@ def generate_segments(node_ids, parent_ids, weights=None):
 
     Examples
     --------
-    >>> import fastcore
+    >>> import navis_fastcore as fastcore
     >>> import numpy as np
     >>> node_ids = np.arange(7)
     >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5])
@@ -76,7 +76,7 @@ def break_segments(node_ids, parent_ids):
 
     Examples
     --------
-    >>> import fastcore
+    >>> import navis_fastcore as fastcore
     >>> import numpy as np
     >>> node_ids = np.arange(7)
     >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5])
@@ -128,7 +128,7 @@ def segment_coords(
 
     Examples
     --------
-    >>> import fastcore
+    >>> import navis_fastcore as fastcore
     >>> import numpy as np
     >>> node_ids = np.arange(7)
     >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5])
@@ -274,7 +274,7 @@ def connected_components(node_ids, parent_ids):
     --------
     Fully connected neuron:
 
-    >>> import fastcore
+    >>> import navis_fastcore as fastcore
     >>> import numpy as np
     >>> node_ids = np.arange(7)
     >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5])
@@ -440,7 +440,7 @@ def prune_twigs(node_ids, parent_ids, threshold, weights=None):
 
     Examples
     --------
-    >>> import fastcore
+    >>> import navis_fastcore as fastcore
     >>> import numpy as np
     >>> node_ids = np.arange(7)
     >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5])
