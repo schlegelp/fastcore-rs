@@ -1,11 +1,22 @@
 # nat.fastcore
 
-`fastcore` wrappers for `nat`.
+Re-implementation of `nat` core functions in Rust.
 
-## Build
+## Installation
+
+### Users
 
 1. Clone this repository
-2. Make sure the Rust toolchain and the R `rextendr` & `devtools` packages are installed
+2. Make sure the [Rust toolchain](https://rustup.rs/) and the R `rextendr` & `devtools` packages are installed
+3. In R run:
+   ```r
+   utils::install.packages("/path/to/repo/fastcore-rs/R/nat.fastcore/", type="source", repos=NULL)
+   ```
+
+### Developers
+
+1. Clone this repository
+2. Make sure the [Rust toolchain](https://rustup.rs/) and the R `rextendr` & `devtools` packages are installed
 3. `cd` into this directory
 4. In R run:
    ```r
