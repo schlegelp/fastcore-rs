@@ -46,7 +46,6 @@ Re-implementation of `nat` core functions in Rust.
 
 > # Generate all-by-all geodesic distance matrix
 > dists = geodesic_distances(parents, sources=NULL, targets=NULL, weights=weights, directed=F)
-
 ```
 
 Currently the following functions have been wrapped:
