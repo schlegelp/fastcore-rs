@@ -37,7 +37,9 @@ jobs:
           manylinux: auto
           working-directory: py
       - name: Install package
-        run: pip install dist/*.whl
+        run: |
+          pip install dist/*.whl
+          rm dist/*.whl
       - name: Run tests
         run: |
           pip install pytest pandas scipy
