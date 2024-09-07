@@ -15,12 +15,14 @@ Dotprop = namedtuple("Dotprop", ["points", "vect"])
 np.random.seed(0)
 
 
-def _load_swc(file="722817260.swc", synapses=False):
+def _load_swc(file="722817260.swc", dtype=np.int64, synapses=False):
     fp = Path(__file__).parent / file
     swc = pd.read_csv(fp, comment="#", header=None, sep=" ")
-    nodes = swc[0].values.astype(np.int64)
-    coords = swc[[2, 3, 4]].values.astype(np.float64)
-    parents = swc[6].values.astype(np.int64)
+    nodes = swc[0].values.astype(dtype)
+    coords = swc[[2, 3, 4]].values.astype(
+        np.float64
+    )  # the data type for this does not matter
+    parents = swc[6].values.astype(dtype)
 
     if synapses:
         connectors = pd.read_csv(Path(__file__).parent / file.replace(".swc", ".csv"))
@@ -47,24 +49,12 @@ def _load_swc(file="722817260.swc", synapses=False):
 N_NODES = len(_load_swc()[0])
 
 
-@pytest.fixture
-def swc():
-    return _load_swc(synapses=False)
+def swc64():
+    return _load_swc(dtype=np.int32, synapses=False)
 
 
-@pytest.fixture
-def swc_with_synapses():
-    return _load_swc(synapses=True)
-
-
-@pytest.fixture
-def nodes():
-    return _load_swc()[0]
-
-
-@pytest.fixture
-def parents():
-    return _load_swc()[1]
+def swc32():
+    return _load_swc(dtype=np.int64, synapses=False)
 
 
 @pytest.fixture
@@ -73,13 +63,8 @@ def coords():
 
 
 @pytest.fixture
-def presynapses():
-    return _load_swc(synapses=True)[3]
-
-
-@pytest.fixture
-def postsynapses():
-    return _load_swc(synapses=True)[4]
+def swc_with_synapses():
+    return _load_swc(synapses=True)
 
 
 def _node_indices_py(A, B):
@@ -89,7 +74,9 @@ def _node_indices_py(A, B):
     return np.array([ix_dict.get(p, -1) for p in A])
 
 
-def test_node_indices(nodes, parents):
+@pytest.mark.parametrize("swc", [swc32(), swc64()])
+def test_node_indices(swc):
+    nodes, parents, _ = swc
     start = time.time()
     indices = fastcore.dag._ids_to_indices(nodes, parents)
     dur = time.time() - start
@@ -104,8 +91,10 @@ def test_node_indices(nodes, parents):
     print(f"Timing: {dur:.4f}s (compared to {dur_py:.4f}s in pure numpy Python)")
 
 
+@pytest.mark.parametrize("swc", [swc32(), swc64()])
 @pytest.mark.parametrize("weights", [None, np.random.rand(N_NODES)])
-def test_generate_segments(nodes, parents, weights):
+def test_generate_segments(swc, weights):
+    nodes, parents, _ = swc
     start = time.time()
     segments = fastcore.generate_segments(nodes, parents, weights=weights)
     dur = time.time() - start
@@ -115,7 +104,9 @@ def test_generate_segments(nodes, parents, weights):
     print(f"Timing: {dur:.4f}s")
 
 
-def test_break_segments(nodes, parents):
+@pytest.mark.parametrize("swc", [swc32(), swc64()])
+def test_break_segments(swc):
+    nodes, parents, _ = swc
     start = time.time()
     segments = fastcore.break_segments(nodes, parents)
     dur = time.time() - start
@@ -124,8 +115,10 @@ def test_break_segments(nodes, parents):
     print(f"Timing: {dur:.4f}s")
 
 
+@pytest.mark.parametrize("swc", [swc32(), swc64()])
 @pytest.mark.parametrize("node_colors", [None, np.random.rand(N_NODES)])
-def test_segment_coords(nodes, parents, coords, node_colors):
+def test_segment_coords(swc, node_colors):
+    nodes, parents, coords = swc
     start = time.time()
     coords = fastcore.segment_coords(nodes, parents, coords, node_colors=node_colors)
     dur = time.time() - start
@@ -134,11 +127,13 @@ def test_segment_coords(nodes, parents, coords, node_colors):
     print(f"Timing: {dur:.4f}s")
 
 
+@pytest.mark.parametrize("swc", [swc32(), swc64()])
 @pytest.mark.parametrize("directed", [True, False])
 @pytest.mark.parametrize("sources", [None, [0, 1, 2]])
 @pytest.mark.parametrize("targets", [None, [0, 1, 2]])
 @pytest.mark.parametrize("weights", [None, np.random.rand(N_NODES)])
-def test_geodesic_distance(nodes, parents, directed, sources, targets, weights):
+def test_geodesic_distance(swc, directed, sources, targets, weights):
+    nodes, parents, _ = swc
     start = time.time()
     dists = fastcore.geodesic_matrix(
         nodes,
@@ -155,7 +150,8 @@ def test_geodesic_distance(nodes, parents, directed, sources, targets, weights):
 
 
 @pytest.mark.parametrize("mode", ["centrifugal", "centripetal", "sum"])
-def test_synapse_flow_centrality(nodes, parents, presynapses, postsynapses, mode):
+def test_synapse_flow_centrality(swc_with_synapses, mode):
+    nodes, parents, _, presynapses, postsynapses = swc_with_synapses
     start = time.time()
     cent = fastcore.synapse_flow_centrality(
         nodes, parents, presynapses, postsynapses, mode=mode
@@ -166,8 +162,10 @@ def test_synapse_flow_centrality(nodes, parents, presynapses, postsynapses, mode
     print(f"Timing: {dur:.4f}s")
 
 
+@pytest.mark.parametrize("swc", [swc32(), swc64()])
 @pytest.mark.parametrize("root_dist", [None, 0])
-def test_parent_dist(nodes, parents, coords, root_dist):
+def test_parent_dist(swc, coords, root_dist):
+    nodes, parents, _ = swc
     start = time.time()
     dists = fastcore.dag.parent_dist(nodes, parents, coords, root_dist)
     dur = time.time() - start
@@ -176,7 +174,9 @@ def test_parent_dist(nodes, parents, coords, root_dist):
     print(f"Timing: {dur:.4f}s")
 
 
-def test_connected_components(nodes, parents):
+@pytest.mark.parametrize("swc", [swc32(), swc64()])
+def test_connected_components(swc):
+    nodes, parents, _ = swc
     start = time.time()
     cc = fastcore.connected_components(nodes, parents)
     dur = time.time() - start
@@ -186,9 +186,11 @@ def test_connected_components(nodes, parents):
     print(f"Timing: {dur:.4f}s")
 
 
+@pytest.mark.parametrize("swc", [swc32(), swc64()])
 @pytest.mark.parametrize("threshold", [5, 10])
 @pytest.mark.parametrize("weights", [None, np.random.rand(N_NODES)])
-def test_prune_twigs(nodes, parents, threshold, weights):
+def test_prune_twigs(swc, threshold, weights):
+    nodes, parents, _ = swc
     start = time.time()
     pruned = fastcore.prune_twigs(nodes, parents, threshold=threshold, weights=weights)
     dur = time.time() - start
@@ -197,9 +199,11 @@ def test_prune_twigs(nodes, parents, threshold, weights):
     print(f"Timing: {dur:.4f}s")
 
 
+@pytest.mark.parametrize("swc", [swc32(), swc64()])
 @pytest.mark.parametrize("method", ["standard", "greedy"])
 @pytest.mark.parametrize("min_twig_size", [None, 5])
-def test_strahler_index(nodes, parents, method, min_twig_size):
+def test_strahler_index(swc, method, min_twig_size):
+    nodes, parents, _ = swc
     start = time.time()
     si = fastcore.strahler_index(
         nodes, parents, method=method, min_twig_size=min_twig_size
@@ -210,7 +214,9 @@ def test_strahler_index(nodes, parents, method, min_twig_size):
     print(f"Timing: {dur:.4f}s")
 
 
-def test_classify_nodes(nodes, parents):
+@pytest.mark.parametrize("swc", [swc32(), swc64()])
+def test_classify_nodes(swc):
+    nodes, parents, _ = swc
     start = time.time()
     types = fastcore.classify_nodes(nodes, parents)
     dur = time.time() - start
