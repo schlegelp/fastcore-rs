@@ -37,7 +37,7 @@ jobs:
           manylinux: auto
           working-directory: py
       - name: Install package
-        run: pip install py/dist/*.whl
+        run: pip install dist/*.whl
       - name: Run tests
         run: |
           pip install pytest
