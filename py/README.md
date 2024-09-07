@@ -1,4 +1,4 @@
-[![docs](https://github.com/schlegelp/fastcore-rs/actions/workflows/docs.yaml/badge.svg)](https://schlegelp.github.io/fastcore-rs/)
+[![test](https://github.com/schlegelp/fastcore-rs/actions/workflows/test.yml/badge.svg)](https://github.com/schlegelp/fastcore-rs/actions/workflows/test.yml) [![docs](https://github.com/schlegelp/fastcore-rs/actions/workflows/docs.yaml/badge.svg)](https://schlegelp.github.io/fastcore-rs/)
 
 # navis-fastcore
 
