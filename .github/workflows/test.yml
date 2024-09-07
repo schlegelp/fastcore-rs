@@ -94,7 +94,7 @@ jobs:
         name: Install dependencies
       - run: |
           mkdir -p $env:TGT_DIR
-          rm -f $env:TGT_DIR/*.whl
+          Remove-Item -Path "$env:TGT_DIR/*.whl" -Force
           maturin build --release --interpreter python --out $env:TGT_DIR
           pip install $env:TGT_DIR/*.whl
         name: Install package
