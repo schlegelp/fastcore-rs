@@ -76,9 +76,6 @@ jobs:
 
   windows:
     runs-on: windows-latest
-    strategy:
-      matrix:
-        python-version: ["3.9", "3.10", "3.11"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rs/toolchain@v1
@@ -87,17 +84,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.11"
       - run: |
           pip install -U pip wheel
           pip install pandas numpy scipy pytest maturin
         name: Install dependencies
       - run: |
-          mkdir -p $env:TGT_DIR
-          Remove-Item -Path "$env:TGT_DIR/*.whl" -Force
-          maturin build --release --interpreter python --out $env:TGT_DIR
-          pip install $env:TGT_DIR\*.whl
+          mkdir -p dist
+          maturin build --release --interpreter python --out .
+          pip install *.whl
         name: Install package
-        env:
-          TGT_DIR: "target\\wheels\\${{ matrix.python-version }}"
       - run: pytest --verbose
