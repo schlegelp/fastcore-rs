@@ -32,14 +32,17 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist
+          args: --release --out $TGT_DIR
           sccache: 'true'
           manylinux: auto
           working-directory: py
+        env:
+          TGT_DIR: "target/wheels/${{ matrix.python-version }}"
       - name: Install package
         run: |
-          pip install dist/*.whl
-          rm dist/*.whl
+          pip install $TGT_DIR/*.whl
+        env:
+          TGT_DIR: "target/wheels/${{ matrix.python-version }}"
       - name: Run tests
         run: |
           pip install pytest pandas scipy
