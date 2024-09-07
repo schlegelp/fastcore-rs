@@ -40,5 +40,5 @@ jobs:
         run: pip install dist/*.whl
       - name: Run tests
         run: |
-          pip install pytest
+          pip install pytest pandas
           pytest
