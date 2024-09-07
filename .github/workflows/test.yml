@@ -74,7 +74,7 @@ jobs:
           TGT_DIR: "target/wheels/${{ matrix.python-version }}"
       - run: pytest --verbose
 
-  osx:
+  windows:
     runs-on: windows-latest
     strategy:
       matrix:
