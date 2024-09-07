@@ -99,5 +99,5 @@ jobs:
           pip install $env:TGT_DIR/*.whl
         name: Install package
         env:
-          TGT_DIR: "target/wheels/${{ matrix.python-version }}"
+          TGT_DIR: "target\wheels\${{ matrix.python-version }}"
       - run: pytest --verbose
