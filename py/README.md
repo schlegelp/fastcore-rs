@@ -2,7 +2,7 @@
 
 # navis-fastcore
 
-`fastcore` Python wrappers for `navis`.
+Re-implementation of `navis` core functions in Rust.
 
 ## Install
 

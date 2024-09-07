@@ -28,10 +28,42 @@ use fastcore::dag::{
 /// An array of indices for each node indicating the index of the parent node.
 ///
 #[pyfunction]
-pub fn node_indices<'py>(
+pub fn node_indices_64<'py>(
     py: Python<'py>,
     nodes: PyReadonlyArray1<i64>,
     parents: PyReadonlyArray1<i64>,
+) -> &'py PyArray1<i32> {
+    let mut indices: Vec<i32> = vec![-1; nodes.len().expect("Failed to get length of nodes")];
+    let x_nodes = nodes.as_array();
+    let x_parents = parents.as_array();
+
+    // Create a HashMap where the keys are nodes and the values are indices
+    let node_to_index: HashMap<_, _> = x_nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| (*node, index as i32))
+        .collect();
+
+    for (i, parent) in x_parents.iter().enumerate() {
+        if *parent < 0 {
+            indices[i] = -1;
+            continue;
+        }
+        // Use the HashMap to find the index of the parent node
+        if let Some(index) = node_to_index.get(parent) {
+            indices[i] = *index;
+        }
+    }
+
+    indices.into_pyarray(py)
+}
+
+
+#[pyfunction]
+pub fn node_indices_32<'py>(
+    py: Python<'py>,
+    nodes: PyReadonlyArray1<i32>,
+    parents: PyReadonlyArray1<i32>,
 ) -> &'py PyArray1<i32> {
     let mut indices: Vec<i32> = vec![-1; nodes.len().expect("Failed to get length of nodes")];
     let x_nodes = nodes.as_array();

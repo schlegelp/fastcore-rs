@@ -1,84 +1,24 @@
-import fastcore
+import pytest
+import time
+
+import navis_fastcore as fastcore
 import numpy as np
 import pandas as pd
-import time
 
 from pathlib import Path
 from collections import namedtuple
 
 Dotprop = namedtuple("Dotprop", ["points", "vect"])
 
-
-def _node_indices_py(A, B):
-    """Reference Python implementation of _node_indices."""
-    ix_dict = dict(zip(B, np.arange(len(B))))
-
-    return np.array([ix_dict.get(p, -1) for p in A])
-
-
-def test_node_indices():
-    nodes, parents = _load_swc()
-
-    start = time.time()
-    indices = fastcore._fastcore.node_indices(nodes, parents)
-    dur = time.time() - start
-
-    start = time.time()
-    indices_py = _node_indices_py(parents, nodes)
-    dur_py = time.time() - start
-
-    assert all(indices == indices_py)
-
-    print("Indices:", indices)
-    print(f"Timing: {dur:.4f}s (compared to {dur_py:.4f}s in pure numpy Python)")
-
-
-def test_generate_segments():
-    nodes, parents = _load_swc()
-
-    start = time.time()
-    segments = fastcore._fastcore.generate_segments(
-        fastcore._fastcore.node_indices(nodes, parents)
-    )
-    dur = time.time() - start
-
-    # print("Segments:", segments)
-    print(type(segments), type(segments[0]))
-    print(f"Timing: {dur:.4f}s")
-
-
-def test_geodesic_distance():
-    nodes, parents = _load_swc()
-
-    start = time.time()
-    dists = fastcore._fastcore.geodesic_distances(
-        fastcore._fastcore.node_indices(nodes, parents)
-    )
-    dur = time.time() - start
-
-    print("Distances:", dists)
-    print(f"Timing: {dur:.4f}s")
-
-
-def test_synapse_flow_centrality():
-    nodes, parents, presynapses, postsynapses = _load_swc(synapses=True)
-
-    start = time.time()
-    dists = fastcore._fastcore.synapse_flow_centrality(
-        fastcore._fastcore.node_indices(nodes, parents),
-        presynapses,
-        postsynapses,
-    )
-    dur = time.time() - start
-
-    print("Synapse flows:", dists)
-    print(f"Timing: {dur:.4f}s")
+# Set random state
+np.random.seed(0)
 
 
 def _load_swc(file="722817260.swc", synapses=False):
     fp = Path(__file__).parent / file
     swc = pd.read_csv(fp, comment="#", header=None, sep=" ")
     nodes = swc[0].values.astype(np.int64)
+    coords = swc[[2, 3, 4]].values.astype(np.float64)
     parents = swc[6].values.astype(np.int64)
 
     if synapses:
@@ -97,22 +37,184 @@ def _load_swc(file="722817260.swc", synapses=False):
             .fillna(0)
             .values.astype(np.uint32, order="C", copy=False)
         )
-        return nodes, parents, presynapses, postsynapses
+        return nodes, parents, coords, presynapses, postsynapses
 
-    return nodes, parents
+    return nodes, parents, coords
 
 
-def test_connected_components():
-    nodes, parents = _load_swc()
+# Number of nodes in the default test neuron
+N_NODES = len(_load_swc()[0])
+
+
+@pytest.fixture
+def swc():
+    return _load_swc(synapses=False)
+
+
+@pytest.fixture
+def swc_with_synapses():
+    return _load_swc(synapses=True)
+
+
+@pytest.fixture
+def nodes():
+    return _load_swc()[0]
+
+
+@pytest.fixture
+def parents():
+    return _load_swc()[1]
+
+
+@pytest.fixture
+def coords():
+    return _load_swc()[2]
+
+
+@pytest.fixture
+def presynapses():
+    return _load_swc(synapses=True)[3]
+
+
+@pytest.fixture
+def postsynapses():
+    return _load_swc(synapses=True)[4]
+
+
+def _node_indices_py(A, B):
+    """Reference Python implementation of _node_indices."""
+    ix_dict = dict(zip(B, np.arange(len(B))))
+
+    return np.array([ix_dict.get(p, -1) for p in A])
+
+
+def test_node_indices(nodes, parents):
+    start = time.time()
+    indices = fastcore.dag._ids_to_indices(nodes, parents)
+    dur = time.time() - start
 
     start = time.time()
-    cc = fastcore._fastcore.connected_components(
-        fastcore._fastcore.node_indices(nodes, parents)
+    indices_py = _node_indices_py(parents, nodes)
+    dur_py = time.time() - start
+
+    assert all(indices == indices_py)
+
+    print("Indices:", indices)
+    print(f"Timing: {dur:.4f}s (compared to {dur_py:.4f}s in pure numpy Python)")
+
+
+@pytest.mark.parametrize("weights", [None, np.random.rand(N_NODES)])
+def test_generate_segments(nodes, parents, weights):
+    start = time.time()
+    segments = fastcore.generate_segments(nodes, parents, weights=weights)
+    dur = time.time() - start
+
+    # print("Segments:", segments)
+    print(type(segments), type(segments[0]))
+    print(f"Timing: {dur:.4f}s")
+
+
+def test_break_segments(nodes, parents):
+    start = time.time()
+    segments = fastcore.break_segments(nodes, parents)
+    dur = time.time() - start
+
+    print("Broken segments:", segments)
+    print(f"Timing: {dur:.4f}s")
+
+
+@pytest.mark.parametrize("node_colors", [None, np.random.rand(N_NODES)])
+def test_segment_coords(nodes, parents, coords, node_colors):
+    start = time.time()
+    coords = fastcore.segment_coords(nodes, parents, coords, node_colors=node_colors)
+    dur = time.time() - start
+
+    print("Segment coordinates:", coords)
+    print(f"Timing: {dur:.4f}s")
+
+
+@pytest.mark.parametrize("directed", [True, False])
+@pytest.mark.parametrize("sources", [None, [0, 1, 2]])
+@pytest.mark.parametrize("targets", [None, [0, 1, 2]])
+@pytest.mark.parametrize("weights", [None, np.random.rand(N_NODES)])
+def test_geodesic_distance(nodes, parents, directed, sources, targets, weights):
+    start = time.time()
+    dists = fastcore.geodesic_matrix(
+        nodes,
+        parents,
+        directed=directed,
+        sources=sources,
+        targets=targets,
+        weights=weights,
     )
+    dur = time.time() - start
+
+    print("Distances:", dists)
+    print(f"Timing: {dur:.4f}s")
+
+
+@pytest.mark.parametrize("mode", ["centrifugal", "centripetal", "sum"])
+def test_synapse_flow_centrality(nodes, parents, presynapses, postsynapses, mode):
+    start = time.time()
+    cent = fastcore.synapse_flow_centrality(
+        nodes, parents, presynapses, postsynapses, mode=mode
+    )
+    dur = time.time() - start
+
+    print("Synapse flows:", cent)
+    print(f"Timing: {dur:.4f}s")
+
+
+@pytest.mark.parametrize("root_dist", [None, 0])
+def test_parent_dist(nodes, parents, coords, root_dist):
+    start = time.time()
+    dists = fastcore.dag.parent_dist(nodes, parents, coords, root_dist)
+    dur = time.time() - start
+
+    print("Parent distances:", dists)
+    print(f"Timing: {dur:.4f}s")
+
+
+def test_connected_components(nodes, parents):
+    start = time.time()
+    cc = fastcore.connected_components(nodes, parents)
     dur = time.time() - start
 
     print("# of connected components:", len(np.unique(cc)))
     # print(type(segments), type(segments[0]))
+    print(f"Timing: {dur:.4f}s")
+
+
+@pytest.mark.parametrize("threshold", [5, 10])
+@pytest.mark.parametrize("weights", [None, np.random.rand(N_NODES)])
+def test_prune_twigs(nodes, parents, threshold, weights):
+    start = time.time()
+    pruned = fastcore.prune_twigs(nodes, parents, threshold=threshold, weights=weights)
+    dur = time.time() - start
+
+    print("Pruned nodes:", pruned)
+    print(f"Timing: {dur:.4f}s")
+
+
+@pytest.mark.parametrize("method", ["standard", "greedy"])
+@pytest.mark.parametrize("min_twig_size", [None, 5])
+def test_strahler_index(nodes, parents, method, min_twig_size):
+    start = time.time()
+    si = fastcore.strahler_index(
+        nodes, parents, method=method, min_twig_size=min_twig_size
+    )
+    dur = time.time() - start
+
+    print("Strahler indices:", si)
+    print(f"Timing: {dur:.4f}s")
+
+
+def test_classify_nodes(nodes, parents):
+    start = time.time()
+    types = fastcore.classify_nodes(nodes, parents)
+    dur = time.time() - start
+
+    print("Node types:", types)
     print(f"Timing: {dur:.4f}s")
 
 
@@ -132,27 +234,6 @@ def test_nblast_single():
     dur = time.time() - start
 
     print(f"NBLAST score: {score} ({dur:.4f}s)")
-
-
-def test_nblast_multi():
-    # Load a neurons
-    fp = Path(__file__).parent / "722817260.swc"
-    swc = pd.read_csv(fp, comment="#", header=None, sep=" ")
-    xyz = swc[[2, 3, 4]].values.astype(np.float64) / 1000
-    vec = calculate_tangent_vectors(xyz, k=5)
-
-    N = 100  # number of neurons
-    dotprops = []
-    for i in range(N):
-        dp = Dotprop(xyz.copy(), vec.copy())
-        dp.points[:, 0] += i * 1  # add a 1 micron offset
-        dotprops.append(dp)
-
-    start = time.time()
-    scores = fastcore.nblast_allbyall(dotprops)
-    dur = time.time() - start
-
-    print(f"NBLAST all-by-all score ({dur:.4f}s):\n{scores}")
 
 
 def calculate_tangent_vectors(points, k):
@@ -196,5 +277,4 @@ def calculate_tangent_vectors(points, k):
 
 
 if __name__ == "__main__":
-    test_nblast_multi()
     print("Done")

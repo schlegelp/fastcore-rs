@@ -11,7 +11,7 @@ __all__ = [
     "segment_coords",
     "prune_twigs",
     "strahler_index",
-    "classify_nodes"
+    "classify_nodes",
 ]
 
 
@@ -48,6 +48,13 @@ def generate_segments(node_ids, parent_ids, weights=None):
     """
     # Convert parent IDs into indices
     parent_ix = _ids_to_indices(node_ids, parent_ids)
+
+    # Make sure weights are float32
+    if weights is not None:
+        weights = np.asarray(weights, dtype=np.float32, order="C")
+        assert len(weights) == len(
+            node_ids
+        ), "`weights` must have the same length as `node_ids`"
 
     # Get the segments (this will be a list of arrays of node indices)
     segments = _fastcore.generate_segments(parent_ix, weights=weights)
@@ -100,6 +107,7 @@ def segment_coords(
     node_ids,
     parent_ids,
     coords,
+    weights=None,
     node_colors=None,
 ):
     """Generate coordinates for linear segments.
@@ -147,8 +155,14 @@ def segment_coords(
     # Convert parent IDs into indices
     parent_ix = _ids_to_indices(node_ids, parent_ids)
 
+    if weights is not None:
+        weights = np.asarray(weights, dtype=np.float32, order="C")
+        assert len(weights) == len(
+            node_ids
+        ), "`weights` must have the same length as `node_ids`"
+
     # Get the segments (this will be a list of arrays of node indices)
-    segments = _fastcore.generate_segments(parent_ix, weights=None)
+    segments = _fastcore.generate_segments(parent_ix, weights=weights)
 
     # Translate into coordinates
     seg_coords = [coords[s] for s in segments]
@@ -387,7 +401,7 @@ def parent_dist(node_ids, parent_ids, xyz, root_dist=None) -> None:
 
 
 def _ids_to_indices(node_ids, parent_ids):
-    """Convert node IDs to indices.
+    """Convert parent IDs to node indices.
 
     Parameters
     ----------
@@ -399,22 +413,32 @@ def _ids_to_indices(node_ids, parent_ids):
 
     Returns
     -------
-    parent_ix : (N, ) int32 (long) array
+    parent_ix : (N, ) int32 array
                 Array with parent indices for each node.
 
     """
     # Some initial sanity checks
     node_ids = np.asanyarray(node_ids)
     parent_ids = np.asanyarray(parent_ids)
-    assert node_ids.shape == parent_ids.shape
+    assert node_ids.shape == parent_ids.shape, "node_ids and parent_ids must have the same shape"
     assert node_ids.ndim == 1 and parent_ids.ndim == 1
 
-    # Make sure we have the correct data types and order
-    # "long" = int64 on 64-bit systems
-    node_ids = node_ids.astype("long", order="C", copy=False)
-    parent_ids = parent_ids.astype("long", order="C", copy=False)
+    # Make sure node and parent IDs have the same dtype and downcast if necessary
+    if node_ids.dtype != parent_ids.dtype:
+        if node_ids.dtype == np.int32:
+            parent_ids = parent_ids.astype(np.int32)
+        elif node_ids.dtype == np.int64:
+            node_ids = node_ids.astype(np.int32)
+        else:
+            raise ValueError("node_ids must be int32 or int64")
 
-    return _fastcore.node_indices(node_ids, parent_ids)
+    # Dispatch the correct function
+    if node_ids.dtype == np.int32:
+        return _fastcore.node_indices_32(node_ids, parent_ids)
+    elif node_ids.dtype == np.int64:
+        return _fastcore.node_indices_64(node_ids, parent_ids)
+    else:
+        raise ValueError("node_ids must be int32 or int64")
 
 
 def prune_twigs(node_ids, parent_ids, threshold, weights=None):
@@ -450,6 +474,13 @@ def prune_twigs(node_ids, parent_ids, threshold, weights=None):
     """
     # Convert parent IDs into indices
     parent_ix = _ids_to_indices(node_ids, parent_ids)
+
+    # Make sure weights are float32
+    if weights is not None:
+        weights = np.asarray(weights, dtype=np.float32, order="C")
+        assert len(weights) == len(
+            node_ids
+        ), "`weights` must have the same length as `node_ids`"
 
     # Get the segments (this will be a list of arrays of node indices)
     keep_idx = _fastcore.prune_twigs(parent_ix, threshold, weights=weights)
