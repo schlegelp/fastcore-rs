@@ -1,6 +1,6 @@
 Package: nat.fastcore
-Title: Re-implmentation of nat core functions in Rust
-Version: 0.0.4
+Title: Re-implementation of nat core functions in Rust
+Version: 0.0.5
 Authors@R:
     person("Philipp", "Schlegel", , "pms70@cam.ac.uk", role = c("aut", "cre"),
            comment = c(ORCID = "0000-0002-5633-1314"))
