@@ -93,10 +93,10 @@ jobs:
           pip install pandas numpy scipy pytest maturin
         name: Install dependencies
       - run: |
-          mkdir -p $TGT_DIR
-          rm -f $TGT_DIR/*.whl
-          maturin build --release --interpreter python --out $TGT_DIR
-          pip install $TGT_DIR/*.whl
+          mkdir -p $env:TGT_DIR
+          rm -f $env:TGT_DIR/*.whl
+          maturin build --release --interpreter python --out $env:TGT_DIR
+          pip install $env:TGT_DIR/*.whl
         name: Install package
         env:
           TGT_DIR: "target/wheels/${{ matrix.python-version }}"
