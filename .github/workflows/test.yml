@@ -19,11 +19,66 @@ permissions:
 
 jobs:
   linux:
+    runs-on: ubuntu-latest
     strategy:
-        matrix:
-          python-version: ["3.9", "3.10", "3.11"]
-          os: [macos-latest, windows-latest, ubuntu-20.04]
-    runs-on: ${{ matrix.os }}
+      matrix:
+        python-version: ["3.9", "3.10", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: |
+          pip install -U pip wheel
+          pip install pandas numpy scipy pytest maturin
+        name: Install dependencies
+      - run: |
+          mkdir -p $TGT_DIR
+          rm -f $TGT_DIR/*.whl
+          maturin build --release --interpreter python --out $TGT_DIR
+          pip install $TGT_DIR/*.whl
+        name: Install package
+        env:
+          TGT_DIR: "target/wheels/${{ matrix.python-version }}"
+      - run: pytest --verbose
+
+  osx:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.10", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: |
+          pip install -U pip wheel
+          pip install pandas numpy scipy pytest maturin
+        name: Install dependencies
+      - run: |
+          mkdir -p $TGT_DIR
+          rm -f $TGT_DIR/*.whl
+          maturin build --release --interpreter python --out $TGT_DIR
+          pip install $TGT_DIR/*.whl
+        name: Install package
+        env:
+          TGT_DIR: "target/wheels/${{ matrix.python-version }}"
+      - run: pytest --verbose
+
+  osx:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.10", "3.11"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rs/toolchain@v1
