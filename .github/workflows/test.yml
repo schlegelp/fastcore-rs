@@ -19,10 +19,11 @@ permissions:
 
 jobs:
   linux:
-    runs-on: ubuntu-latest
     strategy:
-      matrix:
-        python-version: ["3.9", "3.10", "3.11"]
+        matrix:
+          python-version: ["3.9", "3.10", "3.11"]
+          os: [macos-latest, windows-latest, ubuntu-20.04]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rs/toolchain@v1
