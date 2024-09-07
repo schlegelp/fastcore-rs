@@ -5,6 +5,7 @@ import navis_fastcore as fastcore
 import numpy as np
 import pandas as pd
 
+from scipy.spatial import cKDTree as KDTree
 from pathlib import Path
 from collections import namedtuple
 
@@ -252,8 +253,6 @@ def calculate_tangent_vectors(points, k):
 
     """
     # Create the KDTree and get the k-nearest neighbors for each point
-    from scipy.spatial import cKDTree as KDTree
-
     dist, ix = KDTree(points).query(points, k=k)
 
     # Get points: array of (N, k, 3)
