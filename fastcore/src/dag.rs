@@ -1,5 +1,6 @@
 use itertools::Itertools;
 use ndarray::{s, Array, Array1, Array2, ArrayView1};
+use ndarray::parallel::prelude::*;
 use num::Float;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -358,7 +359,7 @@ where
     // We're basically brute forcing the "forward" (child -> parent) distances here
     // In theory we could be a bit more efficient by using leaf nodes as seeds,
     // tracking the distances as we go along and then filling the missing values.
-    // This requires a lot more book keeping though and I'm not (yet) sure that's worth it.
+    // This requires a lot more bookkeeping though and I'm not (yet) sure that's worth it.
     for idx1 in 0..parents.len() {
         node = idx1; // start with the distance between the node and itself
         d = T::zero();
@@ -759,6 +760,126 @@ where
     // println!(" Targets: {:?}", target_dists);
 
     (source_dists, target_dists)
+}
+
+
+/// Compute geodesic distances between pairs of nodes.
+///
+///
+/// Arguments:
+///
+/// - `parents`: array of parent indices
+/// - `pair_source`: array of source indices
+/// - `pair_target`: array of target indices
+/// - `weights`: optional array of weights for each child -> parent connection
+/// - `directed`: boolean indicating whether to return only the directed (child -> parent) distances
+///
+/// Returns:
+///
+/// A 1d array of f32/f64 values indicating the distances between the queried pairs.
+///
+pub fn geodesic_pairs(
+    parents: &ArrayView1<i32>,
+    pairs_source: &ArrayView1<i32>,
+    pairs_target: &ArrayView1<i32>,
+    weights: &Option<Array1<f32>>,
+    directed: bool,
+) -> Array1<f32>
+{
+    // Make sure we have even number of sources/targets
+    if pairs_source.len() != pairs_target.len() {
+        panic!("Length of sources and targets not matching!");
+    }
+
+    // Convert `pairs_source` to a vector for parallel processing
+    let pairs_source: Vec<i32> = pairs_source.iter().cloned().collect();
+    let pairs_target: Vec<i32> = pairs_target.iter().cloned().collect();
+
+    let dists: Vec<_> = pairs_source
+        .par_iter()
+        .zip(pairs_target.par_iter())
+        .map(|(idx1, idx2)| {
+            geodesic_distances_single_pair(parents, *idx1 as usize, *idx2 as usize, weights, directed)
+        })
+        .collect();
+
+    // Convert the vector to an array and return
+    Array::from(dists)
+}
+
+fn geodesic_distances_single_pair(
+    parents: &ArrayView1<i32>,
+    idx1: usize,
+    idx2: usize,
+    weights: &Option<Array1<f32>>,
+    directed: bool,
+) -> f32
+{
+    // Walk from idx1 to root node
+    let mut node: usize = idx1;
+    let mut d: f32 = 0.0;
+    let mut seen: Array1<f32> = Array::from_elem(parents.len(), -1.0);
+
+    loop {
+        // If come across the target node, return here
+        // (also happens if idx1 == idx2)
+        if node == idx2 {
+            return d;
+        };
+        seen[node] = d;
+
+        // Break if we hit the root node
+        if parents[node] < 0 {
+            // If we reached the root node without finding idx2 and we want only
+            // directed distances, then we return -1
+            if directed {
+                return -1.0;
+            };
+
+            // Now do the same for the target node
+            node = idx2;
+            d = 0.0;
+
+            loop {
+                // If this node has already been visited in when walking from idx1 to the root
+                // we can just sum up the distances.
+                // This also covers cases where `idx2` is upstream `idx1`!
+                if seen[node] > -1.0 {
+                    return d + seen[node];
+                }
+
+                // Track distance travelled
+                d += if let Some(w) = weights {
+                    w[node]
+                } else {
+                    1.0
+                };
+
+                // If we hit the root node again, then idx1 and idx2 are on disconnected
+                // branches
+                if parents[node] < 0 {
+                    break;
+                }
+
+                node = parents[node] as usize;
+
+            }
+
+            break;
+        }
+        // Track distance travelled
+        d += if let Some(w) = weights {
+            w[node]
+        } else {
+            1.0
+        };
+
+        node = parents[node] as usize;
+    }
+
+    // If we made it until here, then idx1 and idx2 are disconnected
+    return 1.0;
+
 }
 
 /// Calculate synapse flow centrality for each node.

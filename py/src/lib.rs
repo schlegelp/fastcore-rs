@@ -18,6 +18,7 @@ fn fastcore(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(dist_to_root_py, m)?)?;
     m.add_function(wrap_pyfunction!(top_nn_py, m)?)?;
     m.add_function(wrap_pyfunction!(geodesic_distances_py, m)?)?;
+    m.add_function(wrap_pyfunction!(geodesic_pairs_py, m)?)?;
     m.add_function(wrap_pyfunction!(nblast_single_py, m)?)?;
     m.add_function(wrap_pyfunction!(nblast_allbyall_py, m)?)?;
     m.add_function(wrap_pyfunction!(synapse_flow_centrality_py, m)?)?;

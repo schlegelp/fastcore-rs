@@ -4,6 +4,7 @@ from . import _fastcore
 
 __all__ = [
     "geodesic_matrix",
+    "geodesic_pairs",
     "connected_components",
     "synapse_flow_centrality",
     "generate_segments",
@@ -214,7 +215,7 @@ def geodesic_matrix(
 
     Returns
     -------
-    matrix :    float32 (double) array
+    matrix :    float32 (single) array
                 Geodesic distances. Unreachable nodes are set to -1.
 
     Examples
@@ -261,6 +262,74 @@ def geodesic_matrix(
         parent_ix,
         sources=sources,
         targets=targets,
+        weights=weights,
+        directed=directed,
+    )
+
+    return dists
+
+
+def geodesic_pairs(
+    node_ids,
+    parent_ids,
+    pairs,
+    directed=False,
+    weights=None,
+):
+    """Calculate geodesic ("along-the-arbor") distances between pairs of nodes.
+
+    This uses a pretty simple algorithm that calculates distances using brute
+    force. It's pretty fast because we parallelize the calculation of each pair
+    of nodes.
+
+    Parameters
+    ----------
+    node_ids :   (N, ) array
+                 Array of node IDs.
+    parent_ids : (N, ) array
+                 Array of parent IDs for each node. Root nodes' parents
+                 must be -1.
+    pairs :      (N, 2) array
+                 Pairs of node IDs for which to calculate distances.
+    directed :   bool, optional
+                 If ``True`` will only return distances in the direction of
+                 the child -> parent (i.e. towards the root) relationship.
+    weights :    (N, ) float32 array, optional
+                 Array of distances for each child -> parent connection.
+                 If ``None`` all node to node distances are set to 1.
+
+    Returns
+    -------
+    matrix :    float32 (single) array
+                Geodesic distances. Unreachable nodes are set to -1.
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> node_ids = np.arange(7)
+    >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5])
+    >>> pairs = np.array([(0, 1), (0, 2)])
+    >>> fastcore.geodesic_pairs(node_ids, parent_ids, pairs)
+
+    """
+    # Convert parent IDs into indices
+    parent_ix = _ids_to_indices(node_ids, parent_ids)
+
+    pairs = np.asarray(pairs)
+    assert pairs.ndim == 2 and pairs.shape[1] == 2, "`pairs` must be of shape (N, 2)"
+
+    if weights is not None:
+        weights = np.asarray(weights, dtype=np.float32, order="C")
+        assert len(weights) == len(
+            node_ids
+        ), "`weights` must have the same length as `node_ids`"
+
+    # Calculate distances
+    dists = _fastcore.geodesic_pairs(
+        parent_ix,
+        pairs_source=_ids_to_indices(node_ids, pairs[:, 0]),
+        pairs_target=_ids_to_indices(node_ids, pairs[:, 1]),
         weights=weights,
         directed=directed,
     )

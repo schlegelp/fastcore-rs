@@ -5,9 +5,9 @@ use pyo3::prelude::*;
 use std::collections::HashMap;
 
 use fastcore::dag::{
-    all_dists_to_root, break_segments, dist_to_root, generate_segments,
-    geodesic_distances_all_by_all, geodesic_distances_partial, synapse_flow_centrality,
-    connected_components, classify_nodes, strahler_index, prune_twigs
+    all_dists_to_root, break_segments, classify_nodes, connected_components, dist_to_root,
+    generate_segments, geodesic_distances_all_by_all, geodesic_distances_partial, geodesic_pairs,
+    prune_twigs, strahler_index, synapse_flow_centrality,
 };
 
 /// For each node ID in `parents` find its index in `nodes`.
@@ -237,6 +237,49 @@ pub fn geodesic_distances_py<'py>(
         dists =
             geodesic_distances_partial(&parents.as_array(), &sources, &targets, &weights, directed);
     }
+    dists.into_pyarray(py)
+}
+
+/// Compute geodesic distances along the tree for pairs of nodes.
+///
+/// This function wrangles the Python arrays into Rust arrays and then calls the
+/// appropriate geodesic distance function.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent indices
+/// - `sources`: array of source indices for pairs
+/// - `targets`: array of target indices for pairs
+/// - `weights`: optional array of weights for each node
+/// - `directed`: boolean indicating whether to return only the directed (child -> parent) distances
+///
+/// Returns:
+///
+/// A 1D array of f32 values indicating the distances between the pairs of nodes.
+///
+#[pyfunction]
+#[pyo3(name = "geodesic_pairs", signature = (parents, pairs_source, pairs_target, weights, directed=false))]
+pub fn geodesic_pairs_py<'py>(
+    py: Python<'py>,
+    parents: PyReadonlyArray1<i32>,
+    pairs_source: PyReadonlyArray1<i32>,
+    pairs_target: PyReadonlyArray1<i32>,
+    weights: Option<PyReadonlyArray1<f32>>,
+    directed: bool,
+) -> &'py PyArray1<f32> {
+    let weights: Option<Array1<f32>> = if weights.is_some() {
+        Some(weights.unwrap().as_array().to_owned())
+    } else {
+        None
+    };
+
+    let dists = geodesic_pairs(
+        &parents.as_array(),
+        &pairs_source.as_array(),
+        &pairs_target.as_array(),
+        &weights,
+        directed,
+    );
     dists.into_pyarray(py)
 }
 
