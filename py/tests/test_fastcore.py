@@ -149,6 +149,31 @@ def test_geodesic_distance(swc, directed, sources, targets, weights):
     print(f"Timing: {dur:.4f}s")
 
 
+@pytest.mark.parametrize("swc", [swc32(), swc64()])
+@pytest.mark.parametrize("directed", [True, False])
+@pytest.mark.parametrize("weights", [None, np.random.rand(N_NODES)])
+def test_geodesic_pairs(swc, directed, weights):
+    nodes, parents, _ = swc
+    pairs = np.vstack(
+        (
+            np.random.choice(nodes, 200),
+            np.random.choice(nodes, 200),
+        )
+    ).T
+    start = time.time()
+    dists = fastcore.geodesic_pairs(
+        nodes,
+        parents,
+        pairs=pairs,
+        directed=directed,
+        weights=weights,
+    )
+    dur = time.time() - start
+
+    print("Distances:", dists)
+    print(f"Timing: {dur:.4f}s")
+
+
 @pytest.mark.parametrize("mode", ["centrifugal", "centripetal", "sum"])
 def test_synapse_flow_centrality(swc_with_synapses, mode):
     nodes, parents, _, presynapses, postsynapses = swc_with_synapses
