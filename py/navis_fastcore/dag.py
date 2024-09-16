@@ -400,15 +400,15 @@ def parent_dist(node_ids, parent_ids, xyz, root_dist=None) -> None:
     return w
 
 
-def _ids_to_indices(node_ids, parent_ids):
-    """Convert parent IDs to node indices.
+def _ids_to_indices(node_ids, to_map):
+    """Map node IDs to node indices.
 
     Parameters
     ----------
     node_ids :  (N, )
                 Array of node IDs.
-    parent_ids : (N, )
-                Array of parent IDs for each node. Root nodes' parents
+    to_map :    (N, )
+                Array of IDs to map to indices. Root nodes' parents
                 must be -1.
 
     Returns
@@ -419,26 +419,25 @@ def _ids_to_indices(node_ids, parent_ids):
     """
     # Some initial sanity checks
     node_ids = np.asanyarray(node_ids)
-    parent_ids = np.asanyarray(parent_ids)
-    assert node_ids.shape == parent_ids.shape, "node_ids and parent_ids must have the same shape"
-    assert node_ids.ndim == 1 and parent_ids.ndim == 1
+    to_map = np.asanyarray(to_map)
+    assert node_ids.ndim == 1 and to_map.ndim == 1
 
     # Make sure node and parent IDs have the same dtype and downcast if necessary
-    if node_ids.dtype != parent_ids.dtype:
+    if node_ids.dtype != to_map.dtype:
         if node_ids.dtype == np.int32:
-            parent_ids = parent_ids.astype(np.int32)
+            to_map = to_map.astype(np.int32)
         elif node_ids.dtype == np.int64:
             node_ids = node_ids.astype(np.int32)
         else:
-            raise ValueError("node_ids must be int32 or int64")
+            raise ValueError("IDs must be int32 or int64")
 
     # Dispatch the correct function
     if node_ids.dtype == np.int32:
-        return _fastcore.node_indices_32(node_ids, parent_ids)
+        return _fastcore.node_indices_32(node_ids, to_map)
     elif node_ids.dtype == np.int64:
-        return _fastcore.node_indices_64(node_ids, parent_ids)
+        return _fastcore.node_indices_64(node_ids, to_map)
     else:
-        raise ValueError("node_ids must be int32 or int64")
+        raise ValueError("IDs must be int32 or int64")
 
 
 def prune_twigs(node_ids, parent_ids, threshold, weights=None):

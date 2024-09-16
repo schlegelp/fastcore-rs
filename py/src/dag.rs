@@ -31,11 +31,11 @@ use fastcore::dag::{
 pub fn node_indices_64<'py>(
     py: Python<'py>,
     nodes: PyReadonlyArray1<i64>,
-    parents: PyReadonlyArray1<i64>,
+    to_map: PyReadonlyArray1<i64>,
 ) -> &'py PyArray1<i32> {
-    let mut indices: Vec<i32> = vec![-1; nodes.len().expect("Failed to get length of nodes")];
+    let mut indices: Vec<i32> = vec![-1; to_map.len().expect("Failed to get length of nodes")];
     let x_nodes = nodes.as_array();
-    let x_parents = parents.as_array();
+    let to_map = to_map.as_array();
 
     // Create a HashMap where the keys are nodes and the values are indices
     let node_to_index: HashMap<_, _> = x_nodes
@@ -44,7 +44,7 @@ pub fn node_indices_64<'py>(
         .map(|(index, node)| (*node, index as i32))
         .collect();
 
-    for (i, parent) in x_parents.iter().enumerate() {
+    for (i, parent) in to_map.iter().enumerate() {
         if *parent < 0 {
             indices[i] = -1;
             continue;
@@ -58,16 +58,15 @@ pub fn node_indices_64<'py>(
     indices.into_pyarray(py)
 }
 
-
 #[pyfunction]
 pub fn node_indices_32<'py>(
     py: Python<'py>,
     nodes: PyReadonlyArray1<i32>,
-    parents: PyReadonlyArray1<i32>,
+    to_map: PyReadonlyArray1<i32>,
 ) -> &'py PyArray1<i32> {
-    let mut indices: Vec<i32> = vec![-1; nodes.len().expect("Failed to get length of nodes")];
+    let mut indices: Vec<i32> = vec![-1; to_map.len().expect("Failed to get length of nodes")];
     let x_nodes = nodes.as_array();
-    let x_parents = parents.as_array();
+    let to_map = to_map.as_array();
 
     // Create a HashMap where the keys are nodes and the values are indices
     let node_to_index: HashMap<_, _> = x_nodes
@@ -76,7 +75,7 @@ pub fn node_indices_32<'py>(
         .map(|(index, node)| (*node, index as i32))
         .collect();
 
-    for (i, parent) in x_parents.iter().enumerate() {
+    for (i, parent) in to_map.iter().enumerate() {
         if *parent < 0 {
             indices[i] = -1;
             continue;
