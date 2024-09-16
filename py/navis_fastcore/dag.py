@@ -278,9 +278,8 @@ def geodesic_pairs(
 ):
     """Calculate geodesic ("along-the-arbor") distances between pairs of nodes.
 
-    This uses a pretty simple algorithm that calculates distances using brute
-    force. It's pretty fast because we parallelize the calculation of each pair
-    of nodes.
+    This uses a simple algorithm that calculates distances using brute force.
+    It's fast because we parallelize the calculation of each pair of nodes.
 
     Parameters
     ----------
