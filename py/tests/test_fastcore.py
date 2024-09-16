@@ -129,8 +129,8 @@ def test_segment_coords(swc, node_colors):
 
 @pytest.mark.parametrize("swc", [swc32(), swc64()])
 @pytest.mark.parametrize("directed", [True, False])
-@pytest.mark.parametrize("sources", [None, [0, 1, 2]])
-@pytest.mark.parametrize("targets", [None, [0, 1, 2]])
+@pytest.mark.parametrize("sources", [None, [1, 2, 3]])
+@pytest.mark.parametrize("targets", [None, [1, 2, 3]])
 @pytest.mark.parametrize("weights", [None, np.random.rand(N_NODES)])
 def test_geodesic_distance(swc, directed, sources, targets, weights):
     nodes, parents, _ = swc
