@@ -92,6 +92,6 @@ jobs:
       - run: |
           mkdir -p dist
           maturin build --release --interpreter python --out .
-          pip install navis_fastcore-0.0.5-cp39-abi3-win_amd64.whl
+          pip install navis_fastcore-0.0.6-cp39-abi3-win_amd64.whl
         name: Install and test package
       - run: pytest --verbose
