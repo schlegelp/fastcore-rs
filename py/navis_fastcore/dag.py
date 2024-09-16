@@ -216,7 +216,9 @@ def geodesic_matrix(
     Returns
     -------
     matrix :    float32 (single) array
-                Geodesic distances. Unreachable nodes are set to -1.
+                Geodesic distances. Unreachable nodes are set to -1. If
+                `source` and/or `targets` are provided, the matrix will be
+                ordered accordingly.
 
     Examples
     --------
@@ -250,21 +252,36 @@ def geodesic_matrix(
         ), "`weights` must have the same length as `node_ids`"
 
     # Translate sources and targets into indices (if provided)
+    # This will also de-duplicate the IDs!
     if sources is not None:
-        sources = np.where(np.isin(node_ids, sources))[0].astype(np.int32)
+        sources_ix = np.where(np.isin(node_ids, sources))[0].astype(np.int32)
         assert len(sources), "`sources` must not be empty"
+    else:
+        sources_ix = None
+
     if targets is not None:
-        targets = np.where(np.isin(node_ids, targets))[0].astype(np.int32)
+        targets_ix = np.where(np.isin(node_ids, targets))[0].astype(np.int32)
         assert len(targets), "`targets` must not be empty"
+    else:
+        targets_ix = None
 
     # Calculate distances
     dists = _fastcore.geodesic_distances(
         parent_ix,
-        sources=sources,
-        targets=targets,
+        sources=sources_ix,
+        targets=targets_ix,
         weights=weights,
         directed=directed,
     )
+
+    # If sources and targets are provided, we need to order the matrix
+    if sources is not None:
+        id2ix = {nid: ix for ix, nid in enumerate(node_ids[sources_ix])}
+        dists = dists[[id2ix[nid] for nid in sources]]
+
+    if targets is not None:
+        id2ix = {nid: ix for ix, nid in enumerate(node_ids[targets_ix])}
+        dists = dists[:, [id2ix[nid] for nid in targets]]
 
     return dists
 
