@@ -214,10 +214,13 @@ def test_connected_components(swc):
 @pytest.mark.parametrize("swc", [swc32(), swc64()])
 @pytest.mark.parametrize("threshold", [5, 10])
 @pytest.mark.parametrize("weights", [None, np.random.rand(N_NODES)])
-def test_prune_twigs(swc, threshold, weights):
+@pytest.mark.parametrize("mask", [None, (np.random.rand(N_NODES) > 0.5).astype(bool)])
+def test_prune_twigs(swc, threshold, weights, mask):
     nodes, parents, _ = swc
     start = time.time()
-    pruned = fastcore.prune_twigs(nodes, parents, threshold=threshold, weights=weights)
+    pruned = fastcore.prune_twigs(
+        nodes, parents, threshold=threshold, weights=weights, mask=mask
+    )
     dur = time.time() - start
 
     print("Pruned nodes:", pruned)

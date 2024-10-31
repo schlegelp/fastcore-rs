@@ -345,14 +345,21 @@ pub fn prune_twigs_py(
     parents: PyReadonlyArray1<i32>,
     threshold: f32,
     weights: Option<PyReadonlyArray1<f32>>,
+    mask: Option<PyReadonlyArray1<bool>>,
 ) -> Vec<i32> {
     let weights: Option<Array1<f32>> = if weights.is_some() {
         Some(weights.unwrap().as_array().to_owned())
     } else {
         None
     };
+    let mask: Option<Array1<bool>> = if mask.is_some() {
+        Some(mask.unwrap().as_array().to_owned())
+    } else {
+        None
+    };
 
-    prune_twigs(&parents.as_array(), threshold, &weights)
+
+    prune_twigs(&parents.as_array(), threshold, &weights, &mask)
 }
 
 /// Calculate Strahler Index.

@@ -525,7 +525,7 @@ def _ids_to_indices(node_ids, to_map):
         raise ValueError("IDs must be int32 or int64")
 
 
-def prune_twigs(node_ids, parent_ids, threshold, weights=None):
+def prune_twigs(node_ids, parent_ids, threshold, weights=None, mask=None):
     """Prune twigs shorter than a given threshold.
 
     Parameters
@@ -540,6 +540,10 @@ def prune_twigs(node_ids, parent_ids, threshold, weights=None):
     weights :    (N, ) float32 array, optional
                  Array of distances for each child -> parent connection.
                  If ``None`` all node-to-node distances are set to 1.
+    mask :       (N, ) bool array, optional
+                 Array of booleans to mask nodes that should not be pruned.
+                 Importantly, twigs with _any_ masked node will not be pruned.
+
 
     Returns
     -------
@@ -554,6 +558,8 @@ def prune_twigs(node_ids, parent_ids, threshold, weights=None):
     >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5])
     >>> fastcore.prune_twigs(node_ids, parent_ids, 2)
     array([0, 1, 4, 5, 6])
+    >>> mask = np.array([True, True, True, False, True, True, True])
+    >>> fastcore.prune_twigs(node_ids, parent_ids, 2, mask=mask)
 
     """
     # Convert parent IDs into indices
@@ -566,8 +572,15 @@ def prune_twigs(node_ids, parent_ids, threshold, weights=None):
             node_ids
         ), "`weights` must have the same length as `node_ids`"
 
-    # Get the segments (this will be a list of arrays of node indices)
-    keep_idx = _fastcore.prune_twigs(parent_ix, threshold, weights=weights)
+    # Make sure mask is boolean
+    if mask is not None:
+        mask = np.asarray(mask, dtype=bool, order="C")
+        assert len(mask) == len(
+            node_ids
+        ), "`mask` must have the same length as `node_ids"
+
+    # Get the nodes to keep
+    keep_idx = _fastcore.prune_twigs(parent_ix, threshold, weights=weights, mask=mask)
 
     # Map node indices back to IDs
     return node_ids[keep_idx]

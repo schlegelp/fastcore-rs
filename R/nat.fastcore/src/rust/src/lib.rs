@@ -159,7 +159,7 @@ pub fn connected_components(
 pub fn prune_twigs(
     parents: Vec<i32>,
     threshold: f64,
-    weights: Option<Vec<f64>>,
+    weights: Option<Vec<f64>>
 ) -> Vec<i32> {
     let parents = Array1::from_vec(parents);
 
@@ -169,7 +169,8 @@ pub fn prune_twigs(
         Some(Array1::from_vec(weights.unwrap()))
     };
 
-    fastcore::dag::prune_twigs(&parents.view(), threshold as f32, &weights)
+    // Mask is currently not supported - strangely, extendr does not seem to support Vec<bool>
+    fastcore::dag::prune_twigs(&parents.view(), threshold as f32, &weights, &None)
 }
 
 // Macro to generate exports.

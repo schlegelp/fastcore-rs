@@ -1,6 +1,6 @@
 use itertools::Itertools;
-use ndarray::{s, Array, Array1, Array2, ArrayView1};
 use ndarray::parallel::prelude::*;
+use ndarray::{s, Array, Array1, Array2, ArrayView1};
 use num::Float;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -129,11 +129,9 @@ fn find_roots(parents: &ArrayView1<i32>) -> Vec<i32> {
 ///
 /// A vector of vectors where each vector contains the nodes of a segment.
 ///
-pub fn generate_segments<T>(
-    parents: &ArrayView1<i32>,
-    weights: Option<Array1<T>>
-) -> Vec<Vec<i32>>
-where T: Float + AddAssign,
+pub fn generate_segments<T>(parents: &ArrayView1<i32>, weights: Option<Array1<T>>) -> Vec<Vec<i32>>
+where
+    T: Float + AddAssign,
 {
     let mut all_segments: Vec<Vec<i32>> = vec![];
     let mut current_segment = Array::from_elem(parents.len(), -1i32);
@@ -762,7 +760,6 @@ where
     (source_dists, target_dists)
 }
 
-
 /// Compute geodesic distances between pairs of nodes.
 ///
 ///
@@ -784,8 +781,7 @@ pub fn geodesic_pairs(
     pairs_target: &ArrayView1<i32>,
     weights: &Option<Array1<f32>>,
     directed: bool,
-) -> Array1<f32>
-{
+) -> Array1<f32> {
     // Make sure we have even number of sources/targets
     if pairs_source.len() != pairs_target.len() {
         panic!("Length of sources and targets not matching!");
@@ -799,7 +795,13 @@ pub fn geodesic_pairs(
         .par_iter()
         .zip(pairs_target.par_iter())
         .map(|(idx1, idx2)| {
-            geodesic_distances_single_pair(parents, *idx1 as usize, *idx2 as usize, weights, directed)
+            geodesic_distances_single_pair(
+                parents,
+                *idx1 as usize,
+                *idx2 as usize,
+                weights,
+                directed,
+            )
         })
         .collect();
 
@@ -813,8 +815,7 @@ fn geodesic_distances_single_pair(
     idx2: usize,
     weights: &Option<Array1<f32>>,
     directed: bool,
-) -> f32
-{
+) -> f32 {
     // Walk from idx1 to root node
     let mut node: usize = idx1;
     let mut d: f32 = 0.0;
@@ -849,11 +850,7 @@ fn geodesic_distances_single_pair(
                 }
 
                 // Track distance travelled
-                d += if let Some(w) = weights {
-                    w[node]
-                } else {
-                    1.0
-                };
+                d += if let Some(w) = weights { w[node] } else { 1.0 };
 
                 // If we hit the root node again, then idx1 and idx2 are on disconnected
                 // branches
@@ -862,24 +859,18 @@ fn geodesic_distances_single_pair(
                 }
 
                 node = parents[node] as usize;
-
             }
 
             break;
         }
         // Track distance travelled
-        d += if let Some(w) = weights {
-            w[node]
-        } else {
-            1.0
-        };
+        d += if let Some(w) = weights { w[node] } else { 1.0 };
 
         node = parents[node] as usize;
     }
 
     // If we made it until here, then idx1 and idx2 are disconnected
     return 1.0;
-
 }
 
 /// Calculate synapse flow centrality for each node.
@@ -1094,6 +1085,7 @@ pub fn prune_twigs<T>(
     parents: &ArrayView1<i32>,
     threshold: f32,
     weights: &Option<Array1<T>>,
+    mask: &Option<Array1<bool>>,
 ) -> Vec<i32>
 where
     T: Float + AddAssign,
@@ -1114,12 +1106,22 @@ where
             continue;
         }
 
+        // Skip leaf nodes that are not in the mask
+        if mask.is_some() && !mask.as_ref().unwrap()[node as usize] {
+            continue;
+        }
+
         // Reset distance and twig
         d = T::zero();
         twig.clear();
         while node >= 0 {
             // Stop if this twig is already above threshold
             if d > threshold {
+                break;
+            }
+
+            // Stop if this nodes is masked out
+            if mask.is_some() && !mask.as_ref().unwrap()[node as usize] {
                 break;
             }
 
