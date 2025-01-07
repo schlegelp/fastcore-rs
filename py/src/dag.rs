@@ -106,16 +106,16 @@ pub fn node_indices_32<'py>(
 pub fn generate_segments_py(
     parents: PyReadonlyArray1<i32>,
     weights: Option<PyReadonlyArray1<f32>>,
-) -> Vec<Vec<i32>> {
+) -> (Vec<Vec<i32>>, Option<Vec<f32>>) {
     let weights: Option<Array1<f32>> = if weights.is_some() {
         Some(weights.unwrap().as_array().to_owned())
     } else {
         None
     };
 
-    let all_segments = generate_segments(&parents.as_array(), weights);
+    let (all_segments, lengths) = generate_segments(&parents.as_array(), weights);
 
-    all_segments
+    (all_segments, lengths)
 }
 
 #[pyfunction]

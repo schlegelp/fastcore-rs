@@ -36,6 +36,9 @@ def generate_segments(node_ids, parent_ids, weights=None):
                  Segments as list of arrays, sorted from longest to shortest.
                  Each segment starts with a leaf and stops with a branch point
                  or root node.
+    lengths :    array | None
+                 If `weights` is provided this will be an array of segment
+                 lengths. If `weights` is not provided this will be ``None``.
 
     Examples
     --------
@@ -43,7 +46,8 @@ def generate_segments(node_ids, parent_ids, weights=None):
     >>> import numpy as np
     >>> node_ids = np.arange(7)
     >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5])
-    >>> fastcore.generate_segments(node_ids, parent_ids)
+    >>> segs, _ = fastcore.generate_segments(node_ids, parent_ids)
+    >>> segs
     [array([6, 5, 4, 1, 0]), array([3, 2, 1])]
 
     """
@@ -58,12 +62,15 @@ def generate_segments(node_ids, parent_ids, weights=None):
         ), "`weights` must have the same length as `node_ids`"
 
     # Get the segments (this will be a list of arrays of node indices)
-    segments = _fastcore.generate_segments(parent_ix, weights=weights)
+    segments, lengths = _fastcore.generate_segments(parent_ix, weights=weights)
+
+    if lengths is not None:
+        lengths = np.asarray(lengths, dtype=np.float32)
 
     # Map node indices back to IDs
     seg_ids = [node_ids[s] for s in segments]
 
-    return seg_ids
+    return seg_ids, lengths
 
 
 def break_segments(node_ids, parent_ids):
@@ -163,7 +170,7 @@ def segment_coords(
         ), "`weights` must have the same length as `node_ids`"
 
     # Get the segments (this will be a list of arrays of node indices)
-    segments = _fastcore.generate_segments(parent_ix, weights=weights)
+    segments, _ = _fastcore.generate_segments(parent_ix, weights=weights)
 
     # Translate into coordinates
     seg_coords = [coords[s] for s in segments]

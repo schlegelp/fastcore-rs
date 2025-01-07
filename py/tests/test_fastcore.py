@@ -96,7 +96,7 @@ def test_node_indices(swc):
 def test_generate_segments(swc, weights):
     nodes, parents, _ = swc
     start = time.time()
-    segments = fastcore.generate_segments(nodes, parents, weights=weights)
+    segments, lengths = fastcore.generate_segments(nodes, parents, weights=weights)
     dur = time.time() - start
 
     # print("Segments:", segments)
