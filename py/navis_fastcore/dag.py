@@ -36,9 +36,9 @@ def generate_segments(node_ids, parent_ids, weights=None):
                  Segments as list of arrays, sorted from longest to shortest.
                  Each segment starts with a leaf and stops with a branch point
                  or root node.
-    lengths :    array | None
-                 If `weights` is provided this will be an array of segment
-                 lengths. If `weights` is not provided this will be ``None``.
+    lengths :    array
+                 Length for each segment. If `weights` is provided this will be
+                 the physical length. Otherwise it will be the number of nodes.
 
     Examples
     --------
@@ -46,9 +46,11 @@ def generate_segments(node_ids, parent_ids, weights=None):
     >>> import numpy as np
     >>> node_ids = np.arange(7)
     >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5])
-    >>> segs, _ = fastcore.generate_segments(node_ids, parent_ids)
+    >>> segs, length = fastcore.generate_segments(node_ids, parent_ids)
     >>> segs
     [array([6, 5, 4, 1, 0]), array([3, 2, 1])]
+    >>> length
+    array([5, 3], dtype=int32)
 
     """
     # Convert parent IDs into indices
@@ -66,6 +68,8 @@ def generate_segments(node_ids, parent_ids, weights=None):
 
     if lengths is not None:
         lengths = np.asarray(lengths, dtype=np.float32)
+    else:
+        lengths = np.array([len(s) for s in segments], dtype=np.int32)
 
     # Map node indices back to IDs
     seg_ids = [node_ids[s] for s in segments]
