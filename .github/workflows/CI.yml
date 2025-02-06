@@ -42,7 +42,7 @@ jobs:
           manylinux: auto
           working-directory: py
       - name: Upload wheels
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: wheels
           path: py/dist
@@ -66,7 +66,7 @@ jobs:
           sccache: 'true'
           working-directory: py
       - name: Upload wheels
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: wheels
           path: py/dist
@@ -89,7 +89,7 @@ jobs:
           sccache: 'true'
           working-directory: py
       - name: Upload wheels
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: wheels
           path: py/dist
@@ -105,7 +105,7 @@ jobs:
           args: --out dist
           working-directory: py
       - name: Upload sdist
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: wheels
           path: py/dist
