@@ -517,7 +517,6 @@ def _ids_to_indices(node_ids, to_map):
     node_ids = np.asanyarray(node_ids)
     to_map = np.asanyarray(to_map)
     assert node_ids.ndim == 1 and to_map.ndim == 1
-    assert node_ids.shape[0] == to_map.shape[0]
 
     # # We need the IDs to be signed integers and we need the same dtypes.
     # # When the dtypes are different we need to convert them but we need
