@@ -1387,3 +1387,52 @@ pub fn classify_nodes(parents: &ArrayView1<i32>) -> Array1<i32> {
 
     node_types
 }
+
+
+/// Check if a tree has cycles
+///
+/// Arguments:
+///
+/// - `parents`: array of parent IDs
+///
+/// Returns:
+///
+/// A boolean indicating whether the tree has cycles
+///
+pub fn has_cycles(parents: &ArrayView1<i32>) -> bool {
+    let mut node: usize;
+    let mut seen: Array1<bool> = Array::from_elem(parents.len(), false);
+    let mut checked: Array1<bool> = Array::from_elem(parents.len(), false);
+
+    // Walk from each node to the root node
+    for idx in 0..parents.len() {
+        // Reset `seen` to all false values
+        seen.fill(false);
+
+        // Skip if this node has already been checked (as part of a previous run)
+        if checked[idx] {
+            continue;
+        }
+
+        node = idx;
+        loop {
+            // If this node has already been seen, we have a cycle
+            if seen[node] {
+                return true;
+            }
+
+            // Mark this node as seen and checked
+            seen[node] = true;
+            checked[node] = true;
+
+            // Stop if we reached the root node
+            if parents[node] < 0 {
+                break;
+            }
+
+            node = parents[node] as usize;
+        }
+    }
+
+    false
+}

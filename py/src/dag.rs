@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use fastcore::dag::{
     all_dists_to_root, break_segments, classify_nodes, connected_components, dist_to_root,
     generate_segments, geodesic_distances_all_by_all, geodesic_distances_partial, geodesic_pairs,
-    prune_twigs, strahler_index, synapse_flow_centrality,
+    prune_twigs, strahler_index, synapse_flow_centrality, has_cycles,
 };
 
 /// For each node ID in `parents` find its index in `nodes`.
@@ -438,4 +438,20 @@ pub fn classify_nodes_py<'py>(
 ) -> &'py PyArray1<i32> {
     let node_types: Array1<i32> = classify_nodes(&parents.as_array());
     node_types.into_pyarray(py)
+}
+
+/// Check for cycles in a tree.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent IDs
+///
+/// Returns:
+///
+/// A boolean indicating whether the tree has cycles.
+///
+#[pyfunction]
+#[pyo3(name = "has_cycles")]
+pub fn has_cycles_py(parents: PyReadonlyArray1<i32>) -> bool {
+    has_cycles(&parents.as_array())
 }

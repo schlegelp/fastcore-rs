@@ -10,6 +10,7 @@ use dag::*;
 #[pymodule]
 #[pyo3(name = "_fastcore")]
 fn fastcore(_py: Python, m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(has_cycles_py, m)?)?;
     m.add_function(wrap_pyfunction!(node_indices_32, m)?)?;
     m.add_function(wrap_pyfunction!(node_indices_64, m)?)?;
     m.add_function(wrap_pyfunction!(generate_segments_py, m)?)?;
