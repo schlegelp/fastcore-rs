@@ -517,18 +517,35 @@ def _ids_to_indices(node_ids, to_map):
     node_ids = np.asanyarray(node_ids)
     to_map = np.asanyarray(to_map)
     assert node_ids.ndim == 1 and to_map.ndim == 1
+    assert node_ids.shape[0] == to_map.shape[0]
 
-    # Make sure node and parent IDs have the same dtype and downcast if necessary
+    # # We need the IDs to be signed integers and we need the same dtypes.
+    # # When the dtypes are different we need to convert them but we need
+    # # to be careful to avoid overflow/underflow errors.
+    fix_dtypes = False
     if node_ids.dtype != to_map.dtype:
-        if node_ids.dtype == np.int32:
-            to_map = to_map.astype(np.int32)
-        elif node_ids.dtype == np.int64:
-            node_ids = node_ids.astype(np.int32)
-        else:
-            raise ValueError("IDs must be int32 or int64")
+        fix_dtypes = True
+    elif node_ids.dtype not in (np.int16, np.int32, np.int64):
+        fix_dtypes = True
+    elif node_ids.dtype not in (np.int16, np.int32, np.int64):
+        fix_dtypes = True
+
+    # Cast to the smallest safe signed integer type.
+    # This whole block should not take more than a few tens of microseconds
+    if fix_dtypes:
+        # Finding the max value takes only a few microseconds even for large arrays
+        max_node_ids = node_ids.max()
+        max_to_map = to_map.max()
+        for dtype in (np.int16, np.int32, np.int64):
+            if np.iinfo(dtype).max >= max_node_ids and np.iinfo(dtype).max >= max_to_map:
+                node_ids = node_ids.astype(dtype, copy=False)  # cast only if necessary
+                to_map = to_map.astype(dtype, copy=False)  # cast only if necessary
+                break
 
     # Dispatch the correct function
-    if node_ids.dtype == np.int32:
+    if node_ids.dtype == np.int16:
+        return _fastcore.node_indices_16(node_ids, to_map)
+    elif node_ids.dtype == np.int32:
         return _fastcore.node_indices_32(node_ids, to_map)
     elif node_ids.dtype == np.int64:
         return _fastcore.node_indices_64(node_ids, to_map)

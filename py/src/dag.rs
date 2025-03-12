@@ -89,6 +89,37 @@ pub fn node_indices_32<'py>(
     indices.into_pyarray(py)
 }
 
+#[pyfunction]
+pub fn node_indices_16<'py>(
+    py: Python<'py>,
+    nodes: PyReadonlyArray1<i16>,
+    to_map: PyReadonlyArray1<i16>,
+) -> &'py PyArray1<i32> {
+    let mut indices: Vec<i32> = vec![-1; to_map.len().expect("Failed to get length of nodes")];
+    let x_nodes = nodes.as_array();
+    let to_map = to_map.as_array();
+
+    // Create a HashMap where the keys are nodes and the values are indices
+    let node_to_index: HashMap<_, _> = x_nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| (*node, index as i32))
+        .collect();
+
+    for (i, parent) in to_map.iter().enumerate() {
+        if *parent < 0 {
+            indices[i] = -1;
+            continue;
+        }
+        // Use the HashMap to find the index of the parent node
+        if let Some(index) = node_to_index.get(parent) {
+            indices[i] = *index;
+        }
+    }
+
+    indices.into_pyarray(py)
+}
+
 /// Generate linear segments while maximizing segment lengths.
 ///
 /// Arguments:
