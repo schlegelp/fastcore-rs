@@ -59,9 +59,9 @@ def generate_segments(node_ids, parent_ids, weights=None):
     # Make sure weights are float32
     if weights is not None:
         weights = np.asarray(weights, dtype=np.float32, order="C")
-        assert len(weights) == len(
-            node_ids
-        ), "`weights` must have the same length as `node_ids`"
+        assert len(weights) == len(node_ids), (
+            "`weights` must have the same length as `node_ids`"
+        )
 
     # Get the segments (this will be a list of arrays of node indices)
     segments, lengths = _fastcore.generate_segments(parent_ix, weights=weights)
@@ -169,9 +169,9 @@ def segment_coords(
 
     if weights is not None:
         weights = np.asarray(weights, dtype=np.float32, order="C")
-        assert len(weights) == len(
-            node_ids
-        ), "`weights` must have the same length as `node_ids`"
+        assert len(weights) == len(node_ids), (
+            "`weights` must have the same length as `node_ids`"
+        )
 
     # Get the segments (this will be a list of arrays of node indices)
     segments, _ = _fastcore.generate_segments(parent_ix, weights=weights)
@@ -258,9 +258,9 @@ def geodesic_matrix(
 
     if weights is not None:
         weights = np.asarray(weights, dtype=np.float32, order="C")
-        assert len(weights) == len(
-            node_ids
-        ), "`weights` must have the same length as `node_ids`"
+        assert len(weights) == len(node_ids), (
+            "`weights` must have the same length as `node_ids`"
+        )
 
     # Translate sources and targets into indices (if provided)
     # This will also de-duplicate the IDs!
@@ -348,9 +348,9 @@ def geodesic_pairs(
 
     if weights is not None:
         weights = np.asarray(weights, dtype=np.float32, order="C")
-        assert len(weights) == len(
-            node_ids
-        ), "`weights` must have the same length as `node_ids`"
+        assert len(weights) == len(node_ids), (
+            "`weights` must have the same length as `node_ids`"
+        )
 
     # Calculate distances
     dists = _fastcore.geodesic_pairs(
@@ -536,7 +536,10 @@ def _ids_to_indices(node_ids, to_map):
         max_node_ids = node_ids.max()
         max_to_map = to_map.max()
         for dtype in (np.int16, np.int32, np.int64):
-            if np.iinfo(dtype).max >= max_node_ids and np.iinfo(dtype).max >= max_to_map:
+            if (
+                np.iinfo(dtype).max >= max_node_ids
+                and np.iinfo(dtype).max >= max_to_map
+            ):
                 node_ids = node_ids.astype(dtype, copy=False)  # cast only if necessary
                 to_map = to_map.astype(dtype, copy=False)  # cast only if necessary
                 break
@@ -595,16 +598,16 @@ def prune_twigs(node_ids, parent_ids, threshold, weights=None, mask=None):
     # Make sure weights are float32
     if weights is not None:
         weights = np.asarray(weights, dtype=np.float32, order="C")
-        assert len(weights) == len(
-            node_ids
-        ), "`weights` must have the same length as `node_ids`"
+        assert len(weights) == len(node_ids), (
+            "`weights` must have the same length as `node_ids`"
+        )
 
     # Make sure mask is boolean
     if mask is not None:
         mask = np.asarray(mask, dtype=bool, order="C")
-        assert len(mask) == len(
-            node_ids
-        ), "`mask` must have the same length as `node_ids"
+        assert len(mask) == len(node_ids), (
+            "`mask` must have the same length as `node_ids"
+        )
 
     # Get the nodes to keep
     keep_idx = _fastcore.prune_twigs(parent_ix, threshold, weights=weights, mask=mask)
