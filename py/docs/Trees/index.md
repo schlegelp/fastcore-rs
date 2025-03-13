@@ -31,6 +31,10 @@ The Python bindings for `navis-fastcore` currently cover the following functions
 - [`fastcore.geodesic_matrix`](geodesic.md#navis_fastcore.geodesic_matrix): calculate geodesic ("along-the-arbor") distances either between all pairs of nodes or between specific sources and targets
 - [`fastcore.geodesic_pairs`](geodesic.md#navis_fastcore.geodesic_pairs): calculate geodesic ("along-the-arbor") distances between given pairs of nodes
 - [`fastcore.connected_components`](cc.md): generate the connected components
-- [`fastcore.synapse_flow_centrality`](flow.md): calculate synapse flow centrality ([Schneider-Mizell, eLife, 2016](https://elifesciences.org/articles/12059))
-- [`fastcore.generate_segments`](segments.md#generate-segments): break the neuron into linear segments
-- [`fastcore.segment_coords`](segments.md#segment-coordinates): generate coordinates per lineaer segment (useful for plotting)
+- [`fastcore.synapse_flow_centrality`](morphology.md#synapse-flow-centrality): calculate synapse flow centrality ([Schneider-Mizell, eLife, 2016](https://elifesciences.org/articles/12059))
+- [`fastcore.break_segments`](segments.md#break-segments): break the neuron into the linear segments connecting leafs, branches and roots
+- [`fastcore.generate_segments`](segments.md#generate-segments): same as `break_segments` but maximize segment lengths, i.e. the longest segment will go from the most distal leaf to the root and so on
+- [`fastcore.segment_coords`](segments.md#segment-coordinates): generate coordinates per linear segment (useful for plotting)
+- [`fastcore.prune_twigs`](morphology.md#prune-twigs): removes terminal twigs below a certain size
+- [`fastcore.strahler_index`](morphology.md#strahler-index): calculate Strahler index
+
