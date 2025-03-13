@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+         <loc>https://schlegelp.github.io/fastcore-rs/</loc>
+         <lastmod>2025-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://schlegelp.github.io/fastcore-rs/NBLAST/</loc>
+         <lastmod>2025-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://schlegelp.github.io/fastcore-rs/Trees/</loc>
+         <lastmod>2025-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://schlegelp.github.io/fastcore-rs/Trees/cc/</loc>
+         <lastmod>2025-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://schlegelp.github.io/fastcore-rs/Trees/geodesic/</loc>
+         <lastmod>2025-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://schlegelp.github.io/fastcore-rs/Trees/morphology/</loc>
+         <lastmod>2025-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://schlegelp.github.io/fastcore-rs/Trees/segments/</loc>
+         <lastmod>2025-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://schlegelp.github.io/fastcore-rs/Wrappers/</loc>
+         <lastmod>2025-03-13</lastmod>
+    </url>
+</urlset>
