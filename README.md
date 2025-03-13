@@ -7,7 +7,7 @@ focus on efficient algorithms for working with
 [rooted trees](https://en.wikipedia.org/wiki/Tree_(graph_theory)#Rooted_tree),
 a special case of directed acyclic graphs (DAG) used to represent neurons.
 
-We provide [R](./R/nat.fastcore/) and [Python]((./py)) bindings.
+We provide [R](./R/nat.fastcore/) and [Python](./py) bindings.
 
 ## Usage
 
