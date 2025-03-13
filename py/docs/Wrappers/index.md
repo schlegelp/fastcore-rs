@@ -4,8 +4,8 @@ If you are working with graphs (representing neurons or similar objects) you mig
 already be using routines implemented in `scipy.csgraph` - for example, to compute
 distances or extract connected components.
 
-Assuming your graphs are directed acyclic graphs (DAGs), you can use `fastcore` as
-drop-in replacement for some of these scipy functions:
+Assuming your graphs are rooted trees, you can use `fastcore` as drop-in replacement
+for some of these scipy functions:
 
 ```python
 >>> from scipy.sparse import csr_array

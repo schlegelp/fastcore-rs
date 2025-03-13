@@ -1,7 +1,7 @@
 # Operations on Tree Graphs
 
 Neurons can be represented as centerline skeletons which themselves are
-rooted trees or "directed acyclic graphs" (DAG) where each node
+rooted trees, a special case of "directed acyclic graphs" (DAG) where each node
 has *at most* a single parent (root nodes will have no parents).
 
 ![Representing a neuron as directed acyclic graph.](../_static/skeletons.png)
