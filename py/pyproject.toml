@@ -1,6 +1,6 @@
 [project]
 name = "navis-fastcore"
-version = "0.0.9"
+version = "0.1.0"
 description = "NAVis core functions reimplemented in Rust."
 readme = "README.md"
 requires-python = ">=3.9"
