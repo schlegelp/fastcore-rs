@@ -32,7 +32,7 @@ pub fn node_indices_64<'py>(
     py: Python<'py>,
     nodes: PyReadonlyArray1<i64>,
     to_map: PyReadonlyArray1<i64>,
-) -> &'py PyArray1<i32> {
+) -> Bound<'py, PyArray1<i32>> {
     let mut indices: Vec<i32> = vec![-1; to_map.len().expect("Failed to get length of nodes")];
     let x_nodes = nodes.as_array();
     let to_map = to_map.as_array();
@@ -63,7 +63,7 @@ pub fn node_indices_32<'py>(
     py: Python<'py>,
     nodes: PyReadonlyArray1<i32>,
     to_map: PyReadonlyArray1<i32>,
-) -> &'py PyArray1<i32> {
+) -> Bound<'py, PyArray1<i32>> {
     let mut indices: Vec<i32> = vec![-1; to_map.len().expect("Failed to get length of nodes")];
     let x_nodes = nodes.as_array();
     let to_map = to_map.as_array();
@@ -94,7 +94,7 @@ pub fn node_indices_16<'py>(
     py: Python<'py>,
     nodes: PyReadonlyArray1<i16>,
     to_map: PyReadonlyArray1<i16>,
-) -> &'py PyArray1<i32> {
+) -> Bound<'py, PyArray1<i32>> {
     let mut indices: Vec<i32> = vec![-1; to_map.len().expect("Failed to get length of nodes")];
     let x_nodes = nodes.as_array();
     let to_map = to_map.as_array();
@@ -178,7 +178,7 @@ pub fn all_dists_to_root_py<'py>(
     parents: PyReadonlyArray1<i32>,
     sources: Option<PyReadonlyArray1<i32>>,
     weights: Option<PyReadonlyArray1<f32>>,
-) -> &'py PyArray1<f32> {
+) -> Bound<'py, PyArray1<f32>> {
     let x_sources: Array1<i32>;
     // If no sources, use all nodes as sources
     if sources.is_none() {
@@ -240,7 +240,7 @@ pub fn geodesic_distances_py<'py>(
     targets: Option<PyReadonlyArray1<i32>>,
     weights: Option<PyReadonlyArray1<f32>>,
     directed: bool,
-) -> &'py PyArray2<f32> {
+) -> Bound<'py, PyArray2<f32>> {
     let weights: Option<Array1<f32>> = if weights.is_some() {
         Some(weights.unwrap().as_array().to_owned())
     } else {
@@ -297,7 +297,7 @@ pub fn geodesic_pairs_py<'py>(
     pairs_target: PyReadonlyArray1<i32>,
     weights: Option<PyReadonlyArray1<f32>>,
     directed: bool,
-) -> &'py PyArray1<f32> {
+) -> Bound<'py, PyArray1<f32>> {
     let weights: Option<Array1<f32>> = if weights.is_some() {
         Some(weights.unwrap().as_array().to_owned())
     } else {
@@ -336,7 +336,7 @@ pub fn synapse_flow_centrality_py<'py>(
     presynapses: PyReadonlyArray1<u32>,
     postsynapses: PyReadonlyArray1<u32>,
     mode: String,
-) -> &'py PyArray1<u32> {
+) -> Bound<'py, PyArray1<u32>> {
     let flow: Array1<u32> = synapse_flow_centrality(
         &parents.as_array(),
         &presynapses.as_array(),
@@ -362,7 +362,7 @@ pub fn synapse_flow_centrality_py<'py>(
 pub fn connected_components_py<'py>(
     py: Python<'py>,
     parents: PyReadonlyArray1<i32>,
-) -> &'py PyArray1<i32> {
+) -> Bound<'py, PyArray1<i32>> {
     let cc: Array1<i32> = connected_components(&parents.as_array());
     cc.into_pyarray(py)
 }
@@ -416,7 +416,7 @@ pub fn strahler_index_py<'py>(
     method: String,
     to_ignore: Option<PyReadonlyArray1<i32>>,
     min_twig_size: Option<i32>,
-) -> &'py PyArray1<i32> {
+) -> Bound<'py, PyArray1<i32>> {
     if method != "standard" && method != "greedy" {
         panic!(
             "Invalid method: {}. Must be either 'standard' or 'greedy'",
@@ -466,7 +466,7 @@ pub fn strahler_index_py<'py>(
 pub fn classify_nodes_py<'py>(
     py: Python<'py>,
     parents: PyReadonlyArray1<i32>,
-) -> &'py PyArray1<i32> {
+) -> Bound<'py, PyArray1<i32>> {
     let node_types: Array1<i32> = classify_nodes(&parents.as_array());
     node_types.into_pyarray(py)
 }

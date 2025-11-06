@@ -9,25 +9,59 @@ use dag::*;
 
 #[pymodule]
 #[pyo3(name = "_fastcore")]
-fn fastcore(_py: Python, m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(has_cycles_py, m)?)?;
-    m.add_function(wrap_pyfunction!(node_indices_16, m)?)?;
-    m.add_function(wrap_pyfunction!(node_indices_32, m)?)?;
-    m.add_function(wrap_pyfunction!(node_indices_64, m)?)?;
-    m.add_function(wrap_pyfunction!(generate_segments_py, m)?)?;
-    m.add_function(wrap_pyfunction!(break_segments_py, m)?)?;
-    m.add_function(wrap_pyfunction!(all_dists_to_root_py, m)?)?;
-    m.add_function(wrap_pyfunction!(dist_to_root_py, m)?)?;
-    m.add_function(wrap_pyfunction!(top_nn_py, m)?)?;
-    m.add_function(wrap_pyfunction!(geodesic_distances_py, m)?)?;
-    m.add_function(wrap_pyfunction!(geodesic_pairs_py, m)?)?;
-    m.add_function(wrap_pyfunction!(nblast_single_py, m)?)?;
-    m.add_function(wrap_pyfunction!(nblast_allbyall_py, m)?)?;
-    m.add_function(wrap_pyfunction!(synapse_flow_centrality_py, m)?)?;
-    m.add_function(wrap_pyfunction!(connected_components_py, m)?)?;
-    m.add_function(wrap_pyfunction!(prune_twigs_py, m)?)?;
-    m.add_function(wrap_pyfunction!(strahler_index_py, m)?)?;
-    m.add_function(wrap_pyfunction!(classify_nodes_py, m)?)?;
+mod fastcore {
+    #[pymodule_export]
+    use super::has_cycles_py;
 
-    Ok(())
+    #[pymodule_export]
+    use super::node_indices_16;
+
+    #[pymodule_export]
+    use super::node_indices_32;
+
+    #[pymodule_export]
+    use super::node_indices_64;
+
+    #[pymodule_export]
+    use super::generate_segments_py;
+
+    #[pymodule_export]
+    use super::break_segments_py;
+
+    #[pymodule_export]
+    use super::all_dists_to_root_py;
+
+    #[pymodule_export]
+    use super::dist_to_root_py;
+
+    #[pymodule_export]
+    use super::top_nn_py;
+
+    #[pymodule_export]
+    use super::geodesic_distances_py;
+
+    #[pymodule_export]
+    use super::geodesic_pairs_py;
+
+    #[pymodule_export]
+    use super::nblast_single_py;
+
+    #[pymodule_export]
+    use super::nblast_allbyall_py;
+
+    #[pymodule_export]
+    use super::synapse_flow_centrality_py;
+
+    #[pymodule_export]
+    use super::connected_components_py;
+
+    #[pymodule_export]
+    use super::prune_twigs_py;
+
+    #[pymodule_export]
+    use super::strahler_index_py;
+
+    #[pymodule_export]
+    use super::classify_nodes_py;
+
 }

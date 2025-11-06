@@ -16,7 +16,7 @@ pub fn top_nn_py<'py>(
     pos: PyReadonlyArray2<f64>,
     query: PyReadonlyArray2<f64>,
     parallel: bool,
-) -> PyResult<(Py<PyArray1<f64>>, Py<PyArray1<usize>>)> {
+) -> PyResult<(Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<usize>>)> {
     // Turn the input arrays into vectors of arrays (this is what bosque expects)
     let mut pos_array: Vec<[f64; 3]> = pos
         .as_array()
@@ -40,8 +40,8 @@ pub fn top_nn_py<'py>(
         top_nn_split(&pos_array, &query_array, parallel);
 
     // Turn the vectors into numpy arrays
-    let distances_py: Py<PyArray1<f64>> = distances.into_pyarray(py).to_owned();
-    let indices_py: Py<PyArray1<usize>> = indices.into_pyarray(py).to_owned();
+    let distances_py: Bound<PyArray1<f64>> = distances.into_pyarray(py).to_owned();
+    let indices_py: Bound<PyArray1<usize>> = indices.into_pyarray(py).to_owned();
 
     Ok((distances_py, indices_py))
 }
@@ -103,7 +103,7 @@ pub fn nblast_allbyall_py<'py>(
     points_py: Vec<PyReadonlyArray2<f64>>,
     vecs_py: Vec<PyReadonlyArray2<f64>>,
     backend: &str,
-) -> &'py PyArray2<f32> {
+) -> Bound<'py, PyArray2<f32>> {
     // Convert points_py to a vector of arrays and build the trees right away
     let mut points: Vec<Vec<[f64; 3]>> = vec![];
     for point_set in points_py.iter() {
