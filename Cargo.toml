@@ -1,5 +1,6 @@
 [workspace]
 members = ["fastcore", "py", "R/nat.fastcore/src/rust"]
+resolver = "2"
 
 [workspace.dependencies]
 fastcore = { path = "fastcore" }

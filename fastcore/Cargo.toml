@@ -19,4 +19,4 @@ dirs = "5.0.1"
 bosque = { git = "https://github.com/cavemanloverboy/bosque", version = "0.2.0" }
 kiddo = "4.2.0"
 itertools = "0.13.0"
-ndarray = { version = "0.15", features = ["rayon"] }
+ndarray = { version = "0.16", features = ["rayon"] }
