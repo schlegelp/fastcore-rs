@@ -7,7 +7,7 @@ use nblast::*;
 mod dag;
 use dag::*;
 
-#[pymodule]
+#[pymodule(gil_used = false)]
 #[pyo3(name = "_fastcore")]
 mod fastcore {
     #[pymodule_export]
