@@ -142,6 +142,7 @@ def segment_coords(
     Returns
     -------
     seg_coords :    list of arrays
+                    Note that these are views into the original `coords` array!
     colors :        list of colors
                     If `node_colors` provided will return a copy of it sorted
                     to match `seg_coords`.
@@ -176,12 +177,15 @@ def segment_coords(
     # Get the segments (this will be a list of arrays of node indices)
     segments, _ = _fastcore.generate_segments(parent_ix, weights=weights)
 
-    # Translate into coordinates
-    seg_coords = [coords[s] for s in segments]
+    # Translate into coordinates via a single batched index + split
+    # (faster than one fancy-index call per segment)
+    all_indices = np.concatenate(segments)
+    split_at = np.cumsum([len(s) for s in segments[:-1]])
+    seg_coords = np.split(coords[all_indices], split_at)
 
     # Apply colors if provided
     if not isinstance(node_colors, type(None)):
-        colors = [node_colors[s] for s in segments]
+        colors = np.split(node_colors[all_indices], split_at)
 
         return seg_coords, colors
 
