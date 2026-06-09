@@ -1041,36 +1041,34 @@ pub fn synapse_flow_centrality(
 /// the ID of its root node.
 ///
 pub fn connected_components(parents: &ArrayView1<i32>) -> Array1<i32> {
-    let mut node: usize;
-    let mut component: Array1<bool> = Array::from_elem(parents.len(), false);
-    let mut components: Array1<i32> = Array::from_elem(parents.len(), 0);
-    let mut seen: Array1<bool> = Array::from_elem(parents.len(), false);
+    let mut components: Array1<i32> = Array::from_elem(parents.len(), -1i32);
 
-    // Walk from each node to the root node
     for idx in 0..parents.len() {
-        // Skip if this node has already been seen
-        if seen[idx] {
+        if components[idx] >= 0 {
             continue;
         }
 
-        // Reset `component` to all false values
-        component.fill(false);
+        let mut path: Vec<usize> = vec![];
+        let mut node = idx;
 
-        node = idx;
         loop {
-            // Track this node both globally as well as for this component
-            seen[node] = true; // global (not reset)
-            component[node] = true; // local (reset at every iteration)
-
-            // Stop if we reached the root node
-            if parents[node] < 0 {
-                // Set all nodes in this componenent the root node
-                for i in 0..parents.len() {
-                    if component[i] {
-                        components[i] = node as i32;
-                    }
+            if components[node] >= 0 {
+                // Already assigned — propagate its component back down the path
+                let cc_id = components[node];
+                for &p in path.iter() {
+                    components[p] = cc_id;
                 }
-                // Stop looping
+                break;
+            }
+
+            path.push(node);
+
+            if parents[node] < 0 {
+                // Hit root — assign all path nodes to this root
+                let cc_id = node as i32;
+                for &p in path.iter() {
+                    components[p] = cc_id;
+                }
                 break;
             }
 
