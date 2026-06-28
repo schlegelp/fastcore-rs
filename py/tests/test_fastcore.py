@@ -151,6 +151,67 @@ def test_geodesic_distance(swc, directed, sources, targets, weights):
 
 @pytest.mark.parametrize("swc", [swc32(), swc64()])
 @pytest.mark.parametrize("directed", [True, False])
+@pytest.mark.parametrize(
+    "sources,targets",
+    [
+        (None, None),
+        ([1, 2, 3, 50, 51], [4, 5, 6, 50, 99]),  # overlapping sets (self-exclusion)
+        ([10, 20, 30], None),
+    ],
+)
+@pytest.mark.parametrize("weights", [None, np.random.rand(N_NODES)])
+def test_geodesic_nearest(swc, directed, sources, targets, weights):
+    nodes, parents, _ = swc
+
+    dist, nearest = fastcore.geodesic_nearest(
+        nodes,
+        parents,
+        sources=sources,
+        targets=targets,
+        directed=directed,
+        weights=weights,
+    )
+
+    # Build an oracle from the full (masked) distance matrix
+    mat = fastcore.geodesic_matrix(
+        nodes,
+        parents,
+        directed=directed,
+        sources=sources,
+        targets=targets,
+        weights=weights,
+    ).astype(float)
+    mat[mat < 0] = np.inf
+
+    src_arr = np.asarray(sources) if sources is not None else nodes
+    tgt_arr = np.asarray(targets) if targets is not None else nodes
+
+    # Mask self-matches (a source that is also a target must not match itself)
+    for i, s in enumerate(src_arr):
+        mat[i, tgt_arr == s] = np.inf
+
+    oracle_dist = mat.min(axis=1)
+    has = np.isfinite(oracle_dist)
+
+    # Distances must match the per-row minimum
+    got = dist.astype(float).copy()
+    got[got < 0] = np.inf
+    assert np.allclose(got[has], oracle_dist[has], atol=1e-4)
+
+    # Sources with no reachable (distinct) target must be -1 / -1
+    assert np.all(dist[~has] == -1)
+    assert np.all(nearest[~has] == -1)
+
+    # The returned nearest target must actually sit at the minimum distance
+    # (compare distances rather than IDs to be robust against ties).
+    tgt_to_col = {t: j for j, t in enumerate(tgt_arr)}
+    for i in np.where(has)[0]:
+        j = tgt_to_col[nearest[i]]
+        assert np.isclose(mat[i, j], oracle_dist[i], atol=1e-4)
+
+
+@pytest.mark.parametrize("swc", [swc32(), swc64()])
+@pytest.mark.parametrize("directed", [True, False])
 @pytest.mark.parametrize("weights", [None, np.random.rand(N_NODES)])
 def test_geodesic_pairs(swc, directed, weights):
     nodes, parents, _ = swc

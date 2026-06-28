@@ -44,6 +44,9 @@ mod fastcore {
     use super::geodesic_distances_py;
 
     #[pymodule_export]
+    use super::geodesic_nearest_py;
+
+    #[pymodule_export]
     use super::geodesic_pairs_py;
 
     #[pymodule_export]

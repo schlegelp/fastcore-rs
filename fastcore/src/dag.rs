@@ -647,6 +647,253 @@ where
     return dists;
 }
 
+/// Calculate the distance to the nearest target for each source.
+///
+/// This is a memory-efficient companion to `geodesic_distances_partial`: instead of
+/// materialising the full `sources x targets` distance matrix (which is infeasible for
+/// several 100k sources/targets) it only keeps, for each source, the distance to and the
+/// node index of the *nearest* target.
+///
+/// The implementation is a linear-time (O(N)) rerooting tree DP, so it scales to very large
+/// neurons in both time and memory. A source that is itself a target is matched to the
+/// nearest *other* (distinct) target, never to itself.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent IDs
+/// - `sources`: optional array of source IDs (defaults to all nodes)
+/// - `targets`: optional array of target IDs (defaults to all nodes)
+/// - `weights`: optional array of weights for each child -> parent connection
+/// - `directed`: if `true` only consider targets reachable by walking towards the root
+///               (i.e. proper ancestors of the source)
+///
+/// Returns:
+///
+/// A tuple `(distances, nearest)` where `distances[i]` is the distance from source `i` to its
+/// nearest target and `nearest[i]` is that target's node index. Sources without any reachable
+/// (distinct) target get `-1.0` / `-1` respectively. Both are ordered to match the order of
+/// `sources`.
+///
+pub fn geodesic_nearest<T>(
+    parents: &ArrayView1<i32>,
+    sources: &Option<Array1<i32>>,
+    targets: &Option<Array1<i32>>,
+    weights: &Option<Array1<T>>,
+    directed: bool,
+) -> (Array1<T>, Array1<i32>)
+where
+    T: Float + AddAssign,
+{
+    let n = parents.len();
+
+    // If no sources, use all nodes as sources
+    let sources = if sources.is_none() {
+        Array::from_iter(0..n as i32)
+    } else {
+        sources.as_ref().unwrap().clone()
+    };
+    // If no targets, use all nodes as targets
+    let targets = if targets.is_none() {
+        Array::from_iter(0..n as i32)
+    } else {
+        targets.as_ref().unwrap().clone()
+    };
+
+    // Map source node indices to their position in the output arrays.
+    // (Must happen before any potential reordering.)
+    let source_to_index: HashMap<_, _> = sources
+        .iter()
+        .enumerate()
+        .map(|(i, node)| (*node, i))
+        .collect();
+
+    // Boolean mask indicating whether a node is a target
+    let mut is_target: Array1<bool> = Array::from_elem(n, false);
+    for &node in targets.iter() {
+        is_target[node as usize] = true;
+    }
+
+    let inf = T::infinity();
+
+    // Edge weight of the connection from `node` to its parent
+    let weight = |node: usize| -> T {
+        if weights.is_some() {
+            weights.as_ref().unwrap()[node]
+        } else {
+            T::one()
+        }
+    };
+
+    // Output arrays, ordered like `sources`
+    let mut out_dist: Array1<T> = Array::from_elem(sources.len(), T::from(-1.0).unwrap());
+    let mut out_tgt: Array1<i32> = Array::from_elem(sources.len(), -1i32);
+
+    // Build a BFS order from the roots so that every parent precedes its children. We use this
+    // order for both passes instead of recursion to avoid stack overflows on deep (100k+) chains.
+    let children = extract_parent_child(parents);
+    let roots = find_roots(parents);
+    let mut order: Vec<usize> = Vec::with_capacity(n);
+    for &r in roots.iter() {
+        order.push(r as usize);
+    }
+    let mut head = 0;
+    while head < order.len() {
+        let node = order[head];
+        head += 1;
+        for &c in children[node].iter() {
+            order.push(c as usize);
+        }
+    }
+
+    // ---- Directed case: nearest target among proper ancestors ----
+    if directed {
+        let mut ddir_dist: Vec<T> = vec![inf; n];
+        let mut ddir_tgt: Vec<i32> = vec![-1i32; n];
+
+        // Pre-order: parents before children
+        for &node in order.iter() {
+            let p = parents[node];
+            if p < 0 {
+                continue; // root has no ancestors
+            }
+            let p = p as usize;
+            // Nearest target at `p` or above it
+            let mut cd = ddir_dist[p];
+            let mut ct = ddir_tgt[p];
+            if is_target[p] {
+                cd = T::zero();
+                ct = p as i32;
+            }
+            if cd < inf {
+                ddir_dist[node] = cd + weight(node);
+                ddir_tgt[node] = ct;
+            }
+        }
+
+        for &s in sources.iter() {
+            let s = s as usize;
+            if ddir_dist[s] < inf {
+                let idx = source_to_index[&(s as i32)];
+                out_dist[idx] = ddir_dist[s];
+                out_tgt[idx] = ddir_tgt[s];
+            }
+        }
+        return (out_dist, out_tgt);
+    }
+
+    // ---- Undirected case: rerooting DP ----
+
+    // `down1`: nearest target within the subtree of a node (including the node itself).
+    let mut down1_dist: Vec<T> = vec![inf; n];
+    let mut down1_tgt: Vec<i32> = vec![-1i32; n];
+    // Best/second-best child contribution `down1[child] + w(child)` at each node. We keep the
+    // best child's node index so a child can exclude its own contribution when reading siblings.
+    let mut cbest_dist: Vec<T> = vec![inf; n];
+    let mut cbest_tgt: Vec<i32> = vec![-1i32; n];
+    let mut cbest_child: Vec<i32> = vec![-1i32; n];
+    let mut csec_dist: Vec<T> = vec![inf; n];
+    let mut csec_tgt: Vec<i32> = vec![-1i32; n];
+
+    // Post-order: children before parents (reverse BFS order)
+    for &v in order.iter().rev() {
+        let mut d1d = inf;
+        let mut d1t = -1i32;
+        if is_target[v] {
+            d1d = T::zero();
+            d1t = v as i32;
+        }
+
+        let mut cb_d = inf;
+        let mut cb_t = -1i32;
+        let mut cb_c = -1i32;
+        let mut cs_d = inf;
+        let mut cs_t = -1i32;
+
+        for &c in children[v].iter() {
+            let c = c as usize;
+            if down1_dist[c] >= inf {
+                continue; // no target in this child's subtree
+            }
+            let val = down1_dist[c] + weight(c);
+            let t = down1_tgt[c];
+            if val < cb_d {
+                cs_d = cb_d;
+                cs_t = cb_t;
+                cb_d = val;
+                cb_t = t;
+                cb_c = c as i32;
+            } else if val < cs_d {
+                cs_d = val;
+                cs_t = t;
+            }
+        }
+
+        // down1 = min(self, best child contribution)
+        if cb_d < d1d {
+            d1d = cb_d;
+            d1t = cb_t;
+        }
+
+        down1_dist[v] = d1d;
+        down1_tgt[v] = d1t;
+        cbest_dist[v] = cb_d;
+        cbest_tgt[v] = cb_t;
+        cbest_child[v] = cb_c;
+        csec_dist[v] = cs_d;
+        csec_tgt[v] = cs_t;
+    }
+
+    // `up`: nearest target outside the subtree of a node, reaching it through its parent.
+    let mut up_dist: Vec<T> = vec![inf; n];
+    let mut up_tgt: Vec<i32> = vec![-1i32; n];
+
+    // Pre-order: parents before children
+    for &p in order.iter() {
+        for &c in children[p].iter() {
+            let c = c as usize;
+            // Distance from `p` to the nearest target that is not inside the subtree of `c`
+            let mut cd = up_dist[p];
+            let mut ct = up_tgt[p];
+            if is_target[p] {
+                cd = T::zero();
+                ct = p as i32;
+            }
+            // Targets in `p`'s other subtrees: best child contribution that is not `c`
+            let (sd, st) = if cbest_child[p] != c as i32 {
+                (cbest_dist[p], cbest_tgt[p])
+            } else {
+                (csec_dist[p], csec_tgt[p])
+            };
+            if sd < cd {
+                cd = sd;
+                ct = st;
+            }
+            if cd < inf {
+                up_dist[c] = cd + weight(c);
+                up_tgt[c] = ct;
+            }
+        }
+    }
+
+    // Final answer per source: nearest *other* target = min(best-in-subtree-excl-self, outside)
+    for &s in sources.iter() {
+        let s = s as usize;
+        let mut bd = cbest_dist[s];
+        let mut bt = cbest_tgt[s];
+        if up_dist[s] < bd {
+            bd = up_dist[s];
+            bt = up_tgt[s];
+        }
+        if bd < inf {
+            let idx = source_to_index[&(s as i32)];
+            out_dist[idx] = bd;
+            out_tgt[idx] = bt;
+        }
+    }
+
+    (out_dist, out_tgt)
+}
+
 /// Function to recursively walk up the tree from a given node.
 ///
 /// At each branchpoint we recurse into its children.
