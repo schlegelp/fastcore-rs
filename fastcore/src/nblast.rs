@@ -28,6 +28,7 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use ndarray_017::{Array1, Array2};
 use rayon::prelude::*;
 use shull::delaunay4d;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 // ---------------------------------------------------------------------------
 // Output element type (precision)
@@ -73,14 +74,28 @@ pub struct Opts<'a> {
     /// Cap the rayon worker count for this call (navis' `n_cores`). `None` (or
     /// `Some(0)`) uses the default global pool.
     pub threads: Option<usize>,
-    /// Draw a progress bar over the scoring cells to stderr.
+    /// Draw progress bars to stderr: first over the index build, then the
+    /// scoring cells.
     pub progress: bool,
+    /// Cooperative cancellation flag. When present and set to `true` by the caller
+    /// (e.g. the Python binding on a `KeyboardInterrupt`), the index-build and
+    /// scoring loops short-circuit and the entry point returns early with a partial
+    /// result the caller is expected to discard. `None` disables cancellation.
+    pub cancel: Option<&'a AtomicBool>,
+}
+
+/// True when `cancel` is present and set — the per-cell / per-index Ctrl-C check.
+/// A `Relaxed` load is enough: we only need to *eventually* observe cancellation,
+/// not synchronise memory around it.
+#[inline]
+pub(crate) fn is_cancelled(cancel: Option<&AtomicBool>) -> bool {
+    cancel.is_some_and(|c| c.load(Ordering::Relaxed))
 }
 
 /// Run `f` on a rayon pool capped to `threads` workers, or on the default global
 /// pool when `threads` is `None`/`Some(0)`. A fresh scoped pool is built per call
 /// only when a cap is requested, so the common (uncapped) path is zero-overhead.
-fn with_pool<R, F>(threads: Option<usize>, f: F) -> R
+pub(crate) fn with_pool<R, F>(threads: Option<usize>, f: F) -> R
 where
     R: Send,
     F: FnOnce() -> R + Send,
@@ -141,6 +156,19 @@ impl Smat {
             .iter()
             .map(|&a| self.values[(0, self.dot_bin(a))])
             .sum()
+    }
+
+    /// syNBLAST per-point score for a nearest-neighbour distance `d`.
+    ///
+    /// Synapses carry no tangent vector, so navis scores them through this same
+    /// matrix but with the dot product fixed at `1` (`score_fn(d, 1)`), i.e. the
+    /// distance is looked up in the *last* dot-product column. A self-match's
+    /// per-point contribution is therefore `syn_score(0.0)`, and a query synapse
+    /// whose type is absent in the target is scored at `syn_score(inf)` (the worst,
+    /// farthest bin).
+    #[inline]
+    pub fn syn_score(&self, d: f64) -> f64 {
+        self.values[(self.dist_bin(d), self.dot_bin(1.0))]
     }
 
     /// Build from plain parts (as passed across the Python boundary).
@@ -346,17 +374,118 @@ pub fn score_pair(
 /// `ProgressDrawTarget::stderr()` because the latter self-hides whenever stderr is
 /// not a TTY (which is exactly the Jupyter case), leaving notebook users with no
 /// feedback at all.
-fn scoring_bar(total: u64) -> ProgressBar {
+pub(crate) fn scoring_bar(total: u64) -> ProgressBar {
+    make_bar("NBLAST", total)
+}
+
+/// Progress bar over `total` neuron-index builds (only built when `progress` is
+/// on). Precedes the scoring bar; see [`make_bar`] for why it draws through
+/// `term_like`.
+pub(crate) fn index_bar(total: u64) -> ProgressBar {
+    make_bar("Indexing", total)
+}
+
+/// Shared constructor for the index / scoring bars: a stderr `ProgressBar`
+/// prefixed with `label`. See [`scoring_bar`] for why we draw through
+/// `ProgressDrawTarget::term_like` rather than `ProgressDrawTarget::stderr()`.
+fn make_bar(label: &str, total: u64) -> ProgressBar {
     let target = ProgressDrawTarget::term_like(Box::new(Term::stderr()));
     let pb = ProgressBar::with_draw_target(Some(total), target);
     pb.set_style(
-        ProgressStyle::with_template("NBLAST {bar:40} {pos}/{len} [{elapsed_precise}] ETA {eta}")
-            .unwrap()
-            .progress_chars("=>-"),
+        ProgressStyle::with_template(&format!(
+            "{label} {{bar:40}} {{pos}}/{{len}} [{{elapsed_precise}}] ETA {{eta}}"
+        ))
+        .unwrap()
+        .progress_chars("=>-"),
     );
     // Keep the readout advancing even when ticks arrive sparsely (e.g. Jupyter).
     pb.enable_steady_tick(std::time::Duration::from_millis(250));
     pb
+}
+
+/// Build one `aann` index per point cloud, in parallel. When `bar` is `Some`,
+/// each finished index ticks it once; when `None` the build stays on its
+/// original zero-overhead parallel map (the default `progress = false` path).
+///
+/// Returns `None` if `cancel` is observed set mid-build (the parallel map
+/// short-circuits); the caller treats that as an interrupted call and bails.
+fn build_indices(
+    clouds: &[Vec<[f64; 3]>],
+    bar: Option<&ProgressBar>,
+    cancel: Option<&AtomicBool>,
+) -> Option<Vec<PreparedF64>> {
+    match bar {
+        Some(bar) => clouds
+            .par_iter()
+            .map(|p| {
+                if is_cancelled(cancel) {
+                    return None;
+                }
+                let idx = build_index(p);
+                bar.inc(1);
+                Some(idx)
+            })
+            .collect(),
+        None => clouds
+            .par_iter()
+            .map(|p| {
+                if is_cancelled(cancel) {
+                    return None;
+                }
+                Some(build_index(p))
+            })
+            .collect(),
+    }
+}
+
+/// Score every cell of `scores` in parallel via `compute`, ticking a progress bar
+/// when `progress`, and short-circuiting (leaving the remaining cells unwritten) as
+/// soon as `cancel` is observed set. Shared by every NBLAST/syNBLAST scoring loop so
+/// the cooperative Ctrl-C check lives in exactly one place. An interrupted call's
+/// partially-filled `scores` is discarded by the caller, so the unwritten tail is
+/// harmless.
+pub(crate) fn run_scoring<T, F>(
+    scores: &mut [T],
+    total: u64,
+    progress: bool,
+    cancel: Option<&AtomicBool>,
+    compute: F,
+) where
+    T: Send,
+    F: Fn((usize, &mut T)) + Sync + Send,
+{
+    if progress {
+        let bar = scoring_bar(total);
+        let done = scores
+            .par_iter_mut()
+            .enumerate()
+            .try_for_each(|item| -> Result<(), ()> {
+                if is_cancelled(cancel) {
+                    return Err(());
+                }
+                compute(item);
+                bar.inc(1);
+                Ok(())
+            });
+        // On interrupt leave the bar where it stopped rather than `finish()`ing it
+        // to a misleading 100% right before the caller raises `KeyboardInterrupt`.
+        if done.is_ok() {
+            bar.finish();
+        } else {
+            bar.abandon();
+        }
+    } else {
+        let _ = scores
+            .par_iter_mut()
+            .enumerate()
+            .try_for_each(|item| -> Result<(), ()> {
+                if is_cancelled(cancel) {
+                    return Err(());
+                }
+                compute(item);
+                Ok(())
+            });
+    }
 }
 
 /// All-by-all forward NBLAST over `points` / `vects` (one entry per neuron).
@@ -379,13 +508,20 @@ pub fn nblast_allbyall<T: ScoreOut>(
         limit_dist,
         threads,
         progress,
+        cancel,
     } = opts;
 
     with_pool(threads, move || {
         let n = points.len();
 
         // Build every index once, in parallel; reused across all pairs it appears in.
-        let indices: Vec<PreparedF64> = points.par_iter().map(|p| build_index(p)).collect();
+        let idx_bar = progress.then(|| index_bar(n as u64));
+        let Some(indices) = build_indices(&points, idx_bar.as_ref(), cancel) else {
+            return Vec::new(); // interrupted mid-build; caller discards the result
+        };
+        if let Some(bar) = idx_bar {
+            bar.finish();
+        }
         let self_hits: Vec<f64> = (0..n)
             .map(|i| match &alphas {
                 Some(a) => smat.self_hit_alpha(&a[i]),
@@ -437,17 +573,7 @@ pub fn nblast_allbyall<T: ScoreOut>(
             *out = T::from_f64(s);
         };
 
-        if progress {
-            let bar = scoring_bar((n * n) as u64);
-            scores.par_iter_mut().enumerate().for_each(|item| {
-                compute(item);
-                bar.inc(1);
-            });
-            bar.finish();
-        } else {
-            scores.par_iter_mut().enumerate().for_each(compute);
-        }
-
+        run_scoring(&mut scores, (n * n) as u64, progress, cancel, compute);
         scores
     })
 }
@@ -474,14 +600,24 @@ pub fn nblast_query_target<T: ScoreOut>(
         limit_dist,
         threads,
         progress,
+        cancel,
     } = opts;
 
     with_pool(threads, move || {
         let nq = q_points.len();
         let nt = t_points.len();
 
-        let q_idx: Vec<PreparedF64> = q_points.par_iter().map(|p| build_index(p)).collect();
-        let t_idx: Vec<PreparedF64> = t_points.par_iter().map(|p| build_index(p)).collect();
+        // One shared bar spanning both index builds so it reads as a single phase.
+        let idx_bar = progress.then(|| index_bar((nq + nt) as u64));
+        let (Some(q_idx), Some(t_idx)) = (
+            build_indices(&q_points, idx_bar.as_ref(), cancel),
+            build_indices(&t_points, idx_bar.as_ref(), cancel),
+        ) else {
+            return Vec::new(); // interrupted mid-build; caller discards the result
+        };
+        if let Some(bar) = idx_bar {
+            bar.finish();
+        }
         let self_hits: Vec<f64> = (0..nq)
             .map(|i| match &q_alphas {
                 Some(a) => smat.self_hit_alpha(&a[i]),
@@ -518,17 +654,92 @@ pub fn nblast_query_target<T: ScoreOut>(
             });
         };
 
-        if progress {
-            let bar = scoring_bar(n_cells as u64);
-            scores.par_iter_mut().enumerate().for_each(|item| {
-                compute(item);
-                bar.inc(1);
-            });
-            bar.finish();
-        } else {
-            scores.par_iter_mut().enumerate().for_each(compute);
-        }
+        run_scoring(&mut scores, n_cells as u64, progress, cancel, compute);
+        scores
+    })
+}
 
+/// Forward NBLAST for an explicit set of `(query_idx, target_idx)` pairs.
+///
+/// Builds each query and target index once (in parallel), exactly like
+/// [`nblast_query_target`], then scores **only** the requested pairs instead of the
+/// full `nq * nt` grid. The returned `Vec<T>` is aligned to `pairs`: element `k` is
+/// the forward score of query `pairs[k].0` against target `pairs[k].1`, divided by
+/// the query's self-hit when `opts.normalize`. This is the primitive the two-pass
+/// "smart" NBLAST uses for its full-resolution second pass over a sparse candidate
+/// set of pairs.
+///
+/// The dense entry points are deliberately left untouched; this function keeps its
+/// own (small) scoring loop so the hot `nblast_query_target` / `nblast_allbyall`
+/// paths retain their original zero-overhead form.
+#[allow(clippy::too_many_arguments)]
+pub fn nblast_pairs<T: ScoreOut>(
+    q_points: Vec<Vec<[f64; 3]>>,
+    q_vects: Vec<Vec<[f64; 3]>>,
+    q_alphas: Option<Vec<Vec<f64>>>,
+    t_points: Vec<Vec<[f64; 3]>>,
+    t_vects: Vec<Vec<[f64; 3]>>,
+    t_alphas: Option<Vec<Vec<f64>>>,
+    pairs: Vec<(usize, usize)>,
+    opts: Opts,
+) -> Vec<T> {
+    let Opts {
+        smat,
+        normalize,
+        limit_dist,
+        threads,
+        progress,
+        cancel,
+    } = opts;
+
+    with_pool(threads, move || {
+        // One shared bar spanning both index builds so it reads as a single phase.
+        let idx_bar = progress.then(|| index_bar((q_points.len() + t_points.len()) as u64));
+        let (Some(q_idx), Some(t_idx)) = (
+            build_indices(&q_points, idx_bar.as_ref(), cancel),
+            build_indices(&t_points, idx_bar.as_ref(), cancel),
+        ) else {
+            return Vec::new(); // interrupted mid-build; caller discards the result
+        };
+        if let Some(bar) = idx_bar {
+            bar.finish();
+        }
+        let self_hits: Vec<f64> = (0..q_points.len())
+            .map(|i| match &q_alphas {
+                Some(a) => smat.self_hit_alpha(&a[i]),
+                None => smat.self_hit(q_points[i].len()),
+            })
+            .collect();
+
+        let mut scores: Vec<T> = vec![T::from_f64(0.0); pairs.len()];
+
+        // One entry per requested pair; mirrors `nblast_query_target`'s per-cell body
+        // but indexes into `pairs` rather than walking the full grid.
+        let compute = |(k, out): (usize, &mut T)| {
+            let (qi, tj) = pairs[k];
+            let (d, ix) = t_idx[tj].query_prepared(&q_idx[qi], limit_dist);
+            let (qa, ta) = match (&q_alphas, &t_alphas) {
+                (Some(qa), Some(ta)) => (Some(qa[qi].as_slice()), Some(ta[tj].as_slice())),
+                _ => (None, None),
+            };
+            let raw = score_pair(
+                d.as_slice().unwrap(),
+                ix.as_slice().unwrap(),
+                &q_vects[qi],
+                &t_vects[tj],
+                qa,
+                ta,
+                limit_dist,
+                smat,
+            );
+            *out = T::from_f64(if normalize {
+                raw / self_hits[qi]
+            } else {
+                raw
+            });
+        };
+
+        run_scoring(&mut scores, pairs.len() as u64, progress, cancel, compute);
         scores
     })
 }
@@ -557,6 +768,7 @@ mod tests {
             limit_dist: None,
             threads: None,
             progress: false,
+            cancel: None,
         }
     }
 
@@ -758,5 +970,47 @@ mod tests {
         opts.threads = Some(1);
         let capped: Vec<f64> = nblast_query_target(q, qv, None, t, tv, None, opts);
         assert_eq!(default, capped);
+    }
+
+    #[test]
+    fn pairs_match_dense_query_target() {
+        // `nblast_pairs` on a subset of cells must equal the dense matrix at those
+        // same (query, target) indices.
+        let cloud_a = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.5, 0.5, 0.5],
+        ];
+        let cloud_b = vec![
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [2.0, 1.0, 0.0],
+            [2.0, 0.0, 1.0],
+            [2.5, 0.5, 0.5],
+        ];
+        let vect: Vec<[f64; 3]> = vec![[1.0, 0.0, 0.0]; 5];
+        let smat = load_smat();
+        let q = vec![cloud_a.clone(), cloud_b.clone()];
+        let t = vec![cloud_b, cloud_a];
+        let qv = vec![vect.clone(), vect.clone()];
+        let tv = vec![vect.clone(), vect];
+        let opts = test_opts(&smat);
+
+        let nt = t.len();
+        let dense: Vec<f64> =
+            nblast_query_target(q.clone(), qv.clone(), None, t.clone(), tv.clone(), None, opts);
+        let pairs = vec![(0usize, 0usize), (0, 1), (1, 0), (1, 1)];
+        let sparse: Vec<f64> = nblast_pairs(q, qv, None, t, tv, None, pairs.clone(), opts);
+
+        for (k, &(qi, tj)) in pairs.iter().enumerate() {
+            assert!(
+                (sparse[k] - dense[qi * nt + tj]).abs() < 1e-12,
+                "pair ({qi},{tj}): {} vs {}",
+                sparse[k],
+                dense[qi * nt + tj]
+            );
+        }
     }
 }

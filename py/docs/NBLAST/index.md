@@ -41,6 +41,74 @@ scores = fastcore.nblast(query_dps, target_dps)
 scores = fastcore.nblast(query_dps, target_dps, symmetry="mean")
 ```
 
+## Smart NBLAST
+
+`nblast_smart` is a two-pass approximation for large comparisons. It first runs a
+cheap "pre-NBLAST" on **downsampled** dotprops, then keeps only the best-scoring
+targets per query and recomputes *those* pairs at full resolution. Unselected cells
+keep their coarse pre-pass score. This mirrors navis' `nblast_smart` (its `scores`
+argument is spelled `symmetry` here, matching the other functions).
+
+```python
+# Keep the top 10% of targets per query (percentile 90) for the full pass
+scores = fastcore.nblast_smart(query_dps, target_dps, t=90, criterion="percentile")
+
+# All-by-all; also return the boolean mask of cells recomputed at full resolution
+scores, mask = fastcore.nblast_smart(dps, t=90, return_mask=True)
+
+# Other selection criteria: an absolute score threshold, or a fixed number per query
+scores = fastcore.nblast_smart(dps, t=0.3, criterion="score")
+scores = fastcore.nblast_smart(dps, t=10, criterion="N")
+```
+
+Extra options beyond the shared ones below: `t` / `criterion` select the candidate
+targets (`"percentile"`, `"score"` or `"N"`), `downsample` (default `10`) sets the
+pre-pass point stride, and `return_mask` additionally returns which cells were
+recomputed. Because fastcore's dense NBLAST is already fast, `nblast_smart` pays off
+mainly for **large all-by-all** comparisons where the full-resolution scoring
+dominates; on small inputs the extra pre-pass can make it a wash.
+
+## syNBLAST (synapse-based)
+
+`synblast` compares neurons by their **synapses** (connectors) instead of their
+skeleton points: for every query connector it finds the nearest target connector
+*of the same type* and scores that distance through the same lookup matrix with the
+dot product fixed at 1 (synapses carry no tangent vector). This mirrors navis'
+`synblast` (its `scores` argument is spelled `symmetry` here).
+
+A "synapse cloud" is any object exposing `connectors` — an `(N, 3)` or `(N, 4)`
+array of `[x, y, z, (type)]`, where the optional 4th column is a numeric connector
+type (e.g. `0` = presynapse, `1` = postsynapse). The `Synapses` namedtuple is a
+minimal container for one.
+
+```python
+import navis_fastcore as fastcore
+from navis_fastcore import Synapses
+
+import numpy as np
+
+# 5 neurons; each connector is [x, y, z, type] with type in {0, 1}
+neurons = [
+    Synapses(np.hstack([np.random.rand(200, 3) * 10, np.random.randint(0, 2, (200, 1))]))
+    for _ in range(5)
+]
+
+# (5, 5) all-by-all matrix; diagonal = 1.0
+scores = fastcore.synblast(neurons)
+
+# Only compare like-typed synapses (pre-vs-pre, post-vs-post)
+scores = fastcore.synblast(neurons, by_type=True)
+
+# Query vs target, symmetric, restricted to presynapses
+scores = fastcore.synblast(neurons[:2], neurons, symmetry="mean", cn_types=[0])
+```
+
+`synblast` shares `smat`, `normalize`, `symmetry`, `n_cores`, `precision` and
+`progress` with `nblast` (see below), plus two synapse-specific options: `by_type`
+(default `False`) restricts matches to same-type connectors, and `cn_types` keeps
+only connectors whose type is in the given set before scoring. It does not take
+`use_alpha` or `limit_dist` (neither applies to synapses).
+
 ## Options
 
 Both `nblast_allbyall` and `nblast` accept the same options:

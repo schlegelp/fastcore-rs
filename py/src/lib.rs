@@ -53,6 +53,15 @@ mod fastcore {
     use super::nblast_py;
 
     #[pymodule_export]
+    use super::nblast_pairs_py;
+
+    #[pymodule_export]
+    use super::synblast_allbyall_py;
+
+    #[pymodule_export]
+    use super::synblast_py;
+
+    #[pymodule_export]
     use super::smat_auto_limit_py;
 
     #[pymodule_export]
