@@ -1,1 +1,3 @@
 ^src/\.cargo$
+^src/rust/target$
+^src/rust/fastcore/target$

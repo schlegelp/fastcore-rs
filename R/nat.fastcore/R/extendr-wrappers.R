@@ -45,5 +45,106 @@ prune_twigs <- function(parents, threshold, weights) .Call(wrap__prune_twigs, pa
 #' @export
 child_to_parent_dists <- function(parents, x, y, z) .Call(wrap__child_to_parent_dists, parents, x, y, z)
 
+#' Return path length from a single node to the root.
+#' @export
+dist_to_root <- function(parents, node) .Call(wrap__dist_to_root, parents, node)
+
+#' Classify nodes into roots (0), leaves (1), branch points (2) and slabs (3).
+#' @export
+classify_nodes <- function(parents) .Call(wrap__classify_nodes, parents)
+
+#' Check whether the tree contains cycles.
+#' @export
+has_cycles <- function(parents) .Call(wrap__has_cycles, parents)
+
+#' Geodesic distances for explicit pairs of nodes.
+#'
+#' `sources` and `targets` are parallel arrays of node indices; the returned
+#' vector holds the distance between each `(source, target)` pair.
+#'
+#' @export
+geodesic_pairs <- function(parents, sources, targets, weights, directed) .Call(wrap__geodesic_pairs, parents, sources, targets, weights, directed)
+
+#' Distance to the nearest target for each source.
+#'
+#' Memory-efficient companion to `geodesic_distances` that never materialises the
+#' full distance matrix. Returns a list with `distances` (distance to the nearest
+#' target) and `nearest` (index of that target); sources without a reachable
+#' target get `-1`.
+#'
+#' @export
+geodesic_nearest <- function(parents, sources, targets, weights, directed) .Call(wrap__geodesic_nearest, parents, sources, targets, weights, directed)
+
+#' Synapse flow centrality for each node.
+#'
+#' `presynapses`/`postsynapses` give the number of pre-/post-synapses at each node.
+#' `mode` is one of "centrifugal", "centripetal" or "sum".
+#'
+#' @export
+synapse_flow_centrality <- function(parents, presynapses, postsynapses, mode) .Call(wrap__synapse_flow_centrality, parents, presynapses, postsynapses, mode)
+
+#' Generate linear segments while maximising segment lengths.
+#'
+#' Returns a list with `segments` (a list of integer vectors, one per segment)
+#' and `lengths` (per-segment lengths, or NULL if no weights were supplied).
+#'
+#' @export
+generate_segments <- function(parents, weights) .Call(wrap__generate_segments, parents, weights)
+
+#' Break the tree into its linear segments (one integer vector per segment).
+#' @export
+break_segments <- function(parents) .Call(wrap__break_segments, parents)
+
+#' Find connected components of a triangle mesh.
+#'
+#' `faces` is an (N, 3) matrix of vertex indices. Returns an integer vector of
+#' length `n_vertices` assigning each vertex the root-vertex index of its
+#' component.
+#'
+#' @export
+mesh_connected_components <- function(faces, n_vertices) .Call(wrap__mesh_connected_components, faces, n_vertices)
+
+#' The `limit_dist="auto"` value for a scoring matrix.
+#' @export
+smat_auto_limit <- function(smat_values, dist_edges, dot_edges, use_alpha) .Call(wrap__smat_auto_limit, smat_values, dist_edges, dot_edges, use_alpha)
+
+#' All-by-all forward NBLAST.
+#'
+#' `points`/`vects` are lists of (N, 3) matrices (one per neuron). Returns an
+#' (n, n) score matrix; cell (i, j) is query i against target j.
+#'
+#' @export
+nblast_allbyall <- function(points, vects, alphas, smat_values, dist_edges, dot_edges, normalize, limit_dist, n_cores, precision, progress) .Call(wrap__nblast_allbyall, points, vects, alphas, smat_values, dist_edges, dot_edges, normalize, limit_dist, n_cores, precision, progress)
+
+#' Forward NBLAST of every query neuron against every target neuron.
+#'
+#' Returns an (n_query, n_target) score matrix.
+#'
+#' @export
+nblast <- function(q_points, q_vects, t_points, t_vects, q_alphas, t_alphas, smat_values, dist_edges, dot_edges, normalize, limit_dist, n_cores, precision, progress) .Call(wrap__nblast, q_points, q_vects, t_points, t_vects, q_alphas, t_alphas, smat_values, dist_edges, dot_edges, normalize, limit_dist, n_cores, precision, progress)
+
+#' Forward NBLAST for a set of `(query, target)` index pairs.
+#'
+#' `q_idx`/`t_idx` are 0-based indices into the query/target lists; element k of
+#' the result is query `q_idx[k]` against target `t_idx[k]`.
+#'
+#' @export
+nblast_pairs <- function(q_points, q_vects, t_points, t_vects, q_idx, t_idx, q_alphas, t_alphas, smat_values, dist_edges, dot_edges, normalize, limit_dist, n_cores, precision, progress) .Call(wrap__nblast_pairs, q_points, q_vects, t_points, t_vects, q_idx, t_idx, q_alphas, t_alphas, smat_values, dist_edges, dot_edges, normalize, limit_dist, n_cores, precision, progress)
+
+#' All-by-all forward syNBLAST over synapse clouds.
+#'
+#' `points` are lists of (N, 3) connector coordinate matrices and `types` the
+#' matching per-connector integer type ids. Returns an (n, n) score matrix.
+#'
+#' @export
+synblast_allbyall <- function(points, types, smat_values, dist_edges, dot_edges, normalize, n_cores, precision, progress) .Call(wrap__synblast_allbyall, points, types, smat_values, dist_edges, dot_edges, normalize, n_cores, precision, progress)
+
+#' Forward syNBLAST of every query neuron against every target neuron.
+#'
+#' Returns an (n_query, n_target) score matrix.
+#'
+#' @export
+synblast <- function(q_points, q_types, t_points, t_types, smat_values, dist_edges, dot_edges, normalize, n_cores, precision, progress) .Call(wrap__synblast, q_points, q_types, t_points, t_types, smat_values, dist_edges, dot_edges, normalize, n_cores, precision, progress)
+
 
 # nolint end

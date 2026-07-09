@@ -26,6 +26,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 scripts/sync-versions.py --check
+      # The R package ships a committed copy of the `fastcore` crate so it builds
+      # standalone on R-universe; fail if it has drifted from the canonical crate.
+      - run: python3 scripts/bundle-r-core.py --check
 
   linux:
     runs-on: ubuntu-latest

@@ -1,6 +1,12 @@
+# This crate is intentionally its own workspace root (see [workspace] below) and
+# NOT a member of the monorepo workspace, so that `R/nat.fastcore/` builds as a
+# self-contained source tarball on R-universe/CRAN, where the sibling `fastcore/`
+# crate and the workspace root are absent. The `fastcore` dependency points at a
+# committed copy bundled under `./fastcore`, kept in sync by
+# `scripts/bundle-r-core.py`. Do not re-add this crate to the root Cargo.toml.
 [package]
 name = 'nat_fastcore'
-version.workspace = true
+version = "0.4.0"
 edition = '2021'
 
 [lib]
@@ -8,6 +14,21 @@ crate-type = [ 'staticlib' ]
 name = 'nat_fastcore'
 
 [dependencies]
-extendr-api = { version = "0.7.0", features = ["ndarray"] }
-fastcore = { workspace=true }
-ndarray = { version = "0.15", features = ["rayon"] }
+extendr-api = { version = "0.7.0" }
+fastcore = { path = "fastcore" }
+# Must match the ndarray version used by fastcore's dag/mesh public API (0.16),
+# otherwise the `ArrayView1`/`Array2` types passed across the boundary don't
+# unify. Matrix <-> R conversion is done via extendr's native `RMatrix`/`RArray`
+# (not the extendr `ndarray` feature, which is pinned to an older ndarray).
+ndarray = { version = "0.16", features = ["rayon"] }
+
+# Own workspace root: detaches this crate from the monorepo workspace and gives it
+# a self-contained Cargo.lock. The bundled `./fastcore` becomes the second member.
+[workspace]
+
+# Mirror the monorepo release profile so bundled fastcore (NBLAST hot path) is
+# optimised identically when built standalone.
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3

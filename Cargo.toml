@@ -1,5 +1,11 @@
 [workspace]
-members = ["fastcore", "py", "R/nat.fastcore/src/rust"]
+members = ["fastcore", "py"]
+# The R bindings crate is deliberately NOT a member: it is its own workspace root
+# so `R/nat.fastcore/` builds as a self-contained tarball on R-universe/CRAN. It
+# depends on a committed copy of `fastcore` bundled under its own directory
+# (refreshed by `scripts/bundle-r-core.py`), so it must not resolve against this
+# workspace. `exclude` keeps `cargo` from trying to attach it.
+exclude = ["R/nat.fastcore/src/rust"]
 resolver = "2"
 
 # Single source of truth for the version; member crates inherit it via

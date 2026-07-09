@@ -4,7 +4,22 @@ Re-implementation of `nat` core functions in Rust.
 
 ## Installation
 
-### Users
+### Users (precompiled binary, recommended)
+
+Precompiled binaries for Windows and macOS are served from R-universe, so **no Rust
+toolchain is required**:
+
+```r
+install.packages(
+  "nat.fastcore",
+  repos = c("https://schlegelp.r-universe.dev", "https://cloud.r-project.org")
+)
+```
+
+On Linux this installs from source (compiles the bundled Rust), which needs the
+[Rust toolchain](https://rustup.rs/).
+
+### Users (from source)
 
 1. Clone this repository
 2. Make sure the [Rust toolchain](https://rustup.rs/) and the R `rextendr` & `devtools` packages are installed
@@ -50,10 +65,30 @@ Re-implementation of `nat` core functions in Rust.
 
 Currently the following functions have been wrapped:
 
+Skeleton / tree (DAG):
+
 - `node_indices`: turn node and parent IDs into parent indices
 - `geodesic_distances`: calculate geodesic distances between all/subsets of nodes
+- `geodesic_pairs`: geodesic distances for explicit pairs of nodes
+- `geodesic_nearest`: distance to the nearest target for each source (no full matrix)
 - `strahler_index`: calculate the Strahler index
 - `connected_components`: extract connected components
-- `all_dist_to_root`: calculate distances from all/subsets of nodes to the root
+- `classify_nodes`: classify nodes into roots, leaves, branch points and slabs
+- `all_dists_to_root`: calculate distances from all/subsets of nodes to the root
+- `dist_to_root`: distance from a single node to the root
 - `prune_twigs`: prune twigs under a given size threshold
+- `generate_segments` / `break_segments`: split the tree into linear segments
+- `synapse_flow_centrality`: synapse flow centrality per node
+- `has_cycles`: check whether a tree contains cycles
 - `child_to_parent_dists`: helper to calculate child -> parent distances
+
+Mesh:
+
+- `mesh_connected_components`: connected components of a triangle mesh
+
+Neuron similarity (NBLAST / synNBLAST):
+
+- `nblast` / `nblast_allbyall`: forward NBLAST (query-vs-target / all-by-all)
+- `nblast_pairs`: forward NBLAST for a set of `(query, target)` index pairs
+- `synblast` / `synblast_allbyall`: synapse-based NBLAST
+- `smat_auto_limit`: the `limit_dist="auto"` value for a scoring matrix

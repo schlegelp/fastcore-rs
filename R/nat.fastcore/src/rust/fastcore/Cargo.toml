@@ -1,0 +1,32 @@
+[package]
+name = "fastcore"
+version = "0.4.0"
+edition = "2021"
+
+[lib]
+name = "fastcore"
+# "cdylib" is necessary to produce a shared library for Python to import from.
+crate-type = ["lib", "cdylib", "staticlib"] # Creates dynamic lib
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rand = "0.8.4"
+rayon = "1.8.0"
+num = "0.4.3"
+csv = "1.3.0"
+dirs = "5.0.1"
+itertools = "0.13.0"
+# Optional progress bar for NBLAST. `console` (already an indicatif dependency)
+# provides the stderr terminal handle we draw through so the bar renders even when
+# stderr is not a TTY (e.g. Jupyter).
+indicatif = "0.17"
+console = "0.15"
+# ndarray 0.16 is kept for dag.rs / mesh.rs. The nblast module needs ndarray
+# 0.17 to interop with shull / aann-graph, so it is pulled in under a distinct
+# name (`ndarray_017`). Cargo allows both versions to coexist in one crate.
+ndarray = { version = "0.16", features = ["rayon"] }
+ndarray_017 = { package = "ndarray", version = "0.17" }
+# NBLAST pipeline: shull (3D Delaunay) + aann-graph (neighbourhood-graph NN).
+shull = "0.3.0"
+aann-graph = "0.1.2"
