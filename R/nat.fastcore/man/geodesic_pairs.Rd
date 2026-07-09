@@ -6,6 +6,21 @@
 \usage{
 geodesic_pairs(parents, sources, targets, weights, directed)
 }
+\arguments{
+\item{parents}{Integer vector of 0-based parent indices (roots are \verb{< 0}).}
+
+\item{sources}{Integer vector of source node indices.}
+
+\item{targets}{Integer vector of target node indices (same length as
+\code{sources}).}
+
+\item{weights}{Optional numeric vector of edge weights; \code{NULL} counts edges.}
+
+\item{directed}{Logical; if \code{TRUE} only traverse edges child-to-parent.}
+}
+\value{
+Numeric vector with the distance of each \verb{(source, target)} pair.
+}
 \description{
 \code{sources} and \code{targets} are parallel arrays of node indices; the returned
 vector holds the distance between each \verb{(source, target)} pair.

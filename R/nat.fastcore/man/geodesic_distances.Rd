@@ -6,6 +6,23 @@
 \usage{
 geodesic_distances(parents, sources, targets, weights, directed)
 }
+\arguments{
+\item{parents}{Integer vector of 0-based parent indices (roots are \verb{< 0}).}
+
+\item{sources}{Optional integer vector of source node indices; \code{NULL} uses
+every node.}
+
+\item{targets}{Optional integer vector of target node indices; \code{NULL} uses
+every node.}
+
+\item{weights}{Optional numeric vector of edge weights; \code{NULL} counts edges.}
+
+\item{directed}{Logical; if \code{TRUE} only traverse edges child-to-parent.}
+}
+\value{
+Numeric matrix of geodesic distances (sources in rows, targets in
+columns).
+}
 \description{
 Geodesic distances between nodes.
 }

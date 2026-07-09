@@ -6,6 +6,20 @@
 \usage{
 smat_auto_limit(smat_values, dist_edges, dot_edges, use_alpha)
 }
+\arguments{
+\item{smat_values}{Numeric scoring matrix, or \code{NULL} for the built-in FCWB
+matrix.}
+
+\item{dist_edges}{Numeric vector of distance bin edges for \code{smat_values}.}
+
+\item{dot_edges}{Numeric vector of dot-product bin edges for \code{smat_values}.}
+
+\item{use_alpha}{Logical; when falling back to the built-in matrix, use the
+alpha-weighted variant.}
+}
+\value{
+Numeric \code{limit_dist} value implied by the scoring matrix.
+}
 \description{
 The \code{limit_dist="auto"} value for a scoring matrix.
 }

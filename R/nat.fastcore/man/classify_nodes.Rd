@@ -6,6 +6,12 @@
 \usage{
 classify_nodes(parents)
 }
+\arguments{
+\item{parents}{Integer vector of 0-based parent indices (roots are \verb{< 0}).}
+}
+\value{
+Integer vector: \code{0} root, \code{1} leaf, \code{2} branch point, \code{3} slab.
+}
 \description{
 Classify nodes into roots (0), leaves (1), branch points (2) and slabs (3).
 }

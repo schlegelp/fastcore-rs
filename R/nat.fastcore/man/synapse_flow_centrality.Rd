@@ -6,6 +6,18 @@
 \usage{
 synapse_flow_centrality(parents, presynapses, postsynapses, mode)
 }
+\arguments{
+\item{parents}{Integer vector of 0-based parent indices (roots are \verb{< 0}).}
+
+\item{presynapses}{Integer vector: number of presynapses at each node.}
+
+\item{postsynapses}{Integer vector: number of postsynapses at each node.}
+
+\item{mode}{Character; one of \code{"centrifugal"}, \code{"centripetal"} or \code{"sum"}.}
+}
+\value{
+Integer vector with the synapse flow centrality of each node.
+}
 \description{
 \code{presynapses}/\code{postsynapses} give the number of pre-/post-synapses at each node.
 \code{mode} is one of "centrifugal", "centripetal" or "sum".

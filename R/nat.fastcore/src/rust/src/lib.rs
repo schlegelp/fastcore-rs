@@ -9,6 +9,10 @@ use fastcore::nblast::{load_smat, load_smat_alpha, Opts, Smat};
 /// Importantly this is 0-indexed to match indexing in Rust.
 /// Roots will have parent index -1.
 ///
+/// @param nodes Integer vector of node IDs.
+/// @param parents Integer vector of parent IDs, one per node; roots use their
+///   own ID or a negative value.
+/// @return Integer vector of 0-based parent indices (`-1` for roots).
 /// @export
 #[extendr]
 pub fn node_indices(nodes: Vec<i32>, parents: Vec<i32>) -> Vec<i32> {
@@ -36,6 +40,10 @@ pub fn node_indices(nodes: Vec<i32>, parents: Vec<i32>) -> Vec<i32> {
 }
 
 /// Calculate child -> parent distances.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param x,y,z Numeric vectors of node coordinates, one entry per node.
+/// @return Numeric vector of Euclidean child-to-parent distances (`0` for roots).
 /// @export
 #[extendr]
 pub fn child_to_parent_dists(parents: Vec<i32>, x: Vec<f64>, y: Vec<f64>, z: Vec<f64>) -> Vec<f64> {
@@ -54,6 +62,13 @@ pub fn child_to_parent_dists(parents: Vec<i32>, x: Vec<f64>, y: Vec<f64>, z: Vec
 }
 
 /// Compute all distances to root.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param sources Optional integer vector of node indices to measure from;
+///   `NULL` uses every node.
+/// @param weights Optional numeric vector of child-to-parent edge weights;
+///   `NULL` counts edges (hop distance).
+/// @return Numeric vector of distances to the root for each requested node.
 /// @export
 #[extendr]
 pub fn all_dists_to_root(
@@ -71,6 +86,16 @@ pub fn all_dists_to_root(
 }
 
 /// Geodesic distances between nodes.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param sources Optional integer vector of source node indices; `NULL` uses
+///   every node.
+/// @param targets Optional integer vector of target node indices; `NULL` uses
+///   every node.
+/// @param weights Optional numeric vector of edge weights; `NULL` counts edges.
+/// @param directed Logical; if `TRUE` only traverse edges child-to-parent.
+/// @return Numeric matrix of geodesic distances (sources in rows, targets in
+///   columns).
 /// @export
 #[extendr]
 pub fn geodesic_distances(
@@ -103,6 +128,12 @@ pub fn geodesic_distances(
 }
 
 /// Calculate Strahler Index.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param greedy Logical; use the greedy variant of the algorithm.
+/// @param to_ignore Optional integer vector of node indices to skip.
+/// @param min_twig_size Optional integer; ignore twigs shorter than this.
+/// @return Integer vector with the Strahler index of each node.
 /// @export
 #[extendr]
 pub fn strahler_index(
@@ -116,6 +147,9 @@ pub fn strahler_index(
 }
 
 /// Connected components.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @return Integer vector assigning each node a component id.
 /// @export
 #[extendr]
 pub fn connected_components(parents: Vec<i32>) -> Vec<i32> {
@@ -127,6 +161,10 @@ pub fn connected_components(parents: Vec<i32>) -> Vec<i32> {
 ///
 /// Returns indices of nodes to keep.
 ///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param threshold Numeric length threshold; twigs shorter than this are pruned.
+/// @param weights Optional numeric vector of edge weights; `NULL` counts edges.
+/// @return Integer vector of node indices to keep.
 /// @export
 #[extendr]
 pub fn prune_twigs(parents: Vec<i32>, threshold: f64, weights: Option<Vec<f64>>) -> Vec<i32> {
@@ -138,6 +176,10 @@ pub fn prune_twigs(parents: Vec<i32>, threshold: f64, weights: Option<Vec<f64>>)
 }
 
 /// Return path length from a single node to the root.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param node Integer index of the node to measure from.
+/// @return Numeric path length (edge count) from `node` to its root.
 /// @export
 #[extendr]
 pub fn dist_to_root(parents: Vec<i32>, node: i32) -> f64 {
@@ -146,6 +188,9 @@ pub fn dist_to_root(parents: Vec<i32>, node: i32) -> f64 {
 }
 
 /// Classify nodes into roots (0), leaves (1), branch points (2) and slabs (3).
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @return Integer vector: `0` root, `1` leaf, `2` branch point, `3` slab.
 /// @export
 #[extendr]
 pub fn classify_nodes(parents: Vec<i32>) -> Vec<i32> {
@@ -154,6 +199,9 @@ pub fn classify_nodes(parents: Vec<i32>) -> Vec<i32> {
 }
 
 /// Check whether the tree contains cycles.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @return Logical; `TRUE` if the parent structure contains a cycle.
 /// @export
 #[extendr]
 pub fn has_cycles(parents: Vec<i32>) -> bool {
@@ -166,6 +214,13 @@ pub fn has_cycles(parents: Vec<i32>) -> bool {
 /// `sources` and `targets` are parallel arrays of node indices; the returned
 /// vector holds the distance between each `(source, target)` pair.
 ///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param sources Integer vector of source node indices.
+/// @param targets Integer vector of target node indices (same length as
+///   `sources`).
+/// @param weights Optional numeric vector of edge weights; `NULL` counts edges.
+/// @param directed Logical; if `TRUE` only traverse edges child-to-parent.
+/// @return Numeric vector with the distance of each `(source, target)` pair.
 /// @export
 #[extendr]
 pub fn geodesic_pairs(
@@ -198,6 +253,15 @@ pub fn geodesic_pairs(
 /// target) and `nearest` (index of that target); sources without a reachable
 /// target get `-1`.
 ///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param sources Optional integer vector of source node indices; `NULL` uses
+///   every node.
+/// @param targets Optional integer vector of target node indices; `NULL` uses
+///   every node.
+/// @param weights Optional numeric vector of edge weights; `NULL` counts edges.
+/// @param directed Logical; if `TRUE` only traverse edges child-to-parent.
+/// @return List with `distances` (numeric, distance to the nearest target) and
+///   `nearest` (integer target index, `-1` when unreachable).
 /// @export
 #[extendr]
 pub fn geodesic_nearest(
@@ -224,6 +288,11 @@ pub fn geodesic_nearest(
 /// `presynapses`/`postsynapses` give the number of pre-/post-synapses at each node.
 /// `mode` is one of "centrifugal", "centripetal" or "sum".
 ///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param presynapses Integer vector: number of presynapses at each node.
+/// @param postsynapses Integer vector: number of postsynapses at each node.
+/// @param mode Character; one of `"centrifugal"`, `"centripetal"` or `"sum"`.
+/// @return Integer vector with the synapse flow centrality of each node.
 /// @export
 #[extendr]
 pub fn synapse_flow_centrality(
@@ -250,6 +319,11 @@ pub fn synapse_flow_centrality(
 /// Returns a list with `segments` (a list of integer vectors, one per segment)
 /// and `lengths` (per-segment lengths, or NULL if no weights were supplied).
 ///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param weights Optional numeric vector of edge weights; `NULL` returns no
+///   `lengths`.
+/// @return List with `segments` (list of integer node-index vectors) and
+///   `lengths` (numeric per-segment lengths, or `NULL`).
 /// @export
 #[extendr]
 pub fn generate_segments(parents: Vec<i32>, weights: Option<Vec<f64>>) -> Robj {
@@ -268,6 +342,9 @@ pub fn generate_segments(parents: Vec<i32>, weights: Option<Vec<f64>>) -> Robj {
 }
 
 /// Break the tree into its linear segments (one integer vector per segment).
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @return List of integer vectors, one per linear segment.
 /// @export
 #[extendr]
 pub fn break_segments(parents: Vec<i32>) -> Robj {
@@ -282,6 +359,10 @@ pub fn break_segments(parents: Vec<i32>) -> Robj {
 /// length `n_vertices` assigning each vertex the root-vertex index of its
 /// component.
 ///
+/// @param faces Integer or numeric `(N, 3)` matrix of triangle vertex indices.
+/// @param n_vertices Integer; total number of vertices in the mesh.
+/// @return Integer vector of length `n_vertices` giving each vertex the
+///   root-vertex index of its component.
 /// @export
 #[extendr]
 pub fn mesh_connected_components(faces: Robj, n_vertices: i32) -> Vec<i32> {
@@ -415,6 +496,14 @@ fn array2_to_rmatrix(arr: &Array2<f64>) -> Robj {
 }
 
 /// The `limit_dist="auto"` value for a scoring matrix.
+///
+/// @param smat_values Numeric scoring matrix, or `NULL` for the built-in FCWB
+///   matrix.
+/// @param dist_edges Numeric vector of distance bin edges for `smat_values`.
+/// @param dot_edges Numeric vector of dot-product bin edges for `smat_values`.
+/// @param use_alpha Logical; when falling back to the built-in matrix, use the
+///   alpha-weighted variant.
+/// @return Numeric `limit_dist` value implied by the scoring matrix.
 /// @export
 #[extendr]
 pub fn smat_auto_limit(
@@ -431,6 +520,21 @@ pub fn smat_auto_limit(
 /// `points`/`vects` are lists of (N, 3) matrices (one per neuron). Returns an
 /// (n, n) score matrix; cell (i, j) is query i against target j.
 ///
+/// @param points List of `(N, 3)` numeric matrices of neuron point coordinates.
+/// @param vects List of `(N, 3)` numeric matrices of unit tangent vectors, one
+///   per neuron and aligned with `points`.
+/// @param alphas Optional list of per-point alpha (anisotropy) vectors; `NULL`
+///   disables alpha weighting.
+/// @param smat_values Numeric scoring matrix, or `NULL` for the built-in FCWB
+///   matrix.
+/// @param dist_edges Numeric vector of distance bin edges for `smat_values`.
+/// @param dot_edges Numeric vector of dot-product bin edges for `smat_values`.
+/// @param normalize Logical; normalise each score by the query self-match score.
+/// @param limit_dist Optional numeric distance cut-off; `NULL` disables it.
+/// @param n_cores Optional integer thread count; `NULL` or `<= 0` uses all cores.
+/// @param precision Integer; compute in 32- or 64-bit floats.
+/// @param progress Logical; display a progress bar.
+/// @return Numeric `(n, n)` score matrix; cell `(i, j)` is query `i` vs target `j`.
 /// @export
 #[extendr]
 #[allow(clippy::too_many_arguments)]
@@ -476,6 +580,23 @@ pub fn nblast_allbyall(
 ///
 /// Returns an (n_query, n_target) score matrix.
 ///
+/// @param q_points List of `(N, 3)` numeric matrices of query point coordinates.
+/// @param q_vects List of `(N, 3)` numeric matrices of query tangent vectors.
+/// @param t_points List of `(N, 3)` numeric matrices of target point coordinates.
+/// @param t_vects List of `(N, 3)` numeric matrices of target tangent vectors.
+/// @param q_alphas Optional list of per-point alpha vectors for the queries;
+///   `NULL` disables alpha weighting.
+/// @param t_alphas Optional list of per-point alpha vectors for the targets.
+/// @param smat_values Numeric scoring matrix, or `NULL` for the built-in FCWB
+///   matrix.
+/// @param dist_edges Numeric vector of distance bin edges for `smat_values`.
+/// @param dot_edges Numeric vector of dot-product bin edges for `smat_values`.
+/// @param normalize Logical; normalise each score by the query self-match score.
+/// @param limit_dist Optional numeric distance cut-off; `NULL` disables it.
+/// @param n_cores Optional integer thread count; `NULL` or `<= 0` uses all cores.
+/// @param precision Integer; compute in 32- or 64-bit floats.
+/// @param progress Logical; display a progress bar.
+/// @return Numeric `(n_query, n_target)` score matrix.
 /// @export
 #[extendr]
 #[allow(clippy::too_many_arguments)]
@@ -528,6 +649,25 @@ pub fn nblast(
 /// `q_idx`/`t_idx` are 0-based indices into the query/target lists; element k of
 /// the result is query `q_idx[k]` against target `t_idx[k]`.
 ///
+/// @param q_points List of `(N, 3)` numeric matrices of query point coordinates.
+/// @param q_vects List of `(N, 3)` numeric matrices of query tangent vectors.
+/// @param t_points List of `(N, 3)` numeric matrices of target point coordinates.
+/// @param t_vects List of `(N, 3)` numeric matrices of target tangent vectors.
+/// @param q_idx Integer vector of 0-based query indices, one per pair.
+/// @param t_idx Integer vector of 0-based target indices (same length as `q_idx`).
+/// @param q_alphas Optional list of per-point alpha vectors for the queries;
+///   `NULL` disables alpha weighting.
+/// @param t_alphas Optional list of per-point alpha vectors for the targets.
+/// @param smat_values Numeric scoring matrix, or `NULL` for the built-in FCWB
+///   matrix.
+/// @param dist_edges Numeric vector of distance bin edges for `smat_values`.
+/// @param dot_edges Numeric vector of dot-product bin edges for `smat_values`.
+/// @param normalize Logical; normalise each score by the query self-match score.
+/// @param limit_dist Optional numeric distance cut-off; `NULL` disables it.
+/// @param n_cores Optional integer thread count; `NULL` or `<= 0` uses all cores.
+/// @param precision Integer; compute in 32- or 64-bit floats.
+/// @param progress Logical; display a progress bar.
+/// @return Numeric vector of scores, one per `(query, target)` pair.
 /// @export
 #[extendr]
 #[allow(clippy::too_many_arguments)]
@@ -590,6 +730,19 @@ pub fn nblast_pairs(
 /// `points` are lists of (N, 3) connector coordinate matrices and `types` the
 /// matching per-connector integer type ids. Returns an (n, n) score matrix.
 ///
+/// @param points List of `(N, 3)` numeric matrices of connector coordinates,
+///   one per neuron.
+/// @param types List of integer vectors of per-connector type ids, aligned with
+///   `points`.
+/// @param smat_values Numeric scoring matrix, or `NULL` for the built-in FCWB
+///   matrix.
+/// @param dist_edges Numeric vector of distance bin edges for `smat_values`.
+/// @param dot_edges Numeric vector of dot-product bin edges for `smat_values`.
+/// @param normalize Logical; normalise each score by the query self-match score.
+/// @param n_cores Optional integer thread count; `NULL` or `<= 0` uses all cores.
+/// @param precision Integer; compute in 32- or 64-bit floats.
+/// @param progress Logical; display a progress bar.
+/// @return Numeric `(n, n)` score matrix; cell `(i, j)` is query `i` vs target `j`.
 /// @export
 #[extendr]
 #[allow(clippy::too_many_arguments)]
@@ -632,6 +785,21 @@ pub fn synblast_allbyall(
 ///
 /// Returns an (n_query, n_target) score matrix.
 ///
+/// @param q_points List of `(N, 3)` numeric matrices of query connector
+///   coordinates.
+/// @param q_types List of integer vectors of query per-connector type ids.
+/// @param t_points List of `(N, 3)` numeric matrices of target connector
+///   coordinates.
+/// @param t_types List of integer vectors of target per-connector type ids.
+/// @param smat_values Numeric scoring matrix, or `NULL` for the built-in FCWB
+///   matrix.
+/// @param dist_edges Numeric vector of distance bin edges for `smat_values`.
+/// @param dot_edges Numeric vector of dot-product bin edges for `smat_values`.
+/// @param normalize Logical; normalise each score by the query self-match score.
+/// @param n_cores Optional integer thread count; `NULL` or `<= 0` uses all cores.
+/// @param precision Integer; compute in 32- or 64-bit floats.
+/// @param progress Logical; display a progress bar.
+/// @return Numeric `(n_query, n_target)` score matrix.
 /// @export
 #[extendr]
 #[allow(clippy::too_many_arguments)]

@@ -6,6 +6,23 @@
 \usage{
 geodesic_nearest(parents, sources, targets, weights, directed)
 }
+\arguments{
+\item{parents}{Integer vector of 0-based parent indices (roots are \verb{< 0}).}
+
+\item{sources}{Optional integer vector of source node indices; \code{NULL} uses
+every node.}
+
+\item{targets}{Optional integer vector of target node indices; \code{NULL} uses
+every node.}
+
+\item{weights}{Optional numeric vector of edge weights; \code{NULL} counts edges.}
+
+\item{directed}{Logical; if \code{TRUE} only traverse edges child-to-parent.}
+}
+\value{
+List with \code{distances} (numeric, distance to the nearest target) and
+\code{nearest} (integer target index, \code{-1} when unreachable).
+}
 \description{
 Memory-efficient companion to \code{geodesic_distances} that never materialises the
 full distance matrix. Returns a list with \code{distances} (distance to the nearest

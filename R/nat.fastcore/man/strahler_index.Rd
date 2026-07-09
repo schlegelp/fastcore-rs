@@ -6,6 +6,18 @@
 \usage{
 strahler_index(parents, greedy, to_ignore, min_twig_size)
 }
+\arguments{
+\item{parents}{Integer vector of 0-based parent indices (roots are \verb{< 0}).}
+
+\item{greedy}{Logical; use the greedy variant of the algorithm.}
+
+\item{to_ignore}{Optional integer vector of node indices to skip.}
+
+\item{min_twig_size}{Optional integer; ignore twigs shorter than this.}
+}
+\value{
+Integer vector with the Strahler index of each node.
+}
 \description{
 Calculate Strahler Index.
 }

@@ -6,6 +6,16 @@
 \usage{
 generate_segments(parents, weights)
 }
+\arguments{
+\item{parents}{Integer vector of 0-based parent indices (roots are \verb{< 0}).}
+
+\item{weights}{Optional numeric vector of edge weights; \code{NULL} returns no
+\code{lengths}.}
+}
+\value{
+List with \code{segments} (list of integer node-index vectors) and
+\code{lengths} (numeric per-segment lengths, or \code{NULL}).
+}
 \description{
 Returns a list with \code{segments} (a list of integer vectors, one per segment)
 and \code{lengths} (per-segment lengths, or NULL if no weights were supplied).

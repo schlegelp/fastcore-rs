@@ -18,6 +18,35 @@ nblast_allbyall(
   progress
 )
 }
+\arguments{
+\item{points}{List of \verb{(N, 3)} numeric matrices of neuron point coordinates.}
+
+\item{vects}{List of \verb{(N, 3)} numeric matrices of unit tangent vectors, one
+per neuron and aligned with \code{points}.}
+
+\item{alphas}{Optional list of per-point alpha (anisotropy) vectors; \code{NULL}
+disables alpha weighting.}
+
+\item{smat_values}{Numeric scoring matrix, or \code{NULL} for the built-in FCWB
+matrix.}
+
+\item{dist_edges}{Numeric vector of distance bin edges for \code{smat_values}.}
+
+\item{dot_edges}{Numeric vector of dot-product bin edges for \code{smat_values}.}
+
+\item{normalize}{Logical; normalise each score by the query self-match score.}
+
+\item{limit_dist}{Optional numeric distance cut-off; \code{NULL} disables it.}
+
+\item{n_cores}{Optional integer thread count; \code{NULL} or \verb{<= 0} uses all cores.}
+
+\item{precision}{Integer; compute in 32- or 64-bit floats.}
+
+\item{progress}{Logical; display a progress bar.}
+}
+\value{
+Numeric \verb{(n, n)} score matrix; cell \verb{(i, j)} is query \code{i} vs target \code{j}.
+}
 \description{
 \code{points}/\code{vects} are lists of (N, 3) matrices (one per neuron). Returns an
 (n, n) score matrix; cell (i, j) is query i against target j.

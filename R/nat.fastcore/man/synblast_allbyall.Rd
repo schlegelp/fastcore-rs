@@ -16,6 +16,31 @@ synblast_allbyall(
   progress
 )
 }
+\arguments{
+\item{points}{List of \verb{(N, 3)} numeric matrices of connector coordinates,
+one per neuron.}
+
+\item{types}{List of integer vectors of per-connector type ids, aligned with
+\code{points}.}
+
+\item{smat_values}{Numeric scoring matrix, or \code{NULL} for the built-in FCWB
+matrix.}
+
+\item{dist_edges}{Numeric vector of distance bin edges for \code{smat_values}.}
+
+\item{dot_edges}{Numeric vector of dot-product bin edges for \code{smat_values}.}
+
+\item{normalize}{Logical; normalise each score by the query self-match score.}
+
+\item{n_cores}{Optional integer thread count; \code{NULL} or \verb{<= 0} uses all cores.}
+
+\item{precision}{Integer; compute in 32- or 64-bit floats.}
+
+\item{progress}{Logical; display a progress bar.}
+}
+\value{
+Numeric \verb{(n, n)} score matrix; cell \verb{(i, j)} is query \code{i} vs target \code{j}.
+}
 \description{
 \code{points} are lists of (N, 3) connector coordinate matrices and \code{types} the
 matching per-connector integer type ids. Returns an (n, n) score matrix.

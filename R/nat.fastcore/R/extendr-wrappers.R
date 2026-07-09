@@ -11,6 +11,13 @@
 NULL
 
 #' Compute all distances to root.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param sources Optional integer vector of node indices to measure from;
+#'   `NULL` uses every node.
+#' @param weights Optional numeric vector of child-to-parent edge weights;
+#'   `NULL` counts edges (hop distance).
+#' @return Numeric vector of distances to the root for each requested node.
 #' @export
 all_dists_to_root <- function(parents, sources, weights) .Call(wrap__all_dists_to_root, parents, sources, weights)
 
@@ -19,18 +26,41 @@ all_dists_to_root <- function(parents, sources, weights) .Call(wrap__all_dists_t
 #' Importantly this is 0-indexed to match indexing in Rust.
 #' Roots will have parent index -1.
 #'
+#' @param nodes Integer vector of node IDs.
+#' @param parents Integer vector of parent IDs, one per node; roots use their
+#'   own ID or a negative value.
+#' @return Integer vector of 0-based parent indices (`-1` for roots).
 #' @export
 node_indices <- function(nodes, parents) .Call(wrap__node_indices, nodes, parents)
 
 #' Geodesic distances between nodes.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param sources Optional integer vector of source node indices; `NULL` uses
+#'   every node.
+#' @param targets Optional integer vector of target node indices; `NULL` uses
+#'   every node.
+#' @param weights Optional numeric vector of edge weights; `NULL` counts edges.
+#' @param directed Logical; if `TRUE` only traverse edges child-to-parent.
+#' @return Numeric matrix of geodesic distances (sources in rows, targets in
+#'   columns).
 #' @export
 geodesic_distances <- function(parents, sources, targets, weights, directed) .Call(wrap__geodesic_distances, parents, sources, targets, weights, directed)
 
 #' Calculate Strahler Index.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param greedy Logical; use the greedy variant of the algorithm.
+#' @param to_ignore Optional integer vector of node indices to skip.
+#' @param min_twig_size Optional integer; ignore twigs shorter than this.
+#' @return Integer vector with the Strahler index of each node.
 #' @export
 strahler_index <- function(parents, greedy, to_ignore, min_twig_size) .Call(wrap__strahler_index, parents, greedy, to_ignore, min_twig_size)
 
 #' Connected components.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @return Integer vector assigning each node a component id.
 #' @export
 connected_components <- function(parents) .Call(wrap__connected_components, parents)
 
@@ -38,22 +68,40 @@ connected_components <- function(parents) .Call(wrap__connected_components, pare
 #'
 #' Returns indices of nodes to keep.
 #'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param threshold Numeric length threshold; twigs shorter than this are pruned.
+#' @param weights Optional numeric vector of edge weights; `NULL` counts edges.
+#' @return Integer vector of node indices to keep.
 #' @export
 prune_twigs <- function(parents, threshold, weights) .Call(wrap__prune_twigs, parents, threshold, weights)
 
 #' Calculate child -> parent distances.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param x,y,z Numeric vectors of node coordinates, one entry per node.
+#' @return Numeric vector of Euclidean child-to-parent distances (`0` for roots).
 #' @export
 child_to_parent_dists <- function(parents, x, y, z) .Call(wrap__child_to_parent_dists, parents, x, y, z)
 
 #' Return path length from a single node to the root.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param node Integer index of the node to measure from.
+#' @return Numeric path length (edge count) from `node` to its root.
 #' @export
 dist_to_root <- function(parents, node) .Call(wrap__dist_to_root, parents, node)
 
 #' Classify nodes into roots (0), leaves (1), branch points (2) and slabs (3).
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @return Integer vector: `0` root, `1` leaf, `2` branch point, `3` slab.
 #' @export
 classify_nodes <- function(parents) .Call(wrap__classify_nodes, parents)
 
 #' Check whether the tree contains cycles.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @return Logical; `TRUE` if the parent structure contains a cycle.
 #' @export
 has_cycles <- function(parents) .Call(wrap__has_cycles, parents)
 
@@ -62,6 +110,13 @@ has_cycles <- function(parents) .Call(wrap__has_cycles, parents)
 #' `sources` and `targets` are parallel arrays of node indices; the returned
 #' vector holds the distance between each `(source, target)` pair.
 #'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param sources Integer vector of source node indices.
+#' @param targets Integer vector of target node indices (same length as
+#'   `sources`).
+#' @param weights Optional numeric vector of edge weights; `NULL` counts edges.
+#' @param directed Logical; if `TRUE` only traverse edges child-to-parent.
+#' @return Numeric vector with the distance of each `(source, target)` pair.
 #' @export
 geodesic_pairs <- function(parents, sources, targets, weights, directed) .Call(wrap__geodesic_pairs, parents, sources, targets, weights, directed)
 
@@ -72,6 +127,15 @@ geodesic_pairs <- function(parents, sources, targets, weights, directed) .Call(w
 #' target) and `nearest` (index of that target); sources without a reachable
 #' target get `-1`.
 #'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param sources Optional integer vector of source node indices; `NULL` uses
+#'   every node.
+#' @param targets Optional integer vector of target node indices; `NULL` uses
+#'   every node.
+#' @param weights Optional numeric vector of edge weights; `NULL` counts edges.
+#' @param directed Logical; if `TRUE` only traverse edges child-to-parent.
+#' @return List with `distances` (numeric, distance to the nearest target) and
+#'   `nearest` (integer target index, `-1` when unreachable).
 #' @export
 geodesic_nearest <- function(parents, sources, targets, weights, directed) .Call(wrap__geodesic_nearest, parents, sources, targets, weights, directed)
 
@@ -80,6 +144,11 @@ geodesic_nearest <- function(parents, sources, targets, weights, directed) .Call
 #' `presynapses`/`postsynapses` give the number of pre-/post-synapses at each node.
 #' `mode` is one of "centrifugal", "centripetal" or "sum".
 #'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param presynapses Integer vector: number of presynapses at each node.
+#' @param postsynapses Integer vector: number of postsynapses at each node.
+#' @param mode Character; one of `"centrifugal"`, `"centripetal"` or `"sum"`.
+#' @return Integer vector with the synapse flow centrality of each node.
 #' @export
 synapse_flow_centrality <- function(parents, presynapses, postsynapses, mode) .Call(wrap__synapse_flow_centrality, parents, presynapses, postsynapses, mode)
 
@@ -88,10 +157,18 @@ synapse_flow_centrality <- function(parents, presynapses, postsynapses, mode) .C
 #' Returns a list with `segments` (a list of integer vectors, one per segment)
 #' and `lengths` (per-segment lengths, or NULL if no weights were supplied).
 #'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param weights Optional numeric vector of edge weights; `NULL` returns no
+#'   `lengths`.
+#' @return List with `segments` (list of integer node-index vectors) and
+#'   `lengths` (numeric per-segment lengths, or `NULL`).
 #' @export
 generate_segments <- function(parents, weights) .Call(wrap__generate_segments, parents, weights)
 
 #' Break the tree into its linear segments (one integer vector per segment).
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @return List of integer vectors, one per linear segment.
 #' @export
 break_segments <- function(parents) .Call(wrap__break_segments, parents)
 
@@ -101,10 +178,22 @@ break_segments <- function(parents) .Call(wrap__break_segments, parents)
 #' length `n_vertices` assigning each vertex the root-vertex index of its
 #' component.
 #'
+#' @param faces Integer or numeric `(N, 3)` matrix of triangle vertex indices.
+#' @param n_vertices Integer; total number of vertices in the mesh.
+#' @return Integer vector of length `n_vertices` giving each vertex the
+#'   root-vertex index of its component.
 #' @export
 mesh_connected_components <- function(faces, n_vertices) .Call(wrap__mesh_connected_components, faces, n_vertices)
 
 #' The `limit_dist="auto"` value for a scoring matrix.
+#'
+#' @param smat_values Numeric scoring matrix, or `NULL` for the built-in FCWB
+#'   matrix.
+#' @param dist_edges Numeric vector of distance bin edges for `smat_values`.
+#' @param dot_edges Numeric vector of dot-product bin edges for `smat_values`.
+#' @param use_alpha Logical; when falling back to the built-in matrix, use the
+#'   alpha-weighted variant.
+#' @return Numeric `limit_dist` value implied by the scoring matrix.
 #' @export
 smat_auto_limit <- function(smat_values, dist_edges, dot_edges, use_alpha) .Call(wrap__smat_auto_limit, smat_values, dist_edges, dot_edges, use_alpha)
 
@@ -113,6 +202,21 @@ smat_auto_limit <- function(smat_values, dist_edges, dot_edges, use_alpha) .Call
 #' `points`/`vects` are lists of (N, 3) matrices (one per neuron). Returns an
 #' (n, n) score matrix; cell (i, j) is query i against target j.
 #'
+#' @param points List of `(N, 3)` numeric matrices of neuron point coordinates.
+#' @param vects List of `(N, 3)` numeric matrices of unit tangent vectors, one
+#'   per neuron and aligned with `points`.
+#' @param alphas Optional list of per-point alpha (anisotropy) vectors; `NULL`
+#'   disables alpha weighting.
+#' @param smat_values Numeric scoring matrix, or `NULL` for the built-in FCWB
+#'   matrix.
+#' @param dist_edges Numeric vector of distance bin edges for `smat_values`.
+#' @param dot_edges Numeric vector of dot-product bin edges for `smat_values`.
+#' @param normalize Logical; normalise each score by the query self-match score.
+#' @param limit_dist Optional numeric distance cut-off; `NULL` disables it.
+#' @param n_cores Optional integer thread count; `NULL` or `<= 0` uses all cores.
+#' @param precision Integer; compute in 32- or 64-bit floats.
+#' @param progress Logical; display a progress bar.
+#' @return Numeric `(n, n)` score matrix; cell `(i, j)` is query `i` vs target `j`.
 #' @export
 nblast_allbyall <- function(points, vects, alphas, smat_values, dist_edges, dot_edges, normalize, limit_dist, n_cores, precision, progress) .Call(wrap__nblast_allbyall, points, vects, alphas, smat_values, dist_edges, dot_edges, normalize, limit_dist, n_cores, precision, progress)
 
@@ -120,6 +224,23 @@ nblast_allbyall <- function(points, vects, alphas, smat_values, dist_edges, dot_
 #'
 #' Returns an (n_query, n_target) score matrix.
 #'
+#' @param q_points List of `(N, 3)` numeric matrices of query point coordinates.
+#' @param q_vects List of `(N, 3)` numeric matrices of query tangent vectors.
+#' @param t_points List of `(N, 3)` numeric matrices of target point coordinates.
+#' @param t_vects List of `(N, 3)` numeric matrices of target tangent vectors.
+#' @param q_alphas Optional list of per-point alpha vectors for the queries;
+#'   `NULL` disables alpha weighting.
+#' @param t_alphas Optional list of per-point alpha vectors for the targets.
+#' @param smat_values Numeric scoring matrix, or `NULL` for the built-in FCWB
+#'   matrix.
+#' @param dist_edges Numeric vector of distance bin edges for `smat_values`.
+#' @param dot_edges Numeric vector of dot-product bin edges for `smat_values`.
+#' @param normalize Logical; normalise each score by the query self-match score.
+#' @param limit_dist Optional numeric distance cut-off; `NULL` disables it.
+#' @param n_cores Optional integer thread count; `NULL` or `<= 0` uses all cores.
+#' @param precision Integer; compute in 32- or 64-bit floats.
+#' @param progress Logical; display a progress bar.
+#' @return Numeric `(n_query, n_target)` score matrix.
 #' @export
 nblast <- function(q_points, q_vects, t_points, t_vects, q_alphas, t_alphas, smat_values, dist_edges, dot_edges, normalize, limit_dist, n_cores, precision, progress) .Call(wrap__nblast, q_points, q_vects, t_points, t_vects, q_alphas, t_alphas, smat_values, dist_edges, dot_edges, normalize, limit_dist, n_cores, precision, progress)
 
@@ -128,6 +249,25 @@ nblast <- function(q_points, q_vects, t_points, t_vects, q_alphas, t_alphas, sma
 #' `q_idx`/`t_idx` are 0-based indices into the query/target lists; element k of
 #' the result is query `q_idx[k]` against target `t_idx[k]`.
 #'
+#' @param q_points List of `(N, 3)` numeric matrices of query point coordinates.
+#' @param q_vects List of `(N, 3)` numeric matrices of query tangent vectors.
+#' @param t_points List of `(N, 3)` numeric matrices of target point coordinates.
+#' @param t_vects List of `(N, 3)` numeric matrices of target tangent vectors.
+#' @param q_idx Integer vector of 0-based query indices, one per pair.
+#' @param t_idx Integer vector of 0-based target indices (same length as `q_idx`).
+#' @param q_alphas Optional list of per-point alpha vectors for the queries;
+#'   `NULL` disables alpha weighting.
+#' @param t_alphas Optional list of per-point alpha vectors for the targets.
+#' @param smat_values Numeric scoring matrix, or `NULL` for the built-in FCWB
+#'   matrix.
+#' @param dist_edges Numeric vector of distance bin edges for `smat_values`.
+#' @param dot_edges Numeric vector of dot-product bin edges for `smat_values`.
+#' @param normalize Logical; normalise each score by the query self-match score.
+#' @param limit_dist Optional numeric distance cut-off; `NULL` disables it.
+#' @param n_cores Optional integer thread count; `NULL` or `<= 0` uses all cores.
+#' @param precision Integer; compute in 32- or 64-bit floats.
+#' @param progress Logical; display a progress bar.
+#' @return Numeric vector of scores, one per `(query, target)` pair.
 #' @export
 nblast_pairs <- function(q_points, q_vects, t_points, t_vects, q_idx, t_idx, q_alphas, t_alphas, smat_values, dist_edges, dot_edges, normalize, limit_dist, n_cores, precision, progress) .Call(wrap__nblast_pairs, q_points, q_vects, t_points, t_vects, q_idx, t_idx, q_alphas, t_alphas, smat_values, dist_edges, dot_edges, normalize, limit_dist, n_cores, precision, progress)
 
@@ -136,6 +276,19 @@ nblast_pairs <- function(q_points, q_vects, t_points, t_vects, q_idx, t_idx, q_a
 #' `points` are lists of (N, 3) connector coordinate matrices and `types` the
 #' matching per-connector integer type ids. Returns an (n, n) score matrix.
 #'
+#' @param points List of `(N, 3)` numeric matrices of connector coordinates,
+#'   one per neuron.
+#' @param types List of integer vectors of per-connector type ids, aligned with
+#'   `points`.
+#' @param smat_values Numeric scoring matrix, or `NULL` for the built-in FCWB
+#'   matrix.
+#' @param dist_edges Numeric vector of distance bin edges for `smat_values`.
+#' @param dot_edges Numeric vector of dot-product bin edges for `smat_values`.
+#' @param normalize Logical; normalise each score by the query self-match score.
+#' @param n_cores Optional integer thread count; `NULL` or `<= 0` uses all cores.
+#' @param precision Integer; compute in 32- or 64-bit floats.
+#' @param progress Logical; display a progress bar.
+#' @return Numeric `(n, n)` score matrix; cell `(i, j)` is query `i` vs target `j`.
 #' @export
 synblast_allbyall <- function(points, types, smat_values, dist_edges, dot_edges, normalize, n_cores, precision, progress) .Call(wrap__synblast_allbyall, points, types, smat_values, dist_edges, dot_edges, normalize, n_cores, precision, progress)
 
@@ -143,6 +296,21 @@ synblast_allbyall <- function(points, types, smat_values, dist_edges, dot_edges,
 #'
 #' Returns an (n_query, n_target) score matrix.
 #'
+#' @param q_points List of `(N, 3)` numeric matrices of query connector
+#'   coordinates.
+#' @param q_types List of integer vectors of query per-connector type ids.
+#' @param t_points List of `(N, 3)` numeric matrices of target connector
+#'   coordinates.
+#' @param t_types List of integer vectors of target per-connector type ids.
+#' @param smat_values Numeric scoring matrix, or `NULL` for the built-in FCWB
+#'   matrix.
+#' @param dist_edges Numeric vector of distance bin edges for `smat_values`.
+#' @param dot_edges Numeric vector of dot-product bin edges for `smat_values`.
+#' @param normalize Logical; normalise each score by the query self-match score.
+#' @param n_cores Optional integer thread count; `NULL` or `<= 0` uses all cores.
+#' @param precision Integer; compute in 32- or 64-bit floats.
+#' @param progress Logical; display a progress bar.
+#' @return Numeric `(n_query, n_target)` score matrix.
 #' @export
 synblast <- function(q_points, q_types, t_points, t_types, smat_values, dist_edges, dot_edges, normalize, n_cores, precision, progress) .Call(wrap__synblast, q_points, q_types, t_points, t_types, smat_values, dist_edges, dot_edges, normalize, n_cores, precision, progress)
 

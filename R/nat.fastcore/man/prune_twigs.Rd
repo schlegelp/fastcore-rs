@@ -6,6 +6,16 @@
 \usage{
 prune_twigs(parents, threshold, weights)
 }
+\arguments{
+\item{parents}{Integer vector of 0-based parent indices (roots are \verb{< 0}).}
+
+\item{threshold}{Numeric length threshold; twigs shorter than this are pruned.}
+
+\item{weights}{Optional numeric vector of edge weights; \code{NULL} counts edges.}
+}
+\value{
+Integer vector of node indices to keep.
+}
 \description{
 Returns indices of nodes to keep.
 }

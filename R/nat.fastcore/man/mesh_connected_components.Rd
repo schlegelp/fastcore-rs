@@ -6,6 +6,15 @@
 \usage{
 mesh_connected_components(faces, n_vertices)
 }
+\arguments{
+\item{faces}{Integer or numeric \verb{(N, 3)} matrix of triangle vertex indices.}
+
+\item{n_vertices}{Integer; total number of vertices in the mesh.}
+}
+\value{
+Integer vector of length \code{n_vertices} giving each vertex the
+root-vertex index of its component.
+}
 \description{
 \code{faces} is an (N, 3) matrix of vertex indices. Returns an integer vector of
 length \code{n_vertices} assigning each vertex the root-vertex index of its

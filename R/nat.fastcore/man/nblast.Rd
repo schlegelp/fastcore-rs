@@ -21,6 +21,40 @@ nblast(
   progress
 )
 }
+\arguments{
+\item{q_points}{List of \verb{(N, 3)} numeric matrices of query point coordinates.}
+
+\item{q_vects}{List of \verb{(N, 3)} numeric matrices of query tangent vectors.}
+
+\item{t_points}{List of \verb{(N, 3)} numeric matrices of target point coordinates.}
+
+\item{t_vects}{List of \verb{(N, 3)} numeric matrices of target tangent vectors.}
+
+\item{q_alphas}{Optional list of per-point alpha vectors for the queries;
+\code{NULL} disables alpha weighting.}
+
+\item{t_alphas}{Optional list of per-point alpha vectors for the targets.}
+
+\item{smat_values}{Numeric scoring matrix, or \code{NULL} for the built-in FCWB
+matrix.}
+
+\item{dist_edges}{Numeric vector of distance bin edges for \code{smat_values}.}
+
+\item{dot_edges}{Numeric vector of dot-product bin edges for \code{smat_values}.}
+
+\item{normalize}{Logical; normalise each score by the query self-match score.}
+
+\item{limit_dist}{Optional numeric distance cut-off; \code{NULL} disables it.}
+
+\item{n_cores}{Optional integer thread count; \code{NULL} or \verb{<= 0} uses all cores.}
+
+\item{precision}{Integer; compute in 32- or 64-bit floats.}
+
+\item{progress}{Logical; display a progress bar.}
+}
+\value{
+Numeric \verb{(n_query, n_target)} score matrix.
+}
 \description{
 Returns an (n_query, n_target) score matrix.
 }

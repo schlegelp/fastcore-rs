@@ -6,6 +6,14 @@
 \usage{
 dist_to_root(parents, node)
 }
+\arguments{
+\item{parents}{Integer vector of 0-based parent indices (roots are \verb{< 0}).}
+
+\item{node}{Integer index of the node to measure from.}
+}
+\value{
+Numeric path length (edge count) from \code{node} to its root.
+}
 \description{
 Return path length from a single node to the root.
 }

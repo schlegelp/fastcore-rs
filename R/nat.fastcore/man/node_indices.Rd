@@ -6,6 +6,15 @@
 \usage{
 node_indices(nodes, parents)
 }
+\arguments{
+\item{nodes}{Integer vector of node IDs.}
+
+\item{parents}{Integer vector of parent IDs, one per node; roots use their
+own ID or a negative value.}
+}
+\value{
+Integer vector of 0-based parent indices (\code{-1} for roots).
+}
 \description{
 Importantly this is 0-indexed to match indexing in Rust.
 Roots will have parent index -1.

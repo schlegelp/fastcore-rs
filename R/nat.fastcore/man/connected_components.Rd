@@ -6,6 +6,12 @@
 \usage{
 connected_components(parents)
 }
+\arguments{
+\item{parents}{Integer vector of 0-based parent indices (roots are \verb{< 0}).}
+}
+\value{
+Integer vector assigning each node a component id.
+}
 \description{
 Connected components.
 }

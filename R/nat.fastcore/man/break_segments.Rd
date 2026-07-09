@@ -6,6 +6,12 @@
 \usage{
 break_segments(parents)
 }
+\arguments{
+\item{parents}{Integer vector of 0-based parent indices (roots are \verb{< 0}).}
+}
+\value{
+List of integer vectors, one per linear segment.
+}
 \description{
 Break the tree into its linear segments (one integer vector per segment).
 }

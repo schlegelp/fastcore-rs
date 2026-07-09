@@ -23,6 +23,44 @@ nblast_pairs(
   progress
 )
 }
+\arguments{
+\item{q_points}{List of \verb{(N, 3)} numeric matrices of query point coordinates.}
+
+\item{q_vects}{List of \verb{(N, 3)} numeric matrices of query tangent vectors.}
+
+\item{t_points}{List of \verb{(N, 3)} numeric matrices of target point coordinates.}
+
+\item{t_vects}{List of \verb{(N, 3)} numeric matrices of target tangent vectors.}
+
+\item{q_idx}{Integer vector of 0-based query indices, one per pair.}
+
+\item{t_idx}{Integer vector of 0-based target indices (same length as \code{q_idx}).}
+
+\item{q_alphas}{Optional list of per-point alpha vectors for the queries;
+\code{NULL} disables alpha weighting.}
+
+\item{t_alphas}{Optional list of per-point alpha vectors for the targets.}
+
+\item{smat_values}{Numeric scoring matrix, or \code{NULL} for the built-in FCWB
+matrix.}
+
+\item{dist_edges}{Numeric vector of distance bin edges for \code{smat_values}.}
+
+\item{dot_edges}{Numeric vector of dot-product bin edges for \code{smat_values}.}
+
+\item{normalize}{Logical; normalise each score by the query self-match score.}
+
+\item{limit_dist}{Optional numeric distance cut-off; \code{NULL} disables it.}
+
+\item{n_cores}{Optional integer thread count; \code{NULL} or \verb{<= 0} uses all cores.}
+
+\item{precision}{Integer; compute in 32- or 64-bit floats.}
+
+\item{progress}{Logical; display a progress bar.}
+}
+\value{
+Numeric vector of scores, one per \verb{(query, target)} pair.
+}
 \description{
 \code{q_idx}/\code{t_idx} are 0-based indices into the query/target lists; element k of
 the result is query \code{q_idx[k]} against target \code{t_idx[k]}.

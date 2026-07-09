@@ -18,6 +18,35 @@ synblast(
   progress
 )
 }
+\arguments{
+\item{q_points}{List of \verb{(N, 3)} numeric matrices of query connector
+coordinates.}
+
+\item{q_types}{List of integer vectors of query per-connector type ids.}
+
+\item{t_points}{List of \verb{(N, 3)} numeric matrices of target connector
+coordinates.}
+
+\item{t_types}{List of integer vectors of target per-connector type ids.}
+
+\item{smat_values}{Numeric scoring matrix, or \code{NULL} for the built-in FCWB
+matrix.}
+
+\item{dist_edges}{Numeric vector of distance bin edges for \code{smat_values}.}
+
+\item{dot_edges}{Numeric vector of dot-product bin edges for \code{smat_values}.}
+
+\item{normalize}{Logical; normalise each score by the query self-match score.}
+
+\item{n_cores}{Optional integer thread count; \code{NULL} or \verb{<= 0} uses all cores.}
+
+\item{precision}{Integer; compute in 32- or 64-bit floats.}
+
+\item{progress}{Logical; display a progress bar.}
+}
+\value{
+Numeric \verb{(n_query, n_target)} score matrix.
+}
 \description{
 Returns an (n_query, n_target) score matrix.
 }

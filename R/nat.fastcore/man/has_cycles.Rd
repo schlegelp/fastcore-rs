@@ -6,6 +6,12 @@
 \usage{
 has_cycles(parents)
 }
+\arguments{
+\item{parents}{Integer vector of 0-based parent indices (roots are \verb{< 0}).}
+}
+\value{
+Logical; \code{TRUE} if the parent structure contains a cycle.
+}
 \description{
 Check whether the tree contains cycles.
 }

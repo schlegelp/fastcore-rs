@@ -6,6 +6,14 @@
 \usage{
 child_to_parent_dists(parents, x, y, z)
 }
+\arguments{
+\item{parents}{Integer vector of 0-based parent indices (roots are \verb{< 0}).}
+
+\item{x, y, z}{Numeric vectors of node coordinates, one entry per node.}
+}
+\value{
+Numeric vector of Euclidean child-to-parent distances (\code{0} for roots).
+}
 \description{
 Calculate child -> parent distances.
 }

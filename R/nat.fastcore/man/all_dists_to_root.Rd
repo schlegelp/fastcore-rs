@@ -6,6 +6,18 @@
 \usage{
 all_dists_to_root(parents, sources, weights)
 }
+\arguments{
+\item{parents}{Integer vector of 0-based parent indices (roots are \verb{< 0}).}
+
+\item{sources}{Optional integer vector of node indices to measure from;
+\code{NULL} uses every node.}
+
+\item{weights}{Optional numeric vector of child-to-parent edge weights;
+\code{NULL} counts edges (hop distance).}
+}
+\value{
+Numeric vector of distances to the root for each requested node.
+}
 \description{
 Compute all distances to root.
 }
