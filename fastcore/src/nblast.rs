@@ -1,79 +1,223 @@
-use ndarray::{Array1, Array2};
-use ndarray::parallel::prelude::*;
-use kiddo::SquaredEuclidean;
-use kiddo::immutable::float::kdtree::ImmutableKdTree;
+//! NBLAST: a pure-Rust pipeline built on `shull` (3D Delaunay) + `aann-graph`
+//! (neighbourhood-graph nearest-neighbour search) + a fast scoring kernel.
+//!
+//! For an ordered pair of neurons `(i, j)` the score is the *forward* NBLAST
+//! score of query `i` against target `j`: for every point of `i` we find its
+//! nearest point in `j`, combine the euclidean distance with the absolute dot
+//! product of the two tangent vectors via a lookup ("scoring") matrix, and sum.
+//! When `normalize` is set the sum is divided by the query's self-hit score so a
+//! perfect self-match is 1.0.
+//!
+//! Everything runs in Rust under `rayon`; each pair's nearest-neighbour result
+//! is produced and dropped inside its own closure, so peak memory stays at
+//! `O(threads)` NN buffers rather than `O(n^2)`.
+//!
+//! Feature parity with navis' NBLAST is provided through [`Opts`] and the
+//! optional per-point `alpha` arrays:
+//!   * `use_alpha` — weight each dot product by `sqrt(alpha_q * alpha_t)` (pass
+//!     alpha arrays alongside points/vects).
+//!   * `limit_dist` — cap the contribution of points whose nearest neighbour is
+//!     beyond a distance bound (navis' `distance_upper_bound`).
+//!   * `threads` — cap the rayon worker count for one call (navis' `n_cores`).
+//!   * `precision` — the output matrix element type (`f32` / `f64`), chosen by
+//!     the [`ScoreOut`] type parameter; the scoring math always runs in `f64`.
 
-// Get the nearest neighbor for each query point
-pub fn top_nn(
-    pos_array: &Vec<[f64; 3]>,
-    query_array: &Vec<[f64; 3]>,
-    parallel: bool,
-) -> Vec<(f64, usize)> {
+use aann::{graph_from_simplices, PreparedF64};
+use console::Term;
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use ndarray_017::{Array1, Array2};
+use rayon::prelude::*;
+use shull::delaunay4d;
 
-    // Run the query
-    let results: Vec<(f64, usize)> = if parallel {
-        query_array
-            .par_iter()
-            .map(|query_row| bosque::tree::nearest_one(&pos_array, &query_row))
-            .collect()
-    } else {
-        query_array
-            .iter()
-            .map(|query_row| bosque::tree::nearest_one(&pos_array, &query_row))
-            .collect()
-    };
+// ---------------------------------------------------------------------------
+// Output element type (precision)
+// ---------------------------------------------------------------------------
 
-    results
+/// Element type of the returned score matrix. The scoring accumulates in `f64`;
+/// this only controls the width the final score is stored at (navis' `precision`
+/// of 32 / 64). `from_f64` performs the single narrowing cast per cell.
+pub trait ScoreOut: Copy + Send + Sync + 'static {
+    fn from_f64(x: f64) -> Self;
 }
 
-// Get top nearest neighbors but split results into distances and indices
-pub fn top_nn_split(
-    pos_array: &Vec<[f64; 3]>,
-    query_array: &Vec<[f64; 3]>,
-    parallel: bool,
-) -> (Vec<f64>, Vec<usize>) {
-    let results = top_nn(pos_array, query_array, parallel);
-
-    // Unzip the results into two vectors, one for distances and one for indices
-    // I have checked whether unzipping afterwards instead of right away makes
-    // much of a difference and it doesn't seem do so.
-    let (distances, indices): (Vec<f64>, Vec<usize>) = results.into_iter().unzip();
-
-    (distances, indices)
+impl ScoreOut for f32 {
+    #[inline]
+    fn from_f64(x: f64) -> Self {
+        x as f32
+    }
 }
 
-// Load and parse the NBLAST scoring matrix
-pub fn load_smat() -> (Array2<f64>, Vec<[f64; 2]>, Vec<[f64; 2]>) {
-    // Get the current filepath should be src/nblast.rs
-    // The mat should be in the same directory as the module
-    // let filepath = PathBuf::from("../fastcore/fastcore.data/smat_fcwb.csv");
-    // println!("smat file path: {:?}", filepath);
+impl ScoreOut for f64 {
+    #[inline]
+    fn from_f64(x: f64) -> Self {
+        x
+    }
+}
 
-    // This statically includes the smat file as a byte array
-    let data = include_bytes!("../fastcore.data/smat_fcwb.csv");
+// ---------------------------------------------------------------------------
+// Per-call options (parity knobs)
+// ---------------------------------------------------------------------------
 
-    // let mut rdr = csv::Reader::from_path(filepath).unwrap();
-    let mut rdr = csv::Reader::from_reader(data.as_ref());
+/// Scalar options shared by both entry points. Point / tangent / alpha data are
+/// passed separately (they are per-neuron), everything else lives here.
+#[derive(Clone, Copy)]
+pub struct Opts<'a> {
+    /// Scoring matrix (embedded FCWB by default, or a caller-supplied one).
+    pub smat: &'a Smat,
+    /// Divide each score by the query's self-hit so a perfect self-match is 1.0.
+    pub normalize: bool,
+    /// Distance upper bound (navis' `limit_dist`). A query point whose nearest
+    /// neighbour is farther than this is scored at the "far + orthogonal" corner
+    /// of the matrix (`[dist_bin(limit), dot_bin(0)]`); `None` disables it.
+    pub limit_dist: Option<f64>,
+    /// Cap the rayon worker count for this call (navis' `n_cores`). `None` (or
+    /// `Some(0)`) uses the default global pool.
+    pub threads: Option<usize>,
+    /// Draw a progress bar over the scoring cells to stderr.
+    pub progress: bool,
+}
 
-    let mut smat: Vec<Vec<f64>> = vec![];
-    let mut bins_vec: Vec<[f64; 2]> = vec![];
-    let mut bins_dist: Vec<[f64; 2]> = vec![];
+/// Run `f` on a rayon pool capped to `threads` workers, or on the default global
+/// pool when `threads` is `None`/`Some(0)`. A fresh scoped pool is built per call
+/// only when a cap is requested, so the common (uncapped) path is zero-overhead.
+fn with_pool<R, F>(threads: Option<usize>, f: F) -> R
+where
+    R: Send,
+    F: FnOnce() -> R + Send,
+{
+    match threads {
+        Some(n) if n >= 1 => rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .build()
+            .expect("failed to build rayon thread pool")
+            .install(f),
+        _ => f(),
+    }
+}
 
-    // Read the header row
-    if let Ok(row) = rdr.headers() {
-        bins_vec = row
-            .iter()
-            .skip(1)
-            .map(|x| {
-                let bounds: Vec<&str> = x.split(',').collect();
-                let left_bound: f64 = bounds[0].trim_start_matches('(').parse().unwrap();
-                let right_bound: f64 = bounds[1].trim_end_matches(']').parse().unwrap();
-                [left_bound, right_bound]
-            })
-            .collect();
+// ---------------------------------------------------------------------------
+// Scoring matrix
+// ---------------------------------------------------------------------------
+
+/// A binned NBLAST scoring matrix plus the *left* edges of its bins.
+///
+/// `dist_edges.len() == values.nrows()` and `dot_edges.len() == values.ncols()`.
+/// Edges are the ascending left boundary of each bin; binning clamps values
+/// below the first edge into bin 0 and values above the last edge into the last
+/// bin (see [`digitize`]).
+pub struct Smat {
+    pub values: Array2<f64>,
+    pub dist_edges: Vec<f64>,
+    pub dot_edges: Vec<f64>,
+}
+
+impl Smat {
+    #[inline]
+    fn dist_bin(&self, d: f64) -> usize {
+        digitize(&self.dist_edges, d)
     }
 
-    // Read the remaining rows
+    #[inline]
+    fn dot_bin(&self, dp: f64) -> usize {
+        digitize(&self.dot_edges, dp)
+    }
+
+    /// Self-hit score of a query with `n_query_pts` points (no alpha): a perfect
+    /// match has zero distance and perfectly aligned tangents, i.e. the top-right
+    /// cell of the matrix, summed over all points.
+    #[inline]
+    pub fn self_hit(&self, n_query_pts: usize) -> f64 {
+        let ncols = self.values.ncols();
+        self.values[(0, ncols - 1)] * n_query_pts as f64
+    }
+
+    /// Self-hit score when `use_alpha` is on. A self-match still has zero distance
+    /// (dist bin 0) but the dot product for point `p` collapses to `alpha[p]`
+    /// (`|v·v| * sqrt(alpha_p * alpha_p) = alpha_p`), so the per-point column
+    /// varies. Matches navis' `calc_self_hit` alpha branch.
+    #[inline]
+    pub fn self_hit_alpha(&self, alpha: &[f64]) -> f64 {
+        alpha
+            .iter()
+            .map(|&a| self.values[(0, self.dot_bin(a))])
+            .sum()
+    }
+
+    /// Build from plain parts (as passed across the Python boundary).
+    pub fn from_parts(
+        values: Vec<f64>,
+        nrows: usize,
+        ncols: usize,
+        dist_edges: Vec<f64>,
+        dot_edges: Vec<f64>,
+    ) -> Smat {
+        let values = Array2::from_shape_vec((nrows, ncols), values)
+            .expect("smat values length must equal nrows * ncols");
+        Smat {
+            values,
+            dist_edges,
+            dot_edges,
+        }
+    }
+
+    /// The navis `limit_dist="auto"` value for this matrix: `1.05 *` the left edge
+    /// of the last distance bin (equivalent to navis' `boundaries[-2] * 1.05` for
+    /// our inf-terminated matrices, where the last bin is open-ended).
+    pub fn auto_limit(&self) -> f64 {
+        self.dist_edges.last().copied().unwrap_or(0.0) * 1.05
+    }
+}
+
+/// Index of the bin `value` falls into, given ascending left `edges`.
+///
+/// Returns `(# edges <= value) - 1`, clamped to `[0, edges.len() - 1]`. This
+/// reproduces the classic NBLAST right-closed `(a, b]` binning with below-range
+/// clamped to the first bin and above-range clamped to the last.
+#[inline]
+fn digitize(edges: &[f64], value: f64) -> usize {
+    let c = edges.partition_point(|&e| e <= value);
+    if c == 0 {
+        0
+    } else {
+        c - 1
+    }
+}
+
+/// Parse the `(left,right]` label of a bin and return its left boundary.
+fn left_bound(label: &str) -> f64 {
+    let left = label.split(',').next().unwrap_or("0");
+    left.trim().trim_start_matches('(').parse().unwrap()
+}
+
+/// Load the embedded FCWB scoring matrix (21 distance bins x 10 dot bins).
+pub fn load_smat() -> Smat {
+    parse_smat(include_bytes!("../fastcore.data/smat_fcwb.csv"))
+}
+
+/// Load the embedded alpha-weighted FCWB matrix (16 distance bins x 10 dot bins).
+///
+/// This is the default matrix navis uses for `use_alpha` NBLAST — it is binned
+/// and calibrated differently from the plain FCWB matrix, so alpha-weighted
+/// scores need it (rather than the plain matrix) to match navis.
+pub fn load_smat_alpha() -> Smat {
+    parse_smat(include_bytes!("../fastcore.data/smat_alpha_fcwb.csv"))
+}
+
+/// Parse a FCWB-style CSV (row/column bin labels + one value per cell) into a
+/// [`Smat`] with the ascending left bin edges.
+fn parse_smat(data: &[u8]) -> Smat {
+    let mut rdr = csv::Reader::from_reader(data);
+
+    // Header row: dot-product (tangent alignment) bin labels; skip the corner.
+    let mut dot_edges: Vec<f64> = vec![];
+    if let Ok(row) = rdr.headers() {
+        dot_edges = row.iter().skip(1).map(left_bound).collect();
+    }
+
+    // Remaining rows: distance bin label + one value per dot bin.
+    let mut dist_edges: Vec<f64> = vec![];
+    let mut flat: Vec<f64> = vec![];
+    let mut ncols = 0usize;
     for result in rdr.records() {
         let record = result.unwrap();
         let row: Vec<f64> = record
@@ -81,261 +225,538 @@ pub fn load_smat() -> (Array2<f64>, Vec<[f64; 2]>, Vec<[f64; 2]>) {
             .skip(1)
             .map(|x| x.parse::<f64>().unwrap())
             .collect();
-        let index_value = record.get(0).unwrap();
-        let bounds: Vec<&str> = index_value.split(',').collect();
-        let left_bound: f64 = bounds[0].trim_start_matches('(').parse().unwrap();
-        let right_bound: f64 = bounds[1].trim_end_matches(']').parse().unwrap();
-        bins_dist.push([left_bound, right_bound]);
-        smat.push(row);
+        ncols = row.len();
+        dist_edges.push(left_bound(record.get(0).unwrap()));
+        flat.extend(row);
     }
+    let nrows = dist_edges.len();
+    let values = Array2::from_shape_vec((nrows, ncols), flat).unwrap();
 
-    // We're converting the smat to an ndarray here because the vector of vectors
-    // is not guaranteed to be contiguous in memory which could make it slower
-    // to access.
-    let smat_array: Array2<f64> = Array2::from_shape_vec((smat.len(), smat[0].len()), smat.into_iter().flatten().collect()).unwrap();
-
-    (smat_array, bins_vec, bins_dist)
+    Smat {
+        values,
+        dist_edges,
+        dot_edges,
+    }
 }
 
-// Calculate NBLAST score from distances and vector dotproducts
-fn calc_nblast_score(
-    dists: &Vec<f64>,
-    dotprods: &Vec<f64>,
-    smat: &Array2<f64>,
-    bins_vec: &Vec<[f64; 2]>,
-    bins_dist: &Vec<[f64; 2]>,
-) -> f64 {
-    let mut dist_binned: Vec<usize> = vec![0; dists.len()];
-    let mut dp_binned: Vec<usize> = vec![0; dotprods.len()];
-    let mut score: f64 = 0.0;
+// ---------------------------------------------------------------------------
+// Neighbourhood-graph index (Delaunay build)
+// ---------------------------------------------------------------------------
 
-    // Bin distances
-    for (i, dist) in dists.iter().enumerate() {
-        for (j, bounds) in bins_dist.iter().rev().enumerate() {
-            if dist >= &bounds[0] {
-                dist_binned[i] = bins_dist.len() - j - 1;
-                break;
+/// Build an `aann` nearest-neighbour index for one neuron.
+///
+/// Points are triangulated with `shull` and the resulting tetrahedra are turned
+/// into a CSR neighbourhood graph. Points are packed in their original order, so
+/// the neighbour indices returned by queries align with the caller's
+/// tangent-vector array. Degenerate inputs (fewer than 5 points, or coplanar /
+/// cospherical clouds that have no 3D triangulation) fall back to a complete
+/// graph, over which graph descent is still exact.
+pub fn build_index(points: &[[f64; 3]]) -> PreparedF64 {
+    let n = points.len();
+    let flat: Vec<f64> = points.iter().flatten().copied().collect();
+    let arr: Array2<f64> = Array2::from_shape_vec((n, 3), flat).unwrap();
+
+    let (indptr, indices) = match delaunay4d(arr.view()) {
+        Ok((tets, _neighbors, _duplicates)) => {
+            let simplices_flat: Vec<u64> = tets.iter().flatten().map(|&v| v as u64).collect();
+            let simplices: Array2<u64> =
+                Array2::from_shape_vec((tets.len(), 4), simplices_flat).unwrap();
+            graph_from_simplices(simplices.view(), n)
+        }
+        // Rare for real (3D) neurons; keep the pipeline robust rather than panic.
+        Err(_) => complete_graph_csr(n),
+    };
+
+    PreparedF64::new(arr.view(), indptr.view(), indices.view())
+}
+
+/// CSR adjacency of a complete graph on `n` vertices (each vertex adjacent to
+/// all others). Used as the fallback when Delaunay triangulation is undefined.
+fn complete_graph_csr(n: usize) -> (Array1<usize>, Array1<usize>) {
+    let mut indptr: Vec<usize> = Vec::with_capacity(n + 1);
+    let mut indices: Vec<usize> = Vec::with_capacity(n.saturating_mul(n.saturating_sub(1)));
+    indptr.push(0);
+    for k in 0..n {
+        for j in 0..n {
+            if j != k {
+                indices.push(j);
             }
         }
+        indptr.push(indices.len());
     }
+    (Array1::from(indptr), Array1::from(indices))
+}
 
-    // Bin dotproducts
-    for (i, dp) in dotprods.iter().enumerate() {
-        for (j, bounds) in bins_vec.iter().rev().enumerate() {
-            if dp >= &bounds[0] {
-                dp_binned[i] = j;
-                break;
+// ---------------------------------------------------------------------------
+// Scoring
+// ---------------------------------------------------------------------------
+
+/// Raw (un-normalized) forward NBLAST score for one query -> target pair.
+///
+/// `dists[p]` / `idx[p]` are the nearest-neighbour distance and target index for
+/// query point `p`; `q_vect[p]` and `t_vect[idx[p]]` are the tangent vectors.
+///
+/// * `q_alpha` / `t_alpha` — when both are `Some`, the dot product is weighted by
+///   `sqrt(q_alpha[p] * t_alpha[idx[p]])` (navis' `use_alpha`).
+/// * `limit_dist` — when `Some(lim)`, a point whose nearest neighbour is farther
+///   than `lim` is scored at `[dist_bin(lim), dot_bin(0)]`, exactly reproducing
+///   navis (which caps the distance at the bound and zeroes the dot product /
+///   alpha for such "no match within bound" points). Because `aann` returns the
+///   true global nearest neighbour, `dists[p] > lim` is equivalent to navis'
+///   `distance_upper_bound` finding no neighbour.
+#[allow(clippy::too_many_arguments)]
+pub fn score_pair(
+    dists: &[f64],
+    idx: &[usize],
+    q_vect: &[[f64; 3]],
+    t_vect: &[[f64; 3]],
+    q_alpha: Option<&[f64]>,
+    t_alpha: Option<&[f64]>,
+    limit_dist: Option<f64>,
+    smat: &Smat,
+) -> f64 {
+    let mut raw = 0.0;
+    for p in 0..dists.len() {
+        let d = dists[p];
+        // Over-limit: cap the distance at the bound and treat the dot product as
+        // zero (navis zeroes both the dot product and, if used, alpha).
+        if let Some(lim) = limit_dist {
+            if d > lim {
+                raw += smat.values[(smat.dist_bin(lim), smat.dot_bin(0.0))];
+                continue;
             }
         }
+        let j = idx[p];
+        let mut dp = (q_vect[p][0] * t_vect[j][0]
+            + q_vect[p][1] * t_vect[j][1]
+            + q_vect[p][2] * t_vect[j][2])
+            .abs();
+        if let (Some(qa), Some(ta)) = (q_alpha, t_alpha) {
+            dp *= (qa[p] * ta[j]).sqrt();
+        }
+        raw += smat.values[(smat.dist_bin(d), smat.dot_bin(dp))];
     }
-
-    // Sum up the scores
-    for (dist, dotprod) in dist_binned.iter().zip(dp_binned) {
-        score += smat[(*dist, dotprod)];
-    }
-    score
+    raw
 }
 
-// Calculate NBLAST score for a self hit
-fn calc_self_hit(
-    n_nodes: usize,
-    smat: &Array2<f64>
-) -> f64 {
-    let mut score: f64 = 0.0;
-
-    // Self-hit means 0 distance and perfectly aligned vectors
-    // I.e. the top right corner of the scoring matrix
-    let k = smat.shape()[1] - 1;
-    let max_score = smat[(0, k)];
-    score += max_score * n_nodes as f64;
-
-    score
-}
-
-// Calculate dotproducts for nearest neighbour vectors
-fn calc_dotproducts(
-    query_vec: &Vec<[f64; 3]>,
-    target_vec: &Vec<[f64; 3]>,
-    nn_indices: &Vec<usize>,
-) -> Vec<f64> {
-    let mut dotprods: Vec<f64> = vec![0.0; query_vec.len()];
-    for (i, nn) in nn_indices.iter().enumerate() {
-        dotprods[i] = query_vec[i][0] * target_vec[*nn][0]
-            + query_vec[i][1] * target_vec[*nn][1]
-            + query_vec[i][2] * target_vec[*nn][2];
-        dotprods[i] = dotprods[i].abs()
-    }
-    dotprods
-}
-
-// Run NBLAST for a single query - target pair
-pub fn nblast_single(
-    query_array: Vec<[f64; 3]>,
-    query_vec: &Vec<[f64; 3]>,
-    mut target_array: Vec<[f64; 3]>,
-    target_vec: &Vec<[f64; 3]>,
-    normalize: bool,
-    parallel: bool,
-    make_tree: bool
-) -> f64 {
-    if make_tree {
-        bosque::tree::build_tree(&mut target_array);
-    }
-
-    // Get the nearest neighbor for each query point
-    let (distances, indices) = top_nn_split(&target_array, &query_array, parallel);
-
-    // Calculate dotproducts for nearest neighbor vectors
-    let dotprods = calc_dotproducts(&query_vec, &target_vec, &indices);
-
-    // Calculate the nblast score
-    let (smat, bins_vec, bins_dist) = load_smat();
-    let score = calc_nblast_score(
-        &distances,
-        &dotprods,
-        &smat,
-        &bins_vec,
-        &bins_dist,
-    );
-
-    if normalize {
-        // Calculate the self hit score
-        let self_hit = calc_self_hit(query_vec.len(), &smat);
-        // Normalize the score
-        score / self_hit
-    } else {
-        score
-    }
-}
-
-// Run all-by-all NBLAST query using bosque as the backend
-pub fn nblast_allbyall_bosque(
-    points: Vec<Vec<[f64; 3]>>,
-    vecs: Vec<Vec<[f64; 3]>>,
-) -> Array2<f32> {
-    // Prepare the output array
-    // Note we're using a 1d array here because otherwise we end up running into
-    // issues with parallelization. We will reshape it to 2d at the very end.
-    // Also note that we fill the array with values from 0 to n^2 - 1 so that
-    // we can use the initial value to calculate the row and column indices
-    // as we iterate over each cell of the array.
-    let mut dists: Array1<f32> = Array1::from_iter((0..(points.len()*points.len())).map(|x| x as f32));
-
-    // Load the scoring matrix
-    let (smat, bins_vec, bins_dist) = load_smat();
-
-    rayon::ThreadPoolBuilder::new().num_threads(10).build_global().unwrap();
-
-    // Go over each cell of the matrix and run a single query-target NBLAST
-    dists.par_map_inplace(|x| {
-        let i = *x as usize;
-        let row_ix = i / points.len();  // this is already floor division
-        let col_ix = i - (row_ix * points.len());
-
-        // Get the nearest neighbor for each query point
-        // Ideas for a potential speed ups:
-        // 1. Avoid splitting results in the top_nn function and instead return a single vector of tuples
-        // 2. Have only one loop over the results that calculates both dotprods as well as the final score
-        // Scratch that: tried and didn't seem to be making much of a difference
-        // Notes:
-        // - the vast majority of time (99.9%) is spend in this function -> we need to see if we can optimize this
-        let (distances, indices) = top_nn_split(&points[row_ix], &points[col_ix], false);
-
-        // Calculate dotproducts for nearest neighbor vectors
-        let dotprods = calc_dotproducts(&vecs[col_ix], &vecs[row_ix], &indices);
-
-        let score = calc_nblast_score(
-            &distances,
-            &dotprods,
-            &smat,
-            &bins_vec,
-            &bins_dist,
-        ) as f32;
-
-        *x = score;
-    });
-
-    dists.into_shape((points.len(), points.len())).unwrap()
-}
-
-// Run all-by-all NBLAST query using kiddo as NN backend
-pub fn nblast_allbyall_kiddo(
-    points: Vec<Vec<[f64; 3]>>,
-    vecs: Vec<Vec<[f64; 3]>>,
-) -> Array2<f32> {
-    // Prepare the output array
-    // Note we're using a 1d array here because otherwise we end up running into
-    // issues with parallelization. We will reshape it to 2d at the very end.
-    // Also note that we fill the array with values from 0 to n^2 - 1 so that
-    // we can use the initial value to calculate the row and column indices
-    // as we iterate over each cell of the array.
-    let mut dists: Array1<f32> = Array1::from_iter((0..(points.len()*points.len())).map(|x| x as f32));
-
-    // Load the scoring matrix
-    let (smat, bins_vec, bins_dist) = load_smat();
-
-    // For some reason we have to convert points like this
-    // let points2: Vec[] = points.iter().map(|p| vec![p[0], p[1], p[2]]).collect();
-
-    // println!("Trying to make one tree!");
-    // let entries = vec![
-    // [0f64, 0f64, 0f64],
-    // [1f64, 1f64, 1f64],
-    // [2f64, 2f64, 2f64],
-    // [3f64, 3f64, 3f64]
-    // ];
-    // let p = vec![points[0][0], points[0][1], points[0][2]];
-    // println!("p: {:?}", p);
-    // let p2 = points[0].as_slice().to_vec();
-    // println!("p2: {:?}", p2);
-    // let tree: ImmutableKdTree<f64, usize, 3, 32> = ImmutableKdTree::new_from_slice(&p);
-    // println!("Made one tree!");
-
-    // Prepare the trees
-    let trees: Vec<ImmutableKdTree<f64, usize, 3, 32>> = points
-        .iter()
-        .map(|point_set| ImmutableKdTree::new_from_slice(point_set.as_slice()))
-        .collect();
-
-    // println!("Trees: {:?}", trees.len());
-
-    // Go over each cell of the matrix and run a single query-target NBLAST
-    dists.par_map_inplace(|x| {
-        let i = *x as usize;
-        let row_ix = i / points.len();  // this is already floor division
-        let col_ix = i - (row_ix * points.len());
-
-        // Get the target tree
-        //let tgt = trees.get(row_ix).unwrap();
-        let tgt = &trees[row_ix];
-
-        // Get the nearest neighbor for each query point
-        let results: Vec<(usize, f64)> = points
-            .get(col_ix)
+/// Progress bar over `total` scoring cells (only built when `progress` is on).
+///
+/// Drawn to stderr — animated in place in a terminal, plain reprinted text under
+/// Jupyter. We draw through `ProgressDrawTarget::term_like` rather than
+/// `ProgressDrawTarget::stderr()` because the latter self-hides whenever stderr is
+/// not a TTY (which is exactly the Jupyter case), leaving notebook users with no
+/// feedback at all.
+fn scoring_bar(total: u64) -> ProgressBar {
+    let target = ProgressDrawTarget::term_like(Box::new(Term::stderr()));
+    let pb = ProgressBar::with_draw_target(Some(total), target);
+    pb.set_style(
+        ProgressStyle::with_template("NBLAST {bar:40} {pos}/{len} [{elapsed_precise}] ETA {eta}")
             .unwrap()
-            .iter()
-            .map(|p| {
-                let nn = tgt.nearest_one::<SquaredEuclidean>(p);
-                (nn.item as usize, nn.distance.sqrt())
+            .progress_chars("=>-"),
+    );
+    // Keep the readout advancing even when ticks arrive sparsely (e.g. Jupyter).
+    pb.enable_steady_tick(std::time::Duration::from_millis(250));
+    pb
+}
+
+/// All-by-all forward NBLAST over `points` / `vects` (one entry per neuron).
+///
+/// `alphas`, when supplied, are the per-point alpha weights (one array per
+/// neuron, same shape as `points`), enabling navis' `use_alpha` weighting; pass
+/// `None` to disable it. Returns a flat row-major `n * n` matrix where cell
+/// `[i * n + j]` is the score of query `i` against target `j`. With
+/// `opts.normalize`, the diagonal is 1.0. The element type `T` selects the output
+/// precision.
+pub fn nblast_allbyall<T: ScoreOut>(
+    points: Vec<Vec<[f64; 3]>>,
+    vects: Vec<Vec<[f64; 3]>>,
+    alphas: Option<Vec<Vec<f64>>>,
+    opts: Opts,
+) -> Vec<T> {
+    let Opts {
+        smat,
+        normalize,
+        limit_dist,
+        threads,
+        progress,
+    } = opts;
+
+    with_pool(threads, move || {
+        let n = points.len();
+
+        // Build every index once, in parallel; reused across all pairs it appears in.
+        let indices: Vec<PreparedF64> = points.par_iter().map(|p| build_index(p)).collect();
+        let self_hits: Vec<f64> = (0..n)
+            .map(|i| match &alphas {
+                Some(a) => smat.self_hit_alpha(&a[i]),
+                None => smat.self_hit(points[i].len()),
             })
             .collect();
 
-        // Extract the distances and indices from `results`
-        let (indices, distances): (Vec<usize>, Vec<f64>) = results.into_iter().unzip();
+        let mut scores: Vec<T> = vec![T::from_f64(0.0); n * n];
 
-        // Calculate dotproducts for nearest neighbor vectors
-        let dotprods = calc_dotproducts(&vecs[col_ix], &vecs[row_ix], &indices);
+        // Per-cell scoring, shared by the silent and progress paths so the default
+        // (progress = false) path keeps its original zero-overhead loop rather than
+        // paying a contended per-cell atomic increment on a shared progress counter.
+        let compute = |(k, out): (usize, &mut T)| {
+            let i = k / n; // query neuron
+            let j = k % n; // target neuron
+            let s = if i == j {
+                // Self-match: normalized -> 1.0; raw -> the self-hit score.
+                if normalize {
+                    1.0
+                } else {
+                    self_hits[i]
+                }
+            } else {
+                // Pass `limit_dist` as the query's distance upper bound: `aann`
+                // prunes descents that provably can't beat it and returns the miss
+                // marker (inf, |target|) for query points with no neighbour within
+                // the bound, which `score_pair` caps at the far corner.
+                let (d, ix) = indices[j].query_prepared(&indices[i], limit_dist);
+                let (qa, ta) = match &alphas {
+                    Some(a) => (Some(a[i].as_slice()), Some(a[j].as_slice())),
+                    None => (None, None),
+                };
+                let raw = score_pair(
+                    d.as_slice().unwrap(),
+                    ix.as_slice().unwrap(),
+                    &vects[i],
+                    &vects[j],
+                    qa,
+                    ta,
+                    limit_dist,
+                    smat,
+                );
+                if normalize {
+                    raw / self_hits[i]
+                } else {
+                    raw
+                }
+            };
+            *out = T::from_f64(s);
+        };
 
-        let score = calc_nblast_score(
-            &distances,
-            &dotprods,
-            &smat,
-            &bins_vec,
-            &bins_dist,
-        ) as f32;
+        if progress {
+            let bar = scoring_bar((n * n) as u64);
+            scores.par_iter_mut().enumerate().for_each(|item| {
+                compute(item);
+                bar.inc(1);
+            });
+            bar.finish();
+        } else {
+            scores.par_iter_mut().enumerate().for_each(compute);
+        }
 
-        *x = score;
-    });
+        scores
+    })
+}
 
-    dists.into_shape((points.len(), points.len())).unwrap()
+/// Forward NBLAST of every query neuron against every target neuron.
+///
+/// `q_alphas` / `t_alphas`, when both supplied, enable `use_alpha` weighting.
+/// Returns a flat row-major `n_query * n_target` matrix where cell
+/// `[qi * n_target + tj]` is the score of query `qi` against target `tj`. The
+/// element type `T` selects the output precision.
+#[allow(clippy::too_many_arguments)]
+pub fn nblast_query_target<T: ScoreOut>(
+    q_points: Vec<Vec<[f64; 3]>>,
+    q_vects: Vec<Vec<[f64; 3]>>,
+    q_alphas: Option<Vec<Vec<f64>>>,
+    t_points: Vec<Vec<[f64; 3]>>,
+    t_vects: Vec<Vec<[f64; 3]>>,
+    t_alphas: Option<Vec<Vec<f64>>>,
+    opts: Opts,
+) -> Vec<T> {
+    let Opts {
+        smat,
+        normalize,
+        limit_dist,
+        threads,
+        progress,
+    } = opts;
+
+    with_pool(threads, move || {
+        let nq = q_points.len();
+        let nt = t_points.len();
+
+        let q_idx: Vec<PreparedF64> = q_points.par_iter().map(|p| build_index(p)).collect();
+        let t_idx: Vec<PreparedF64> = t_points.par_iter().map(|p| build_index(p)).collect();
+        let self_hits: Vec<f64> = (0..nq)
+            .map(|i| match &q_alphas {
+                Some(a) => smat.self_hit_alpha(&a[i]),
+                None => smat.self_hit(q_points[i].len()),
+            })
+            .collect();
+
+        let n_cells = nq * nt;
+        let mut scores: Vec<T> = vec![T::from_f64(0.0); n_cells];
+
+        // Shared per-cell body; see `nblast_allbyall` for why the paths are split.
+        let compute = |(k, out): (usize, &mut T)| {
+            let qi = k / nt;
+            let tj = k % nt;
+            let (d, ix) = t_idx[tj].query_prepared(&q_idx[qi], limit_dist);
+            let (qa, ta) = match (&q_alphas, &t_alphas) {
+                (Some(qa), Some(ta)) => (Some(qa[qi].as_slice()), Some(ta[tj].as_slice())),
+                _ => (None, None),
+            };
+            let raw = score_pair(
+                d.as_slice().unwrap(),
+                ix.as_slice().unwrap(),
+                &q_vects[qi],
+                &t_vects[tj],
+                qa,
+                ta,
+                limit_dist,
+                smat,
+            );
+            *out = T::from_f64(if normalize {
+                raw / self_hits[qi]
+            } else {
+                raw
+            });
+        };
+
+        if progress {
+            let bar = scoring_bar(n_cells as u64);
+            scores.par_iter_mut().enumerate().for_each(|item| {
+                compute(item);
+                bar.inc(1);
+            });
+            bar.finish();
+        } else {
+            scores.par_iter_mut().enumerate().for_each(compute);
+        }
+
+        scores
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Tiny 2x2 scoring matrix: dist bins [0,1) / [1,inf), dot bins [0,0.5) / [0.5,1].
+    fn test_smat() -> Smat {
+        Smat {
+            values: Array2::from_shape_vec((2, 2), vec![1.0, 2.0, 3.0, 4.0]).unwrap(),
+            dist_edges: vec![0.0, 1.0],
+            dot_edges: vec![0.0, 0.5],
+        }
+    }
+
+    fn test_opts(smat: &Smat) -> Opts<'_> {
+        Opts {
+            smat,
+            normalize: true,
+            limit_dist: None,
+            threads: None,
+            progress: false,
+        }
+    }
+
+    #[test]
+    fn digitize_clamps_and_bins() {
+        let edges = [0.0, 1.0, 2.0];
+        assert_eq!(digitize(&edges, -5.0), 0); // below range -> first bin
+        assert_eq!(digitize(&edges, 0.0), 0); // exactly first edge
+        assert_eq!(digitize(&edges, 0.5), 0);
+        assert_eq!(digitize(&edges, 1.0), 1); // exactly an edge -> its bin
+        assert_eq!(digitize(&edges, 1.5), 1);
+        assert_eq!(digitize(&edges, 2.0), 2);
+        assert_eq!(digitize(&edges, 99.0), 2); // above range -> last bin
+    }
+
+    #[test]
+    fn load_smat_has_expected_shape() {
+        let smat = load_smat();
+        assert_eq!(smat.values.nrows(), 21);
+        assert_eq!(smat.values.ncols(), 10);
+        assert_eq!(smat.dist_edges.len(), 21);
+        assert_eq!(smat.dot_edges.len(), 10);
+        // First edges are the left bound of the first bin, i.e. 0.
+        assert_eq!(smat.dist_edges[0], 0.0);
+        assert_eq!(smat.dot_edges[0], 0.0);
+    }
+
+    #[test]
+    fn load_smat_alpha_has_expected_shape() {
+        let smat = load_smat_alpha();
+        // The alpha-calibrated FCWB matrix uses coarser distance bins (16 vs 21).
+        assert_eq!(smat.values.nrows(), 16);
+        assert_eq!(smat.values.ncols(), 10);
+        assert_eq!(smat.dist_edges.len(), 16);
+        assert_eq!(smat.dot_edges.len(), 10);
+        assert_eq!(smat.dist_edges[0], 0.0);
+    }
+
+    #[test]
+    fn score_pair_hand_example() {
+        let smat = test_smat();
+        // Point 0: dist 0.5 -> dist bin 0; dot |0.8| -> dot bin 1 => values[0,1] = 2.0
+        // Point 1: dist 1.5 -> dist bin 1; dot |0.3| -> dot bin 0 => values[1,0] = 3.0
+        let dists = [0.5, 1.5];
+        let idx = [0usize, 1usize];
+        let q_vect = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let t_vect = [[0.8, 0.0, 0.0], [0.0, 0.3, 0.0]];
+        let raw = score_pair(&dists, &idx, &q_vect, &t_vect, None, None, None, &smat);
+        assert!((raw - 5.0).abs() < 1e-12, "got {raw}");
+    }
+
+    #[test]
+    fn score_pair_alpha_weights_dot() {
+        let smat = test_smat();
+        // Without alpha the aligned tangents (|dot| = 1) land in dot bin 1.
+        // alpha product 1.0 * 0.09 -> sqrt 0.3 scales the dot to 0.3 -> dot bin 0,
+        // moving the score from values[0,1]=2.0 to values[0,0]=1.0.
+        let dists = [0.5];
+        let idx = [0usize];
+        let q_vect = [[1.0, 0.0, 0.0]];
+        let t_vect = [[1.0, 0.0, 0.0]];
+        let qa = [1.0];
+        let ta = [0.09];
+        let raw = score_pair(&dists, &idx, &q_vect, &t_vect, Some(&qa), Some(&ta), None, &smat);
+        assert!((raw - 1.0).abs() < 1e-12, "got {raw}");
+    }
+
+    #[test]
+    fn score_pair_limit_dist_caps_over_limit() {
+        let smat = test_smat();
+        // Point 0: dist 0.5 <= 1.0 -> real score values[0,1] = 2.0.
+        // Point 1: dist 5.0 > 1.0 -> capped: dist bin(1.0)=1, dot bin(0)=0 => 3.0.
+        let dists = [0.5, 5.0];
+        let idx = [0usize, 1usize];
+        let q_vect = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let t_vect = [[0.8, 0.0, 0.0], [0.0, 0.9, 0.0]];
+        let raw = score_pair(&dists, &idx, &q_vect, &t_vect, None, None, Some(1.0), &smat);
+        assert!((raw - 5.0).abs() < 1e-12, "got {raw}");
+    }
+
+    #[test]
+    fn self_hit_scales_with_points() {
+        let smat = test_smat();
+        // top-right cell = values[0, 1] = 2.0
+        assert!((smat.self_hit(3) - 6.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn self_hit_alpha_sums_dot_bins() {
+        let smat = test_smat();
+        // dist bin 0 row = [1.0, 2.0]; alpha 0.3 -> dot bin 0 => 1.0, 0.8 -> bin 1 => 2.0.
+        let alpha = [0.3, 0.8];
+        assert!((smat.self_hit_alpha(&alpha) - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn build_index_delaunay_and_fallback() {
+        // 5 distinct points -> a real Delaunay triangulation.
+        let tetra = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.25, 0.25, 0.25],
+        ];
+        let idx = build_index(&tetra);
+        assert_eq!(idx.n(), 5);
+
+        // 3 points -> degenerate for shull -> complete-graph fallback, still valid.
+        let tri = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let idx = build_index(&tri);
+        assert_eq!(idx.n(), 3);
+    }
+
+    #[test]
+    fn allbyall_diagonal_is_one_when_normalized() {
+        let cloud_a = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.5, 0.5, 0.5],
+        ];
+        let cloud_b = vec![
+            [5.0, 5.0, 5.0],
+            [6.0, 5.0, 5.0],
+            [5.0, 6.0, 5.0],
+            [5.0, 5.0, 6.0],
+            [5.5, 5.5, 5.5],
+        ];
+        let vect: Vec<[f64; 3]> = vec![[1.0, 0.0, 0.0]; 5];
+        let points = vec![cloud_a, cloud_b];
+        let vects = vec![vect.clone(), vect];
+        let smat = load_smat();
+
+        let m: Vec<f32> = nblast_allbyall(points, vects, None, test_opts(&smat));
+        assert_eq!(m.len(), 4);
+        assert!((m[0] - 1.0).abs() < 1e-6, "diag[0] = {}", m[0]);
+        assert!((m[3] - 1.0).abs() < 1e-6, "diag[1] = {}", m[3]);
+        assert!(m.iter().all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn allbyall_f64_precision_matches_f32() {
+        let cloud_a = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.5, 0.5, 0.5],
+        ];
+        let cloud_b = vec![
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [2.0, 1.0, 0.0],
+            [2.0, 0.0, 1.0],
+            [2.5, 0.5, 0.5],
+        ];
+        let vect: Vec<[f64; 3]> = vec![[1.0, 0.0, 0.0]; 5];
+        let points = vec![cloud_a, cloud_b];
+        let vects = vec![vect.clone(), vect];
+        let smat = load_smat();
+
+        let m32: Vec<f32> = nblast_allbyall(points.clone(), vects.clone(), None, test_opts(&smat));
+        let m64: Vec<f64> = nblast_allbyall(points, vects, None, test_opts(&smat));
+        assert_eq!(m32.len(), m64.len());
+        for (a, b) in m32.iter().zip(m64.iter()) {
+            assert!((*a as f64 - *b).abs() < 1e-5, "{a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn query_target_capped_threads_matches_default() {
+        // A worker cap must not change the result, only how it is scheduled.
+        let cloud_a = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.5, 0.5, 0.5],
+        ];
+        let cloud_b = vec![
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [2.0, 1.0, 0.0],
+            [2.0, 0.0, 1.0],
+            [2.5, 0.5, 0.5],
+        ];
+        let vect: Vec<[f64; 3]> = vec![[1.0, 0.0, 0.0]; 5];
+        let smat = load_smat();
+        let q = vec![cloud_a];
+        let t = vec![cloud_b];
+        let qv = vec![vect.clone()];
+        let tv = vec![vect];
+
+        let mut opts = test_opts(&smat);
+        let default: Vec<f64> =
+            nblast_query_target(q.clone(), qv.clone(), None, t.clone(), tv.clone(), None, opts);
+        opts.threads = Some(1);
+        let capped: Vec<f64> = nblast_query_target(q, qv, None, t, tv, None, opts);
+        assert_eq!(default, capped);
+    }
 }

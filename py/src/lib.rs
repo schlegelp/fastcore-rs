@@ -38,9 +38,6 @@ mod fastcore {
     use super::dist_to_root_py;
 
     #[pymodule_export]
-    use super::top_nn_py;
-
-    #[pymodule_export]
     use super::geodesic_distances_py;
 
     #[pymodule_export]
@@ -50,10 +47,13 @@ mod fastcore {
     use super::geodesic_pairs_py;
 
     #[pymodule_export]
-    use super::nblast_single_py;
+    use super::nblast_allbyall_py;
 
     #[pymodule_export]
-    use super::nblast_allbyall_py;
+    use super::nblast_py;
+
+    #[pymodule_export]
+    use super::smat_auto_limit_py;
 
     #[pymodule_export]
     use super::synapse_flow_centrality_py;

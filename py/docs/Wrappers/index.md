@@ -34,6 +34,6 @@ array([[0., 1., 5., 2.],
 1. Not all arguments are supported. For example, `dijkstra` currently does not
    support `return_predecessors=True`. See the docstrings for details!
 2. By default, these functions will perform a check to make sure the input graph
-   is actually directed and acyclic. These are generally fairly fast but if you
+   is actually a rooted tree. These are generally fairly fast but if you
    are confident in your graphs and want to save the odd millisecond, you can
    set `checks=False`.

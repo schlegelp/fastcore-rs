@@ -314,60 +314,7 @@ def test_classify_nodes(swc):
     print(f"Timing: {dur:.4f}s")
 
 
-def test_nblast_single():
-    fp = Path(__file__).parent / "722817260.swc"
-    swc1 = pd.read_csv(fp, comment="#", header=None, sep=" ")
-    xyz1 = swc1[[2, 3, 4]].values.astype(np.float64) / 1000
-    vec1 = calculate_tangent_vectors(xyz1, k=5)
-
-    fp = Path(__file__).parent / "754534424.swc"
-    swc2 = pd.read_csv(fp, comment="#", header=None, sep=" ")
-    xyz2 = swc2[[2, 3, 4]].values.astype(np.float64) / 1000
-    vec2 = calculate_tangent_vectors(xyz2, k=5)
-
-    start = time.time()
-    score = fastcore._fastcore.nblast_single(xyz1, vec1, xyz2, vec2, parallel=True)
-    dur = time.time() - start
-
-    print(f"NBLAST score: {score} ({dur:.4f}s)")
-
-
-def calculate_tangent_vectors(points, k):
-    """Calculate tangent vectors.
-
-    Parameters
-    ----------
-    k :         int
-                Number of nearest neighbours to use for tangent vector
-                calculation.
-
-    Returns
-    -------
-    Dotprops
-                Only if ``inplace=False``.
-
-    """
-    # Create the KDTree and get the k-nearest neighbors for each point
-    dist, ix = KDTree(points).query(points, k=k)
-
-    # Get points: array of (N, k, 3)
-    pt = points[ix]
-
-    # Generate centers for each cloud of k nearest neighbors
-    centers = np.mean(pt, axis=1)
-
-    # Generate vector from center
-    cpt = pt - centers.reshape((pt.shape[0], 1, 3))
-
-    # Get inertia (N, 3, 3)
-    inertia = cpt.transpose((0, 2, 1)) @ cpt
-
-    # Extract vector and alpha
-    u, s, vh = np.linalg.svd(inertia)
-    vect = vh[:, 0, :]
-    # alpha = (s[:, 0] - s[:, 1]) / np.sum(s, axis=1)
-
-    return vect
+# NBLAST is covered by tests/test_nblast.py.
 
 
 if __name__ == "__main__":
