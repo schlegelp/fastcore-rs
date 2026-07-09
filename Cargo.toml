@@ -2,6 +2,12 @@
 members = ["fastcore", "py", "R/nat.fastcore/src/rust"]
 resolver = "2"
 
+# Single source of truth for the version; member crates inherit it via
+# `version.workspace = true`. To bump: edit here, then run
+# `python scripts/sync-versions.py` (updates R/nat.fastcore/DESCRIPTION).
+[workspace.package]
+version = "0.3.0"
+
 [workspace.dependencies]
 fastcore = { path = "fastcore" }
 

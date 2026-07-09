@@ -12,3 +12,18 @@ We provide [R](./R/nat.fastcore/) and [Python](./py) bindings.
 ## Usage
 
 See the README for the [navis](./py) and [nat](./R/nat.fastcore/) wrappers for instructions on installation and usage.
+
+## Versioning
+
+The package version is tracked in a single place: `[workspace.package] version`
+in the root [`Cargo.toml`](./Cargo.toml). The Rust crates inherit it via
+`version.workspace = true` and the Python package via maturin
+(`dynamic = ["version"]`). To bump the version, edit that one field and run:
+
+```sh
+python scripts/sync-versions.py
+```
+
+This propagates the version to `R/nat.fastcore/DESCRIPTION` (the only file that
+needs a literal copy). CI checks that it stays in sync via
+`python scripts/sync-versions.py --check`.

@@ -1,2 +1,7 @@
-__version__ = "0.3.0"
-__version_vector__ = (0, 3, 0)
+import re
+from importlib.metadata import version
+
+__version__ = version("navis-fastcore")
+__version_vector__ = tuple(
+    int(x) for x in re.match(r"(\d+)\.(\d+)\.(\d+)", __version__).groups()
+)
