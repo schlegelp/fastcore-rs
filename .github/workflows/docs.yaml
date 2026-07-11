@@ -4,9 +4,6 @@ on:
     branches:
       - master
       - main
-defaults:
- run:
-  working-directory: ./py
 permissions:
   contents: write
 jobs:
@@ -21,15 +18,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
-      - run: echo "cache_id=$(date --utc '+%V')" >> $GITHUB_ENV
-      - uses: actions/cache@v4
-        with:
-          key: mkdocs-material-${{ env.cache_id }}
-          path: .cache
-          restore-keys: |
-            mkdocs-material-
-      - run: |
-          pip install mkdocs-material[imaging]
-          pip install mkdocs-caption mkdocs-minify-plugin mkdocs-glightbox mkdocstrings-python
-          pip install mkdocs-literate-nav mkdocs-section-index mkdocs-gen-files
-      - run: mkdocs gh-deploy --force
+      # zensical builds the site; mkdocstrings-python renders the Python API
+      # (it is not bundled with zensical). ghp-import pushes to gh-pages -- this
+      # is what `mkdocs gh-deploy` did internally, so the Pages setup (deploy
+      # from the gh-pages branch) keeps working unchanged.
+      - run: pip install zensical mkdocstrings-python mkdocs-glightbox ghp-import
+      - run: zensical build --clean
+      - run: ghp-import --no-jekyll --push --force --message "docs: deploy ${{ github.sha }}" site

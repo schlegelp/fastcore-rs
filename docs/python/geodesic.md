@@ -3,3 +3,5 @@
 ::: navis_fastcore.geodesic_matrix
 
 ::: navis_fastcore.geodesic_pairs
+
+::: navis_fastcore.geodesic_nearest

@@ -9,6 +9,12 @@ a special case of directed acyclic graphs (DAG) used to represent neurons.
 
 We provide [R](./R/nat.fastcore/) and [Python](./py) bindings.
 
+## Documentation
+
+The [docs](https://schlegelp.github.io/fastcore-rs/) cover all three surfaces —
+the Rust core crate plus the Python and R bindings — and include a matrix of which
+functions are available in which language.
+
 ## Usage
 
 See the README for the [navis](./py) and [nat](./R/nat.fastcore/) wrappers for instructions on installation and usage.

@@ -1,0 +1,113 @@
+[project]
+site_name = "fastcore-rs"
+site_description = "Fast Rust implementations of navis/nat core functions, with Python and R bindings."
+site_url = "https://schlegelp.github.io/fastcore-rs/"
+
+repo_name = "schlegelp/fastcore-rs"
+repo_url = "https://github.com/schlegelp/fastcore-rs"
+edit_uri = "edit/main/docs/"
+
+nav = [
+  { "Home" = "index.md" },
+  { "Concepts" = [
+    { "Rooted trees" = "concepts/trees.md" },
+    { "NBLAST" = "concepts/nblast.md" },
+  ] },
+  { "Python (navis-fastcore)" = [
+    "python/index.md",
+    { "Geodesic distances" = "python/geodesic.md" },
+    { "Connected components" = "python/cc.md" },
+    { "Morphology" = "python/morphology.md" },
+    { "Segments" = "python/segments.md" },
+    { "Mesh" = "python/mesh.md" },
+    { "Healing" = "python/healing.md" },
+    { "NBLAST" = "python/nblast.md" },
+    { "Scipy wrappers" = "python/wrappers.md" },
+  ] },
+  { "R (nat.fastcore)" = "r/index.md" },
+  { "Rust (fastcore crate)" = "rust/index.md" },
+]
+
+# ----------------------------------------------------------------------------
+# Theme
+# ----------------------------------------------------------------------------
+[project.theme]
+
+# Do not load typefaces from Google Fonts; fall back to system fonts. This is
+# what the MkDocs `privacy` plugin used to buy us (it inlined the Google Fonts
+# assets); Zensical has no such plugin, but not fetching them at all achieves
+# the same GDPR outcome.
+font = false
+
+features = [
+  "content.action.edit",
+  "content.code.annotate",
+  "content.code.copy",
+  "content.tabs.link",
+  "navigation.indexes",
+  "navigation.instant",
+  "navigation.top",
+  "search.highlight",
+  "toc.follow",
+]
+
+[[project.theme.palette]]
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to light mode"
+
+# ----------------------------------------------------------------------------
+# Markdown extensions
+# ----------------------------------------------------------------------------
+[project.markdown_extensions.admonition]
+[project.markdown_extensions.attr_list]
+[project.markdown_extensions.footnotes]
+[project.markdown_extensions.md_in_html]
+
+[project.markdown_extensions.toc]
+permalink = true
+
+[project.markdown_extensions.pymdownx.details]
+
+[project.markdown_extensions.pymdownx.highlight]
+anchor_linenums = true
+line_spans = "__span"
+pygments_lang_class = true
+
+[project.markdown_extensions.pymdownx.inlinehilite]
+[project.markdown_extensions.pymdownx.snippets]
+[project.markdown_extensions.pymdownx.superfences]
+
+[project.markdown_extensions.pymdownx.tabbed]
+alternate_style = true
+
+# ----------------------------------------------------------------------------
+# Plugins
+# ----------------------------------------------------------------------------
+
+# Click-to-zoom on the figures in concepts/trees.md and python/segments.md.
+[project.plugins.glightbox]
+
+# The docs build never installs `navis-fastcore`, so griffe collects the API
+# statically from the source tree. It only finds it if `py/` is on the path.
+[project.plugins.mkdocstrings.handlers.python]
+paths = ["py"]
+inventories = [
+  "https://docs.python.org/3/objects.inv",
+  "https://numpy.org/doc/stable/objects.inv",
+]
+
+[project.plugins.mkdocstrings.handlers.python.options]
+show_root_heading = true
+docstring_style = "numpy"
+line_length = 50
+show_signature_annotations = true
+annotations_path = "source"
+show_bases = false
+show_source = false
+docstring_section_style = "spacy"

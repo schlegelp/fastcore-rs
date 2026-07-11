@@ -37,3 +37,9 @@ array([[0., 1., 5., 2.],
    is actually a rooted tree. These are generally fairly fast but if you
    are confident in your graphs and want to save the odd millisecond, you can
    set `checks=False`.
+
+## API
+
+::: navis_fastcore.wrappers.csgraph.dijkstra
+
+::: navis_fastcore.wrappers.csgraph.connected_components

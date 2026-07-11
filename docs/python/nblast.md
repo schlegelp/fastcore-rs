@@ -1,11 +1,7 @@
 # NBLAST
 
-`fastcore` implements NBLAST as a pure-Rust pipeline: a Delaunay neighbourhood
-graph is built per neuron (via [`shull`](https://github.com/schlegelp/shull)),
-nearest neighbours are found by graph descent (via
-[`aann`](https://github.com/schlegelp/aann)), and the scoring runs in Rust. The
-whole all-by-all releases the GIL and parallelises across cores, streaming each
-pair's nearest-neighbour result so peak memory stays low.
+See [Concepts › NBLAST](../concepts/nblast.md) for how the scoring works and what
+the Rust pipeline does under the hood. This page covers the Python API.
 
 A "dotprop" is any object exposing `points` (an `(N, 3)` array of coordinates)
 and `vect` (an `(N, 3)` array of **unit** tangent vectors). When `use_alpha` is
@@ -138,3 +134,20 @@ Both `nblast_allbyall` and `nblast` accept the same options:
   float64; `precision` only sets the storage width of the result.
 - `progress` (default `False`): show a progress bar over the scoring pairs
   (drawn from Rust to stderr; plain reprinted text under Jupyter).
+
+## API
+
+<!-- `navis_fastcore.nblast` is ambiguous: the module shadows the re-exported
+     function, and griffe resolves the module first. Address the function by its
+     defining path and render it under its short name. -->
+::: navis_fastcore.nblast.nblast
+    options:
+      show_root_full_path: false
+
+::: navis_fastcore.nblast_allbyall
+
+::: navis_fastcore.nblast_smart
+
+::: navis_fastcore.synblast
+
+::: navis_fastcore.Synapses
