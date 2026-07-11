@@ -312,11 +312,23 @@ def test_smart_parity_vs_navis(dotprops):
     navis = pytest.importorskip("navis")
     dp = _navis_dotprops(navis, dotprops)
     ids = [d.id for d in dp]
-    # t=0 selects every cell in both engines, so smart reduces to a full NBLAST.
-    res = navis.nblast_smart(dp, t=0, progress=False)
-    M_navis = res.loc[ids, ids].to_numpy()
-    M_fast = np.asarray(fastcore.nblast_smart(dotprops, t=0, precision=64))
     off = ~np.eye(len(dotprops), dtype=bool)
+    n = len(dotprops)
+
+    # Selecting every cell reduces smart to a full NBLAST in both engines. We ask for
+    # that with criterion "N" (t = all targets): navis only accepts 0 < t < 100 for
+    # "percentile", so the t=0 that selects everything here is rejected there.
+    res = navis.nblast_smart(dp, t=n, criterion="N", progress=False)
+    M_navis = res.loc[ids, ids].to_numpy()
+    M_fast = np.asarray(fastcore.nblast_smart(dotprops, t=n, criterion="N", precision=64))
+    assert np.abs(M_fast - M_navis)[off].max() < 2e-3, np.abs(M_fast - M_navis)[off].max()
+
+    # With the default percentile only the top cells per row are recomputed at full
+    # resolution and the rest keep their coarse score, so this also pins the pre-pass
+    # (downsampling) and the selection to navis'.
+    res = navis.nblast_smart(dp, t=90, progress=False)
+    M_navis = res.loc[ids, ids].to_numpy()
+    M_fast = np.asarray(fastcore.nblast_smart(dotprops, t=90, precision=64))
     assert np.abs(M_fast - M_navis)[off].max() < 2e-3, np.abs(M_fast - M_navis)[off].max()
 
 
