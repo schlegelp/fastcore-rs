@@ -13,10 +13,10 @@
 //! * [`stitch_fragments`] — given node coordinates and a per-node component
 //!   label, return the inter-fragment bridge edges (node-index pairs) that
 //!   connect the fragments with minimal total added length: a Boruvka MST over
-//!   the fragments driven by a single R-tree, where each node walks its nearest
-//!   neighbours until it reaches a different fragment. The result is a true
-//!   minimum spanning tree of the "closest pair between fragments" graph, so the
-//!   total added cable matches navis' healing exactly.
+//!   the fragments, driven by a k-d tree that finds each node's nearest neighbour
+//!   *in a different fragment* without enumerating its own (see [`KdTree`]). The
+//!   result is a true minimum spanning tree of the "closest pair between
+//!   fragments" graph, so the total added cable matches navis' healing exactly.
 //! * [`reroot_rewire`] — given the original topology plus a set of new
 //!   undirected edges and a preferred root, regenerate a valid `parents` array
 //!   via BFS. This replaces navis' networkx `dfs_tree`/`minimum_spanning_tree`
@@ -28,7 +28,6 @@
 
 use ndarray::{Array, Array1, ArrayView1, ArrayView2};
 use rayon::prelude::*;
-use rstar::{PointDistance, RTree, RTreeObject, AABB};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -52,26 +51,218 @@ fn atomic_min_f64(cell: &AtomicU64, val: f64) {
     }
 }
 
-/// A candidate node in the spatial index: its coordinates plus its node index.
-///
-/// Generic over the dimensionality `D` so the same search can run in plain 3D
-/// space or in an augmented space with extra feature columns (see
-/// [`stitch_fragments`]).
-struct Pt<const D: usize> {
-    xyz: [f64; D],
-    idx: u32,
-}
+/// Marker for "the points below this subtree are not all in one component".
+const MIXED: u32 = u32::MAX;
 
-impl<const D: usize> RTreeObject for Pt<D> {
-    type Envelope = AABB<[f64; D]>;
-    fn envelope(&self) -> Self::Envelope {
-        AABB::from_point(self.xyz)
+/// Marker stored in `KdNode::left` to say "this node is a leaf".
+const LEAF: u32 = u32::MAX;
+
+/// Points per k-d tree leaf. Big enough that a leaf scan amortises the descent,
+/// small enough that a leaf is rarely worth splitting further.
+const LEAF_SIZE: usize = 16;
+
+/// Squared Euclidean distance between two points.
+#[inline]
+fn dist2<const D: usize>(a: &[f64; D], b: &[f64; D]) -> f64 {
+    let mut sum = 0.0;
+    for k in 0..D {
+        let d = a[k] - b[k];
+        sum += d * d;
     }
+    sum
 }
 
-impl<const D: usize> PointDistance for Pt<D> {
-    fn distance_2(&self, p: &[f64; D]) -> f64 {
-        (0..D).map(|k| (self.xyz[k] - p[k]).powi(2)).sum()
+/// Squared distance from `q` to the closest point of the box `lo..hi` (zero if
+/// `q` is inside it).
+#[inline]
+fn box_dist2<const D: usize>(lo: &[f64; D], hi: &[f64; D], q: &[f64; D]) -> f64 {
+    let mut sum = 0.0;
+    for k in 0..D {
+        let d = if q[k] < lo[k] {
+            lo[k] - q[k]
+        } else if q[k] > hi[k] {
+            q[k] - hi[k]
+        } else {
+            0.0
+        };
+        sum += d * d;
+    }
+    sum
+}
+
+/// One node of the k-d tree. Leaves have `left == LEAF` and cover the points
+/// `start..end` of the (tree-ordered) point array; internal nodes index their
+/// two children.
+struct KdNode<const D: usize> {
+    lo: [f64; D],
+    hi: [f64; D],
+    start: u32,
+    end: u32,
+    left: u32,
+    right: u32,
+}
+
+/// A static k-d tree supporting *nearest neighbour in a different component*.
+///
+/// This is the primitive a stock nearest-neighbour index cannot provide. Walking
+/// neighbours in distance order and skipping own-component hits is quadratic when
+/// fragments are spatially separated: a node deep inside a fragment has to
+/// enumerate every one of its own fragment-mates before the search ever reaches a
+/// foreign point, and no distance bound can prevent that (the bound is already
+/// tight — the whole fragment simply lies inside it).
+///
+/// The fix is to prune at the *subtree* level rather than the point level. Each
+/// round we label every subtree with the super-component shared by all points
+/// below it, or [`MIXED`] if they disagree ([`KdTree::label`]). A subtree whose
+/// label equals the querying node's own super-component cannot contain a foreign
+/// point, so the search skips it in O(1) — turning "walk across my entire
+/// fragment" into "step over it". Fragments are spatially coherent, so most
+/// subtrees are single-component and the labels prune almost everything.
+struct KdTree<const D: usize> {
+    /// Point coordinates, permuted into tree order.
+    pts: Vec<[f64; D]>,
+    /// Original node index of each point, in the same tree order.
+    idx: Vec<u32>,
+    nodes: Vec<KdNode<D>>,
+}
+
+impl<const D: usize> KdTree<D> {
+    fn build(mut items: Vec<([f64; D], u32)>) -> Self {
+        let mut nodes = Vec::with_capacity(2 * items.len() / LEAF_SIZE + 1);
+        Self::split(&mut items, 0, &mut nodes);
+        let (pts, idx) = items.into_iter().unzip();
+        KdTree { pts, idx, nodes }
+    }
+
+    /// Recursively split `items` at the median of its widest axis, appending the
+    /// resulting nodes in pre-order (so children always sit *after* their parent,
+    /// which is what lets [`KdTree::label`] work bottom-up by iterating in
+    /// reverse). Returns the index of the node covering `items`.
+    fn split(items: &mut [([f64; D], u32)], offset: usize, nodes: &mut Vec<KdNode<D>>) -> u32 {
+        let me = nodes.len() as u32;
+        let mut lo = [f64::INFINITY; D];
+        let mut hi = [f64::NEG_INFINITY; D];
+        for (p, _) in items.iter() {
+            for k in 0..D {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+        nodes.push(KdNode {
+            lo,
+            hi,
+            start: offset as u32,
+            end: (offset + items.len()) as u32,
+            left: LEAF,
+            right: LEAF,
+        });
+        if items.len() <= LEAF_SIZE {
+            return me;
+        }
+
+        let axis = (0..D)
+            .max_by(|&a, &b| (hi[a] - lo[a]).total_cmp(&(hi[b] - lo[b])))
+            .unwrap();
+        let mid = items.len() / 2;
+        items.select_nth_unstable_by(mid, |a, b| a.0[axis].total_cmp(&b.0[axis]));
+        let (left_items, right_items) = items.split_at_mut(mid);
+        let left = Self::split(left_items, offset, nodes);
+        let right = Self::split(right_items, offset + mid, nodes);
+        nodes[me as usize].left = left;
+        nodes[me as usize].right = right;
+        me
+    }
+
+    /// Label every subtree with the super-component shared by all its points, or
+    /// [`MIXED`]. `roots` gives each point's super-component in tree order.
+    ///
+    /// Super-components only ever merge, so labels get *coarser* — and the
+    /// pruning therefore stronger — as Boruvka progresses.
+    fn label(&self, roots: &[u32], out: &mut Vec<u32>) {
+        out.clear();
+        out.resize(self.nodes.len(), MIXED);
+        // Children come after their parent, so reverse order is bottom-up.
+        for t in (0..self.nodes.len()).rev() {
+            let nd = &self.nodes[t];
+            out[t] = if nd.left == LEAF {
+                let slots = &roots[nd.start as usize..nd.end as usize];
+                let first = slots[0];
+                if slots.iter().all(|&r| r == first) {
+                    first
+                } else {
+                    MIXED
+                }
+            } else {
+                let (a, b) = (out[nd.left as usize], out[nd.right as usize]);
+                // `MIXED == MIXED` correctly stays MIXED.
+                if a == b {
+                    a
+                } else {
+                    MIXED
+                }
+            };
+        }
+    }
+
+    /// Find the nearest point to `q` whose super-component differs from
+    /// `my_root`, considering only points closer than `best`.
+    ///
+    /// `best` is both the input bound and the output squared distance; `hit` is
+    /// set to the winning point's *tree-order slot*. If nothing beats `best` the
+    /// two are left untouched — so passing the component's current best-known
+    /// bridge as `best` abandons nodes that cannot improve on it.
+    #[allow(clippy::too_many_arguments)]
+    fn nearest_foreign(
+        &self,
+        t: u32,
+        q: &[f64; D],
+        my_root: u32,
+        roots: &[u32],
+        labels: &[u32],
+        best: &mut f64,
+        hit: &mut u32,
+    ) {
+        let t = t as usize;
+        // The entire subtree is in my super-component: nothing foreign below it.
+        if labels[t] == my_root {
+            return;
+        }
+        let nd = &self.nodes[t];
+        if box_dist2(&nd.lo, &nd.hi, q) >= *best {
+            return;
+        }
+        if nd.left == LEAF {
+            let (start, end) = (nd.start as usize, nd.end as usize);
+            for (k, (&root, p)) in roots[start..end]
+                .iter()
+                .zip(&self.pts[start..end])
+                .enumerate()
+            {
+                if root == my_root {
+                    continue;
+                }
+                let d2 = dist2(p, q);
+                if d2 < *best {
+                    *best = d2;
+                    *hit = (start + k) as u32;
+                }
+            }
+            return;
+        }
+        // Descend into the nearer child first: it tightens `best`, which then
+        // prunes the sibling.
+        let (l, r) = (nd.left, nd.right);
+        let dl = {
+            let c = &self.nodes[l as usize];
+            box_dist2(&c.lo, &c.hi, q)
+        };
+        let dr = {
+            let c = &self.nodes[r as usize];
+            box_dist2(&c.lo, &c.hi, q)
+        };
+        let (near, far) = if dl <= dr { (l, r) } else { (r, l) };
+        self.nearest_foreign(near, q, my_root, roots, labels, best, hit);
+        self.nearest_foreign(far, q, my_root, roots, labels, best, hit);
     }
 }
 
@@ -125,6 +316,17 @@ impl UnionFind {
 /// A candidate bridge found during a Boruvka round:
 /// `(my_super_root, squared_distance, node_a, node_b)`.
 type Candidate = (u32, f64, u32, u32);
+
+/// What a Boruvka round learned about one candidate node.
+enum Learned {
+    /// Its exact nearest foreign neighbour: `(squared_distance, tree slot)`.
+    Exact(f64, u32),
+    /// Its query was abandoned; the nearest foreign neighbour is at least this
+    /// far (squared) away.
+    AtLeast(f64),
+    /// Nothing new — a memo or floor already settled it.
+    Nothing,
+}
 
 /// Reduce a round's candidate edges to the single cheapest outgoing edge per
 /// super-component, then add them via union-find (skipping edges whose endpoints
@@ -251,19 +453,16 @@ fn stitch_impl<const D: usize>(
         return Vec::new();
     }
 
-    // 3. Build a single R-tree over the candidate nodes (items carry node index).
-    let tree: RTree<Pt<D>> = RTree::bulk_load(
-        candidates
-            .iter()
-            .map(|&i| Pt {
-                xyz: point(i),
-                idx: i as u32,
-            })
-            .collect(),
-    );
+    // 3. Build the k-d tree over the candidate nodes. Points are held in tree
+    //    order from here on; `tree.idx[slot]` maps back to a node index.
+    let tree: KdTree<D> = KdTree::build(candidates.iter().map(|&i| (point(i), i as u32)).collect());
+    let n_slots = candidates.len();
 
-    let max_dist_sq = if max_dist.is_finite() {
-        max_dist * max_dist
+    // `max_dist` is inclusive, but the search below prunes anything not *strictly*
+    // better than its bound, so start one ULP above the cap.
+    let cap = if max_dist.is_finite() {
+        let sq = max_dist * max_dist;
+        f64::from_bits(sq.to_bits() + 1)
     } else {
         f64::INFINITY
     };
@@ -275,73 +474,103 @@ fn stitch_impl<const D: usize>(
     //    weight, using true per-component minima makes the result identical (in
     //    length) to navis' MST — not merely a valid healing.
     //
-    //    Each node finds its nearest cross-component neighbour by walking the
-    //    R-tree's lazy nearest-neighbour iterator in ascending distance, stopping
-    //    at the first node in a different super-component.
+    //    A round is one `nearest_foreign` query per candidate node, pruned two
+    //    ways. Subtree labels skip a node's own fragment wholesale (see [`KdTree`]).
+    //    On top of that, a per-super-component bound — the shortest cross-edge any
+    //    of its nodes has found so far this round — abandons any query that can no
+    //    longer beat it: such a node cannot supply the component's minimum. The
+    //    bound is a minimum over *real* cross-edges, so it never drops below the
+    //    component's true minimum, and the node holding that minimum is therefore
+    //    never pruned before reaching it. The result stays exact.
     //
-    //    The walk is pruned by a per-super-component bound: the best cross-edge
-    //    any of its nodes has found so far this round. Once a node's iterator
-    //    passes that distance it cannot beat the bound, so it cannot supply the
-    //    component's minimum and is abandoned. This keeps the result exact (the
-    //    node holding the true minimum is never pruned before reaching it) while
-    //    confining nodes deep inside a fragment — which would otherwise walk
-    //    across the whole fragment — to a small ball.
+    //    Two memos then carry work across rounds. Super-components only ever grow,
+    //    so the foreign set only ever shrinks and a node's nearest-foreign distance
+    //    only ever *increases*:
+    //
+    //    * `memo[s]` — node `s`'s exact nearest foreign neighbour. If that
+    //      neighbour has not since been absorbed into `s`'s own super-component it
+    //      is still the nearest one, so the round needs no query for `s` at all.
+    //    * `floor[s]` — a lower bound on `s`'s nearest-foreign distance, recorded
+    //      whenever a query is abandoned. A lower bound on a quantity that only
+    //      grows stays valid for good, so once it reaches the component's bound `s`
+    //      can be skipped without touching the tree.
     let mut uf = UnionFind::new(n_comps);
     let mut bridges: Vec<(i32, i32, f32)> = Vec::with_capacity(n_comps - 1);
 
-    // Reused across rounds to avoid reallocating.
-    const SEED_STEPS: usize = 8;
+    // All indexed by tree slot, so the hot loops stay in tree order.
+    let mut memo: Vec<Option<(f64, u32)>> = vec![None; n_slots];
+    let mut floor: Vec<f64> = vec![0.0; n_slots];
+    let mut slot_root: Vec<u32> = vec![MIXED; n_slots];
+    let mut labels: Vec<u32> = Vec::new();
 
     while uf.n_sets > 1 {
-        // Snapshot the current super-root of every candidate node so the
+        // Snapshot each point's super-root, then label the subtrees, so the
         // parallel sweep below is purely read-only.
         let comp_root: Vec<u32> = (0..n_comps as u32).map(|c| uf.find(c)).collect();
-        let mut node_super_root: Vec<u32> = vec![u32::MAX; n];
-        for &i in &candidates {
-            node_super_root[i] = comp_root[node_comp[i] as usize];
+        for s in 0..n_slots {
+            slot_root[s] = comp_root[node_comp[tree.idx[s] as usize] as usize];
         }
+        tree.label(&slot_root, &mut labels);
 
-        // Per-super-component pruning bound (squared distance).
-        let bound: Vec<AtomicU64> = (0..n_comps)
-            .map(|_| AtomicU64::new(max_dist_sq.to_bits()))
-            .collect();
+        // Per-super-component bound (squared distance).
+        let bound: Vec<AtomicU64> = (0..n_comps).map(|_| AtomicU64::new(cap.to_bits())).collect();
 
-        // Seed pass: a cheap, bounded peek at each node's few nearest neighbours.
-        // Any cross-component hit lowers its component's bound, so the exact pass
-        // below starts with a tight radius instead of searching from infinity.
-        candidates.par_iter().for_each(|&i| {
-            let my_root = node_super_root[i];
-            let q = point(i);
-            for pt in tree.nearest_neighbor_iter(&q).take(SEED_STEPS) {
-                if node_super_root[pt.idx as usize] != my_root {
-                    atomic_min_f64(&bound[my_root as usize], pt.distance_2(&q));
-                    return;
+        // Seed the bounds from the memo *before* the sweep: every node that cannot
+        // improve on an already-known bridge is then skipped rather than searched.
+        for s in 0..n_slots {
+            if let Some((d2, t)) = memo[s] {
+                if slot_root[t as usize] != slot_root[s] {
+                    atomic_min_f64(&bound[slot_root[s] as usize], d2);
                 }
             }
-        });
+        }
 
-        // Exact pass: walk until the first cross-component neighbour, abandoning
-        // the walk once it can no longer beat the component's bound.
-        let found: Vec<Candidate> = candidates
-            .par_iter()
-            .filter_map(|&i| {
-                let my_root = node_super_root[i];
+        let learned: Vec<Learned> = (0..n_slots)
+            .into_par_iter()
+            .map(|s| {
+                let my_root = slot_root[s];
                 let cell = &bound[my_root as usize];
-                let q = point(i);
-                for pt in tree.nearest_neighbor_iter(&q) {
-                    let d2 = pt.distance_2(&q);
-                    // Cannot beat the component's best (nor exceed `max_dist`).
-                    if d2 > f64::from_bits(cell.load(Ordering::Relaxed)) {
-                        return None;
-                    }
-                    if node_super_root[pt.idx as usize] != my_root {
-                        atomic_min_f64(cell, d2);
-                        return Some((my_root, d2, i as u32, pt.idx));
+                let limit = f64::from_bits(cell.load(Ordering::Relaxed));
+
+                // A memoised neighbour that is still foreign is still the nearest.
+                if let Some((d2, t)) = memo[s] {
+                    if slot_root[t as usize] != my_root {
+                        return if d2 <= limit {
+                            atomic_min_f64(cell, d2);
+                            Learned::Exact(d2, t)
+                        } else {
+                            Learned::Nothing
+                        };
                     }
                 }
-                None
+                // Already known to be no better than the component's bound.
+                if floor[s] >= limit {
+                    return Learned::Nothing;
+                }
+
+                let mut best = limit;
+                let mut hit = MIXED;
+                let q = tree.pts[s];
+                tree.nearest_foreign(0, &q, my_root, &slot_root, &labels, &mut best, &mut hit);
+                if hit == MIXED {
+                    return Learned::AtLeast(limit);
+                }
+                atomic_min_f64(cell, best);
+                Learned::Exact(best, hit)
             })
             .collect();
+
+        let mut found: Vec<Candidate> = Vec::new();
+        for (s, l) in learned.into_iter().enumerate() {
+            match l {
+                Learned::Exact(d2, t) => {
+                    memo[s] = Some((d2, t));
+                    found.push((slot_root[s], d2, tree.idx[s], tree.idx[t as usize]));
+                }
+                Learned::AtLeast(d2) => floor[s] = floor[s].max(d2),
+                Learned::Nothing => {}
+            }
+        }
 
         if reduce_and_union(found, &node_comp, &mut uf, &mut bridges) == 0 {
             // No fragment can reach another within `max_dist`.
@@ -619,6 +848,141 @@ mod tests {
         let a = stitch(&coords_3d, &[0, 0, 1], None, f64::INFINITY);
         let b = stitch(&coords_4d, &[0, 0, 1], None, f64::INFINITY);
         assert_eq!(a, b);
+    }
+
+    /// The true MST weight over the fragments, by brute force: exact all-pairs
+    /// distances between every pair of fragments, then Kruskal. Every MST of a
+    /// graph has the same total weight, so this is the number `stitch_fragments`
+    /// must reproduce -- independently of which particular edges it picks.
+    fn brute_force_mst_weight(coords: &Array2<f64>, comps: &[i32]) -> f64 {
+        let labels: Vec<i32> = {
+            let mut l = comps.to_vec();
+            l.sort_unstable();
+            l.dedup();
+            l
+        };
+        let c = labels.len();
+        let pos = |lab: i32| labels.iter().position(|&x| x == lab).unwrap();
+
+        // Closest pair between every pair of fragments.
+        let mut edges: Vec<(f64, usize, usize)> = Vec::new();
+        for a in 0..c {
+            for b in (a + 1)..c {
+                let mut best = f64::INFINITY;
+                for i in 0..coords.nrows() {
+                    if pos(comps[i]) != a {
+                        continue;
+                    }
+                    for j in 0..coords.nrows() {
+                        if pos(comps[j]) != b {
+                            continue;
+                        }
+                        let d: f64 = (0..coords.ncols())
+                            .map(|k| (coords[[i, k]] - coords[[j, k]]).powi(2))
+                            .sum();
+                        best = best.min(d);
+                    }
+                }
+                edges.push((best.sqrt(), a, b));
+            }
+        }
+        edges.sort_by(|x, y| x.0.total_cmp(&y.0));
+
+        let mut uf = UnionFind::new(c);
+        let mut total = 0.0;
+        for (w, a, b) in edges {
+            if uf.union(a as u32, b as u32) {
+                total += w;
+            }
+        }
+        total
+    }
+
+    /// A deterministic xorshift, so the fuzz below needs no rand dependency.
+    fn rng(state: &mut u64) -> f64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        (*state >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    #[test]
+    fn matches_brute_force_mst_weight() {
+        // The Boruvka search is pruned three ways (subtree labels, the
+        // per-component bound, and the cross-round memos). Any of them being
+        // slightly too aggressive would still return a spanning set of bridges --
+        // just not a *minimal* one. Only the total weight catches that, so check
+        // it against an independent brute-force MST over many random layouts.
+        let mut state = 0x1234_5678_9abc_def0u64;
+        for trial in 0..60 {
+            let n = 12 + (trial * 7) % 60;
+            let n_comps = 2 + (trial * 3) % 6;
+
+            let mut rows: Vec<[f64; 3]> = Vec::with_capacity(n);
+            let mut comps: Vec<i32> = Vec::with_capacity(n);
+            for i in 0..n {
+                // Cluster each fragment around its own centre, with enough spread
+                // that fragments both overlap (interleaved) and separate.
+                let c = (i % n_comps) as f64;
+                let spread = 1.0 + (trial % 5) as f64 * 4.0;
+                rows.push([
+                    c * 10.0 + rng(&mut state) * spread,
+                    c * 3.0 + rng(&mut state) * spread,
+                    rng(&mut state) * spread,
+                ]);
+                comps.push((i % n_comps) as i32);
+            }
+            let coords = Array2::from(rows);
+
+            let bridges = stitch(&coords, &comps, None, f64::INFINITY);
+            assert_eq!(
+                bridges.len(),
+                n_comps - 1,
+                "trial {trial}: every fragment must be connected"
+            );
+            let got: f64 = bridges.iter().map(|&(_, _, d)| d as f64).sum();
+            let want = brute_force_mst_weight(&coords, &comps);
+            assert!(
+                (got - want).abs() < 1e-3 * want.max(1.0),
+                "trial {trial}: total bridge length {got} != true MST {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn well_separated_fragments_stitch_quickly() {
+        // Guards the pathology this module was rewritten for. Two dense, spatially
+        // disjoint fragments: every node's nearest ~8000 neighbours are its own
+        // fragment-mates. A search that walks neighbours in distance order has to
+        // enumerate all of them before it ever reaches the other fragment, which is
+        // quadratic -- this took ~8s. Pruning whole subtrees by component makes it
+        // instant, so a generous bound still separates the two by orders of
+        // magnitude (and holds even in an unoptimised debug build).
+        let m = 8_000usize;
+        let mut rows: Vec<[f64; 3]> = Vec::with_capacity(2 * m);
+        let mut comps: Vec<i32> = Vec::with_capacity(2 * m);
+        let mut state = 0xdead_beef_cafe_f00du64;
+        for i in 0..2 * m {
+            let shift = if i < m { 0.0 } else { 100_000.0 };
+            rows.push([
+                shift + rng(&mut state) * 100.0,
+                rng(&mut state) * 100.0,
+                rng(&mut state) * 100.0,
+            ]);
+            comps.push(if i < m { 0 } else { 1 });
+        }
+        let coords = Array2::from(rows);
+
+        let t = std::time::Instant::now();
+        let bridges = stitch(&coords, &comps, None, f64::INFINITY);
+        let elapsed = t.elapsed();
+
+        assert_eq!(bridges.len(), 1);
+        assert!(
+            elapsed.as_secs_f64() < 5.0,
+            "stitching two well-separated fragments took {elapsed:?} -- the \
+             component-level subtree pruning has regressed to a per-point walk"
+        );
     }
 
     #[test]

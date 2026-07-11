@@ -30,8 +30,3 @@ ndarray_017 = { package = "ndarray", version = "0.17" }
 # NBLAST pipeline: shull (3D Delaunay) + aann-graph (neighbourhood-graph NN).
 shull = "0.3.0"
 aann-graph = "0.1.2"
-# Spatial index for the topo (skeleton healing) module. `rstar` gives a lazy
-# nearest-neighbour iterator, so we can walk neighbours in distance order and
-# stop at the first one in a different fragment. Held at 0.12 because 0.13 raises
-# the MSRV to 1.85, while nat.fastcore's DESCRIPTION promises rustc >= 1.65.
-rstar = "0.12"
