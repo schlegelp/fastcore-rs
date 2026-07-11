@@ -7,8 +7,9 @@ Authors@R:
 Description: A re-implementation of core 'nat' (Neuroanatomy Toolbox) functions
     in Rust for speed. Provides fast skeleton/tree (DAG) operations
     (geodesic distances, Strahler order, segment generation, twig pruning,
-    synapse flow centrality, node classification), mesh connected components,
-    and NBLAST/synNBLAST neuron similarity scoring, exposed to R via extendr.
+    synapse flow centrality, node classification, skeleton healing), mesh
+    connected components, and NBLAST/synNBLAST neuron similarity scoring,
+    exposed to R via extendr.
 License: GPL-3
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)

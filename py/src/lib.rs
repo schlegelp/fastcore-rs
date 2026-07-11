@@ -10,6 +10,9 @@ use dag::*;
 mod mesh;
 use mesh::*;
 
+mod topo;
+use topo::*;
+
 #[pymodule(gil_used = false)]
 #[pyo3(name = "_fastcore")]
 mod fastcore {
@@ -81,5 +84,11 @@ mod fastcore {
 
     #[pymodule_export]
     use super::mesh_connected_components_py;
+
+    #[pymodule_export]
+    use super::stitch_fragments_py;
+
+    #[pymodule_export]
+    use super::reroot_rewire_py;
 
 }

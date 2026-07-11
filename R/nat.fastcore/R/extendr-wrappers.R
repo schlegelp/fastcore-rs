@@ -172,6 +172,82 @@ generate_segments <- function(parents, weights) .Call(wrap__generate_segments, p
 #' @export
 break_segments <- function(parents) .Call(wrap__break_segments, parents)
 
+#' Find the minimal-length edges that reconnect the fragments of a skeleton.
+#'
+#' Given a per-node component label and node coordinates, this returns the set of
+#' new edges that would join the fragments into a single tree while minimising the
+#' total added length (a minimum spanning tree over the fragments). It does *not*
+#' modify the skeleton — see `heal_skeleton` for the one-shot version.
+#'
+#' @param components Integer vector giving each node's connected component, e.g.
+#'   the output of `connected_components()`. Only equality of labels matters.
+#' @param x,y,z Numeric vectors of node coordinates, one entry per node.
+#' @param w Optional numeric vector giving a 4th coordinate, one entry per node.
+#'   The search then happens in 4D, so nodes with similar `w` look closer
+#'   together; pass a (scaled) radius here to prefer bridging fragments of
+#'   similar calibre. Note that `max_dist` is then measured in 4D too. `NULL`
+#'   searches in plain 3D.
+#' @param mask Optional logical vector marking the nodes that may be used as
+#'   endpoints for a new edge; `NULL` allows every node. A fragment without a
+#'   single eligible node cannot be connected.
+#' @param max_dist Optional numeric upper bound on the length of any single new
+#'   edge; `NULL` means no limit. Fragments whose closest eligible nodes are
+#'   farther apart than this are left disconnected.
+#' @return List with `from` and `to` (integer vectors of 0-based node indices, one
+#'   pair per new edge) and `dist` (numeric edge lengths). At most
+#'   `(#fragments - 1)` edges.
+#' @export
+stitch_fragments <- function(components, x, y, z, w, mask, max_dist) .Call(wrap__stitch_fragments, components, x, y, z, w, mask, max_dist)
+
+#' Regenerate a parent vector after adding a set of undirected edges.
+#'
+#' Turns an edited edge set back into a valid rooted tree: the undirected
+#' adjacency is built from the original child -> parent edges plus the new
+#' `from`/`to` edges, then oriented away from `root` by breadth-first search.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param from,to Integer vectors of 0-based node indices giving the undirected
+#'   edges to add, e.g. the `from`/`to` returned by `stitch_fragments()`.
+#' @param root Integer 0-based index of the preferred root; its whole component is
+#'   rooted there. Use a negative value to auto-pick (lowest index per component).
+#' @return Integer vector of new 0-based parent indices (roots are `-1`). Any
+#'   component not reachable from `root` is rooted at its lowest-index node, so the
+#'   result is valid even when the skeleton could not be fully healed.
+#' @export
+reroot_rewire <- function(parents, from, to, root) .Call(wrap__reroot_rewire, parents, from, to, root)
+
+#' Heal a fragmented skeleton by reconnecting its fragments.
+#'
+#' Convenience wrapper that finds the minimal-length set of new edges between the
+#' skeleton's connected components (see `stitch_fragments()`) and regenerates a
+#' single rooted tree from them (see `reroot_rewire()`).
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`), e.g.
+#'   from `node_indices()`.
+#' @param x,y,z Numeric vectors of node coordinates, one entry per node.
+#' @param method Character; `"ALL"` lets any node form a new edge, `"LEAFS"`
+#'   restricts new edges to leaf and root nodes (faster, occasionally suboptimal
+#'   attachment points).
+#' @param max_dist Optional numeric maximum length for any single new edge; gaps
+#'   larger than this are left unhealed, so the result may stay fragmented. `NULL`
+#'   means no limit.
+#' @param min_size Optional integer; fragments with fewer than this many nodes are
+#'   excluded from healing and stay disconnected. `NULL` heals every fragment.
+#' @param mask Optional logical vector restricting which nodes may be used as
+#'   endpoints for a new edge; combined with `method`. `NULL` allows every node.
+#' @param radius Optional numeric vector of node radii, one entry per node. Only
+#'   required when `use_radius` is set.
+#' @param use_radius `TRUE`/`FALSE`, a number, or `NULL`. If set, node radii are
+#'   taken into account when measuring distances, which prioritises connecting
+#'   fragments of similar calibre. A number weights the effect: higher values give
+#'   radius more influence (`TRUE` means 1). To keep this robust we use the mean
+#'   radius of the segment a node belongs to, not the node's own radius. Note that
+#'   `max_dist` is then measured in this augmented space too.
+#' @return Integer vector of new 0-based parent indices (roots are `-1`). If the
+#'   skeleton could be fully healed this is a single tree with one root.
+#' @export
+heal_skeleton <- function(parents, x, y, z, method, max_dist, min_size, mask, radius, use_radius) .Call(wrap__heal_skeleton, parents, x, y, z, method, max_dist, min_size, mask, radius, use_radius)
+
 #' Find connected components of a triangle mesh.
 #'
 #' `faces` is an (N, 3) matrix of vertex indices. Returns an integer vector of

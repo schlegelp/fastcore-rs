@@ -1,5 +1,5 @@
 use extendr_api::prelude::*;
-use ndarray::{Array1, Array2};
+use ndarray::{Array1, Array2, ArrayView1};
 use std::collections::HashMap;
 
 use fastcore::nblast::{load_smat, load_smat_alpha, Opts, Smat};
@@ -351,6 +351,299 @@ pub fn break_segments(parents: Vec<i32>) -> Robj {
     let parents = Array1::from_vec(parents);
     let segments = fastcore::dag::break_segments(&parents.view());
     List::from_values(segments.into_iter()).into()
+}
+
+// ---------------------------------------------------------------------------
+// Topology repair ("healing")
+// ---------------------------------------------------------------------------
+//
+// These mirror the Python bindings in `py/src/topo.rs`. Coordinates are passed as
+// separate x/y/z numeric vectors (as in `child_to_parent_dists`) rather than an
+// (N, 3) matrix, and node references are 0-based indices throughout, like the rest
+// of the DAG family.
+
+/// Assemble an (N, 3) coordinate array from R's separate x/y/z vectors.
+fn xyz_to_coords(x: &[f64], y: &[f64], z: &[f64]) -> Array2<f64> {
+    let n = x.len();
+    assert!(
+        y.len() == n && z.len() == n,
+        "`x`, `y` and `z` must have the same length"
+    );
+    Array2::from_shape_fn((n, 3), |(i, j)| match j {
+        0 => x[i],
+        1 => y[i],
+        _ => z[i],
+    })
+}
+
+/// Convert an optional R logical vector into a boolean mask. `NULL` -> `None`.
+///
+/// Taken as a bare `Robj` because extendr does not convert R logicals into
+/// `Vec<bool>` (see the note on `prune_twigs`); `as_logical_slice` does.
+fn robj_to_mask(mask: &Robj, n: usize) -> Option<Array1<bool>> {
+    if mask.is_null() {
+        return None;
+    }
+    let values = mask
+        .as_logical_slice()
+        .expect("`mask` must be a logical vector or NULL");
+    assert_eq!(values.len(), n, "`mask` must have one entry per node");
+    Some(values.iter().map(|b| b.is_true()).collect())
+}
+
+/// Interpret R's `use_radius` (`NULL` / `FALSE` / `TRUE` / a number) as a weight.
+/// `None` means "do not use radius"; `Some(w)` scales the radius dimension by `w`.
+fn parse_use_radius(use_radius: &Robj) -> Option<f64> {
+    if use_radius.is_null() {
+        return None;
+    }
+    if let Some(flag) = use_radius.as_logical() {
+        return flag.is_true().then_some(1.0);
+    }
+    let weight = use_radius
+        .as_real()
+        .expect("`use_radius` must be TRUE/FALSE, a number or NULL");
+    (weight != 0.0).then_some(weight)
+}
+
+/// Per-node radius to use as a 4th coordinate, scaled by `weight`.
+///
+/// We use the mean radius of the linear segment a node belongs to rather than
+/// the node's own radius, which is far less noisy. Isolated nodes (a root with
+/// no children) form no segment and so fall back to their own radius.
+fn segment_radius(parents: &ArrayView1<i32>, radius: &[f64], weight: f64) -> Array1<f64> {
+    let n = parents.len();
+    assert_eq!(radius.len(), n, "`radius` must have one entry per node");
+
+    // Missing radii would poison the segment mean.
+    let clean: Vec<f64> = radius
+        .iter()
+        .map(|&r| if r.is_finite() { r } else { 0.0 })
+        .collect();
+
+    let mut out = Array1::from_vec(clean.clone());
+    for seg in fastcore::dag::break_segments(parents) {
+        let mean = seg.iter().map(|&i| clean[i as usize]).sum::<f64>() / seg.len() as f64;
+        for &i in &seg {
+            out[i as usize] = mean;
+        }
+    }
+    out * weight
+}
+
+/// Append a scaled segment-radius column to `(N, 3)` coords, giving `(N, 4)`.
+fn with_radius_column(coords: Array2<f64>, radius_seg: &Array1<f64>) -> Array2<f64> {
+    let n = coords.nrows();
+    Array2::from_shape_fn((n, 4), |(i, j)| {
+        if j < 3 {
+            coords[[i, j]]
+        } else {
+            radius_seg[i]
+        }
+    })
+}
+
+/// Find the minimal-length edges that reconnect the fragments of a skeleton.
+///
+/// Given a per-node component label and node coordinates, this returns the set of
+/// new edges that would join the fragments into a single tree while minimising the
+/// total added length (a minimum spanning tree over the fragments). It does *not*
+/// modify the skeleton — see `heal_skeleton` for the one-shot version.
+///
+/// @param components Integer vector giving each node's connected component, e.g.
+///   the output of `connected_components()`. Only equality of labels matters.
+/// @param x,y,z Numeric vectors of node coordinates, one entry per node.
+/// @param w Optional numeric vector giving a 4th coordinate, one entry per node.
+///   The search then happens in 4D, so nodes with similar `w` look closer
+///   together; pass a (scaled) radius here to prefer bridging fragments of
+///   similar calibre. Note that `max_dist` is then measured in 4D too. `NULL`
+///   searches in plain 3D.
+/// @param mask Optional logical vector marking the nodes that may be used as
+///   endpoints for a new edge; `NULL` allows every node. A fragment without a
+///   single eligible node cannot be connected.
+/// @param max_dist Optional numeric upper bound on the length of any single new
+///   edge; `NULL` means no limit. Fragments whose closest eligible nodes are
+///   farther apart than this are left disconnected.
+/// @return List with `from` and `to` (integer vectors of 0-based node indices, one
+///   pair per new edge) and `dist` (numeric edge lengths). At most
+///   `(#fragments - 1)` edges.
+/// @export
+#[extendr]
+pub fn stitch_fragments(
+    components: Vec<i32>,
+    x: Vec<f64>,
+    y: Vec<f64>,
+    z: Vec<f64>,
+    w: Option<Vec<f64>>,
+    mask: Robj,
+    max_dist: Option<f64>,
+) -> Robj {
+    let n = components.len();
+    let mut coords = xyz_to_coords(&x, &y, &z);
+    assert_eq!(
+        coords.nrows(),
+        n,
+        "`x`, `y` and `z` must have one entry per node"
+    );
+    if let Some(w) = w {
+        assert_eq!(w.len(), n, "`w` must have one entry per node");
+        coords = with_radius_column(coords, &Array1::from_vec(w));
+    }
+    let components = Array1::from_vec(components);
+    let mask = robj_to_mask(&mask, n);
+
+    let bridges = fastcore::topo::stitch_fragments(
+        &coords.view(),
+        &components.view(),
+        &mask,
+        max_dist.unwrap_or(f64::INFINITY),
+    );
+
+    let from: Vec<i32> = bridges.iter().map(|(a, _, _)| *a).collect();
+    let to: Vec<i32> = bridges.iter().map(|(_, b, _)| *b).collect();
+    let dist: Vec<f64> = bridges.iter().map(|(_, _, d)| *d as f64).collect();
+
+    list!(from = from, to = to, dist = dist).into()
+}
+
+/// Regenerate a parent vector after adding a set of undirected edges.
+///
+/// Turns an edited edge set back into a valid rooted tree: the undirected
+/// adjacency is built from the original child -> parent edges plus the new
+/// `from`/`to` edges, then oriented away from `root` by breadth-first search.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param from,to Integer vectors of 0-based node indices giving the undirected
+///   edges to add, e.g. the `from`/`to` returned by `stitch_fragments()`.
+/// @param root Integer 0-based index of the preferred root; its whole component is
+///   rooted there. Use a negative value to auto-pick (lowest index per component).
+/// @return Integer vector of new 0-based parent indices (roots are `-1`). Any
+///   component not reachable from `root` is rooted at its lowest-index node, so the
+///   result is valid even when the skeleton could not be fully healed.
+/// @export
+#[extendr]
+pub fn reroot_rewire(parents: Vec<i32>, from: Vec<i32>, to: Vec<i32>, root: i32) -> Vec<i32> {
+    assert_eq!(from.len(), to.len(), "`from` and `to` must be the same length");
+    let parents = Array1::from_vec(parents);
+
+    let new_edges = Array2::from_shape_fn((from.len(), 2), |(i, j)| if j == 0 { from[i] } else { to[i] });
+
+    fastcore::topo::reroot_rewire(&parents.view(), &new_edges.view(), root).to_vec()
+}
+
+/// Heal a fragmented skeleton by reconnecting its fragments.
+///
+/// Convenience wrapper that finds the minimal-length set of new edges between the
+/// skeleton's connected components (see `stitch_fragments()`) and regenerates a
+/// single rooted tree from them (see `reroot_rewire()`).
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`), e.g.
+///   from `node_indices()`.
+/// @param x,y,z Numeric vectors of node coordinates, one entry per node.
+/// @param method Character; `"ALL"` lets any node form a new edge, `"LEAFS"`
+///   restricts new edges to leaf and root nodes (faster, occasionally suboptimal
+///   attachment points).
+/// @param max_dist Optional numeric maximum length for any single new edge; gaps
+///   larger than this are left unhealed, so the result may stay fragmented. `NULL`
+///   means no limit.
+/// @param min_size Optional integer; fragments with fewer than this many nodes are
+///   excluded from healing and stay disconnected. `NULL` heals every fragment.
+/// @param mask Optional logical vector restricting which nodes may be used as
+///   endpoints for a new edge; combined with `method`. `NULL` allows every node.
+/// @param radius Optional numeric vector of node radii, one entry per node. Only
+///   required when `use_radius` is set.
+/// @param use_radius `TRUE`/`FALSE`, a number, or `NULL`. If set, node radii are
+///   taken into account when measuring distances, which prioritises connecting
+///   fragments of similar calibre. A number weights the effect: higher values give
+///   radius more influence (`TRUE` means 1). To keep this robust we use the mean
+///   radius of the segment a node belongs to, not the node's own radius. Note that
+///   `max_dist` is then measured in this augmented space too.
+/// @return Integer vector of new 0-based parent indices (roots are `-1`). If the
+///   skeleton could be fully healed this is a single tree with one root.
+/// @export
+#[extendr]
+pub fn heal_skeleton(
+    parents: Vec<i32>,
+    x: Vec<f64>,
+    y: Vec<f64>,
+    z: Vec<f64>,
+    method: String,
+    max_dist: Option<f64>,
+    min_size: Option<i32>,
+    mask: Robj,
+    radius: Option<Vec<f64>>,
+    use_radius: Robj,
+) -> Vec<i32> {
+    let n = parents.len();
+    let mut coords = xyz_to_coords(&x, &y, &z);
+    assert_eq!(
+        coords.nrows(),
+        n,
+        "`x`, `y` and `z` must have one entry per node"
+    );
+
+    let parents = Array1::from_vec(parents);
+
+    // Optionally augment the coordinates with a scaled segment-radius column.
+    if let Some(weight) = parse_use_radius(&use_radius) {
+        let radius = radius.expect("`use_radius` requires `radius` to be provided");
+        let radius_seg = segment_radius(&parents.view(), &radius, weight);
+        coords = with_radius_column(coords, &radius_seg);
+    }
+
+    let components = fastcore::dag::connected_components(&parents.view());
+
+    // Build the candidate mask from the various restrictions.
+    let mut candidate: Array1<bool> = Array1::from_elem(n, true);
+
+    match method.to_uppercase().as_str() {
+        "ALL" => (),
+        "LEAFS" => {
+            // classify_nodes: 0 = root, 1 = leaf, 2 = branch point, 3 = slab.
+            let node_type = fastcore::dag::classify_nodes(&parents.view());
+            for i in 0..n {
+                candidate[i] &= node_type[i] == 0 || node_type[i] == 1;
+            }
+        }
+        _ => panic!("`method` must be either \"ALL\" or \"LEAFS\""),
+    }
+
+    if let Some(mask) = robj_to_mask(&mask, n) {
+        for i in 0..n {
+            candidate[i] &= mask[i];
+        }
+    }
+
+    if let Some(min_size) = min_size {
+        let mut sizes: HashMap<i32, i32> = HashMap::new();
+        for &c in components.iter() {
+            *sizes.entry(c).or_insert(0) += 1;
+        }
+        for i in 0..n {
+            candidate[i] &= sizes[&components[i]] >= min_size;
+        }
+    }
+
+    // 1. Find the bridging edges.
+    let bridges = fastcore::topo::stitch_fragments(
+        &coords.view(),
+        &components.view(),
+        &Some(candidate),
+        max_dist.unwrap_or(f64::INFINITY),
+    );
+    let new_edges = Array2::from_shape_fn((bridges.len(), 2), |(i, j)| {
+        if j == 0 {
+            bridges[i].0
+        } else {
+            bridges[i].1
+        }
+    });
+
+    // 2. Regenerate the parent vector. Prefer the existing (first) root so the
+    //    healed skeleton keeps its orientation where possible.
+    let root = parents.iter().position(|&p| p < 0).map_or(-1, |i| i as i32);
+
+    fastcore::topo::reroot_rewire(&parents.view(), &new_edges.view(), root).to_vec()
 }
 
 /// Find connected components of a triangle mesh.
@@ -862,6 +1155,9 @@ extendr_module! {
     fn synapse_flow_centrality;
     fn generate_segments;
     fn break_segments;
+    fn stitch_fragments;
+    fn reroot_rewire;
+    fn heal_skeleton;
     fn mesh_connected_components;
     fn smat_auto_limit;
     fn nblast_allbyall;

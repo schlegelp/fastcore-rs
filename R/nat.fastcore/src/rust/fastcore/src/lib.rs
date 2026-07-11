@@ -5,3 +5,5 @@ pub mod synblast;
 pub mod dag;
 
 pub mod mesh;
+
+pub mod topo;

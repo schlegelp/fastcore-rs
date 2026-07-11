@@ -61,6 +61,17 @@ On Linux this installs from source (compiles the bundled Rust), which needs the
 
 > # Generate all-by-all geodesic distance matrix
 > dists = geodesic_distances(parents, sources=NULL, targets=NULL, weights=weights, directed=F)
+
+> # Heal a fragmented skeleton (reconnect its disconnected fragments)
+> healed = heal_skeleton(parents, s$d$X, s$d$Y, s$d$Z, method="ALL",
++                        max_dist=NULL, min_size=NULL, mask=NULL,
++                        radius=NULL, use_radius=FALSE)
+
+> # ... optionally taking node radii into account, which prefers to connect
+> # fragments of similar calibre (higher `use_radius` = more influence)
+> healed = heal_skeleton(parents, s$d$X, s$d$Y, s$d$Z, method="ALL",
++                        max_dist=NULL, min_size=NULL, mask=NULL,
++                        radius=s$d$W, use_radius=TRUE)
 ```
 
 Currently the following functions have been wrapped:
@@ -81,6 +92,9 @@ Skeleton / tree (DAG):
 - `synapse_flow_centrality`: synapse flow centrality per node
 - `has_cycles`: check whether a tree contains cycles
 - `child_to_parent_dists`: helper to calculate child -> parent distances
+- `heal_skeleton`: reconnect the fragments of a broken skeleton
+- `stitch_fragments`: find the minimal-length edges that reconnect fragments
+- `reroot_rewire`: regenerate a parent vector after adding edges
 
 Mesh:
 
