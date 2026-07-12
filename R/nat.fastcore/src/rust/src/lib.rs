@@ -707,6 +707,253 @@ pub fn mesh_connected_components(faces: Robj, n_vertices: i32) -> Vec<i32> {
         .collect()
 }
 
+/// Convert an optional R `(V, 3)` numeric matrix of vertex coordinates.
+///
+/// R's `NULL` arrives as `Some(Robj::null())`, not as `None` — `NULL` is itself a
+/// perfectly good `Robj` — so the null check has to be explicit or we would try to
+/// read a matrix out of it.
+fn robj_to_coords(vertices: Option<Robj>) -> Option<Array2<f64>> {
+    let v = vertices.filter(|v| !v.is_null())?;
+    let m = <RMatrix<f64>>::try_from(v).expect("`vertices` must be a numeric (V, 3) matrix");
+    let nr = m.nrows();
+    let d = m.data();
+    Some(Array2::from_shape_fn((nr, 3), |(i, j)| d[j * nr + i]))
+}
+
+/// Convert an R `(E, 2)` numeric/integer matrix of edges.
+fn robj_to_edges(edges: &Robj) -> Array2<u32> {
+    if let Ok(m) = <RMatrix<i32>>::try_from(edges.clone()) {
+        let nr = m.nrows();
+        let d = m.data();
+        Array2::from_shape_fn((nr, 2), |(i, j)| d[j * nr + i] as u32)
+    } else if let Ok(m) = <RMatrix<f64>>::try_from(edges.clone()) {
+        let nr = m.nrows();
+        let d = m.data();
+        Array2::from_shape_fn((nr, 2), |(i, j)| d[j * nr + i] as u32)
+    } else {
+        panic!("`edges` must be a numeric (E, 2) matrix");
+    }
+}
+
+fn to_u32(v: Option<Vec<i32>>) -> Option<Vec<u32>> {
+    v.map(|x| x.iter().map(|&i| i as u32).collect())
+}
+
+fn array2_f32_to_rmatrix(arr: &Array2<f32>) -> Robj {
+    let (nr, nc) = (arr.nrows(), arr.ncols());
+    RArray::new_matrix(nr, nc, |r, c| arr[[r, c]] as f64).into()
+}
+
+/// Geodesic ("along-the-mesh-edge") distances on a triangle mesh.
+///
+/// The mesh counterpart to `geodesic_distances`, which works on skeletons. A
+/// skeleton is a tree, so distances there come from walking to the lowest common
+/// ancestor; a mesh is a general cyclic graph, so this runs one Dijkstra per source
+/// (or a BFS when unweighted), in parallel.
+///
+/// Note this is the distance *along mesh edges*, not the exact surface geodesic:
+/// paths are constrained to run along edges, so on a coarse mesh they overshoot.
+///
+/// Beware the size of the output: a full `V x V` matrix is ~107 GB at V = 164k. Use
+/// `sources` and/or `targets` — unlike `scipy`'s Dijkstra, passing `targets` here
+/// means only those columns are ever allocated.
+///
+/// @param faces Integer or numeric `(F, 3)` matrix of triangle vertex indices
+///   (0-based).
+/// @param n_vertices Integer; total number of vertices in the mesh.
+/// @param vertices Optional numeric `(V, 3)` matrix of vertex coordinates. If
+///   given, edges are weighted by their euclidean length; if `NULL`, every edge has
+///   weight 1 and the result is a hop count.
+/// @param sources Optional integer vector of source vertex indices; `NULL` uses
+///   every vertex.
+/// @param targets Optional integer vector of target vertex indices; `NULL` uses
+///   every vertex.
+/// @param limit Optional numeric; ignore vertices further away than this.
+/// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @return Numeric matrix of geodesic distances (sources in rows, targets in
+///   columns). Unreachable pairs are `-1`.
+/// @export
+#[extendr]
+pub fn geodesic_matrix_mesh(
+    faces: Robj,
+    n_vertices: i32,
+    vertices: Option<Robj>,
+    sources: Option<Vec<i32>>,
+    targets: Option<Vec<i32>>,
+    limit: Option<f64>,
+    threads: Option<i32>,
+) -> Robj {
+    let faces = robj_to_faces(&faces);
+    let coords = robj_to_coords(vertices);
+    let sources = to_u32(sources);
+    let targets = to_u32(targets);
+
+    let dists = fastcore::mesh::geodesic_matrix_mesh(
+        faces.view(),
+        n_vertices as usize,
+        coords.as_ref().map(|c| c.view()),
+        sources.as_deref(),
+        targets.as_deref(),
+        limit.map(|l| l as f32),
+        threads.map(|t| t as usize),
+    );
+
+    array2_f32_to_rmatrix(&dists)
+}
+
+/// Geodesic distances over an arbitrary graph given as an edge list.
+///
+/// The general form of `geodesic_matrix_mesh`. Unlike `geodesic_distances`, this
+/// makes no tree assumption — cycles are fine.
+///
+/// @param edges Integer or numeric `(E, 2)` matrix of edges (0-based node indices).
+/// @param n_nodes Integer; total number of nodes.
+/// @param weights Optional numeric vector with one length per edge; `NULL` counts
+///   edges. Must be finite and non-negative. Parallel edges collapse to the
+///   shortest.
+/// @param directed Logical; if `TRUE` an edge `(u, v)` may only be traversed from
+///   `u` to `v`.
+/// @param sources Optional integer vector of source node indices; `NULL` uses every
+///   node.
+/// @param targets Optional integer vector of target node indices; `NULL` uses every
+///   node.
+/// @param limit Optional numeric; ignore nodes further away than this.
+/// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @return Numeric matrix of geodesic distances (sources in rows, targets in
+///   columns). Unreachable pairs are `-1`.
+/// @export
+#[extendr]
+pub fn geodesic_matrix_graph(
+    edges: Robj,
+    n_nodes: i32,
+    weights: Option<Vec<f64>>,
+    directed: bool,
+    sources: Option<Vec<i32>>,
+    targets: Option<Vec<i32>>,
+    limit: Option<f64>,
+    threads: Option<i32>,
+) -> Robj {
+    let edges = robj_to_edges(&edges);
+    let weights: Option<Array1<f32>> =
+        weights.map(|w| Array1::from_vec(w.iter().map(|x| *x as f32).collect()));
+    let sources = to_u32(sources);
+    let targets = to_u32(targets);
+
+    let dists = fastcore::mesh::geodesic_matrix_graph(
+        edges.view(),
+        n_nodes as usize,
+        weights.as_ref().map(|w| w.view()).as_ref(),
+        directed,
+        sources.as_deref(),
+        targets.as_deref(),
+        limit.map(|l| l as f32),
+        threads.map(|t| t as usize),
+    );
+
+    array2_f32_to_rmatrix(&dists)
+}
+
+/// Distance to the nearest target vertex, for each source vertex of a mesh.
+///
+/// A memory-efficient alternative to `geodesic_matrix_mesh`: it keeps only the
+/// nearest target and the distance to it, so the output is `O(sources)` rather than
+/// `O(sources * targets)`. It is also faster, because the search stops at the first
+/// target it settles rather than exploring the whole component.
+///
+/// Returns a list with `distances` and `nearest` (the vertex index of that nearest
+/// target). Sources with no reachable target get `-1`. A source that is itself a
+/// target is matched to its nearest *other* target, never to itself.
+///
+/// @param faces Integer or numeric `(F, 3)` matrix of triangle vertex indices.
+/// @param n_vertices Integer; total number of vertices in the mesh.
+/// @param vertices Optional numeric `(V, 3)` matrix of vertex coordinates; `NULL`
+///   counts edges.
+/// @param sources Optional integer vector of source vertex indices; `NULL` uses
+///   every vertex.
+/// @param targets Optional integer vector of target vertex indices; `NULL` uses
+///   every vertex.
+/// @param limit Optional numeric; ignore targets further away than this.
+/// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @return A list with `distances` and `nearest`.
+/// @export
+#[extendr]
+pub fn geodesic_nearest_mesh(
+    faces: Robj,
+    n_vertices: i32,
+    vertices: Option<Robj>,
+    sources: Option<Vec<i32>>,
+    targets: Option<Vec<i32>>,
+    limit: Option<f64>,
+    threads: Option<i32>,
+) -> Robj {
+    let faces = robj_to_faces(&faces);
+    let coords = robj_to_coords(vertices);
+    let sources = to_u32(sources);
+    let targets = to_u32(targets);
+
+    let (dists, nearest) = fastcore::mesh::geodesic_nearest_mesh(
+        faces.view(),
+        n_vertices as usize,
+        coords.as_ref().map(|c| c.view()),
+        sources.as_deref(),
+        targets.as_deref(),
+        limit.map(|l| l as f32),
+        threads.map(|t| t as usize),
+    );
+
+    list!(distances = dists.to_vec(), nearest = nearest.to_vec()).into()
+}
+
+/// Distance to the farthest target vertex, for each source vertex of a mesh.
+///
+/// The mirror image of `geodesic_nearest_mesh`, with the same `O(sources)` memory
+/// footprint. Unlike `nearest`, this cannot stop early — it has to settle every
+/// target — but the farthest one then comes for free, because the search settles
+/// vertices in increasing order of distance.
+///
+/// Returns a list with `distances` and `farthest`. Sources with no reachable target
+/// get `-1`. A source that is itself a target is matched to a *distinct* target.
+///
+/// @param faces Integer or numeric `(F, 3)` matrix of triangle vertex indices.
+/// @param n_vertices Integer; total number of vertices in the mesh.
+/// @param vertices Optional numeric `(V, 3)` matrix of vertex coordinates; `NULL`
+///   counts edges.
+/// @param sources Optional integer vector of source vertex indices; `NULL` uses
+///   every vertex.
+/// @param targets Optional integer vector of target vertex indices; `NULL` uses
+///   every vertex.
+/// @param limit Optional numeric; ignore targets further away than this.
+/// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @return A list with `distances` and `farthest`.
+/// @export
+#[extendr]
+pub fn geodesic_farthest_mesh(
+    faces: Robj,
+    n_vertices: i32,
+    vertices: Option<Robj>,
+    sources: Option<Vec<i32>>,
+    targets: Option<Vec<i32>>,
+    limit: Option<f64>,
+    threads: Option<i32>,
+) -> Robj {
+    let faces = robj_to_faces(&faces);
+    let coords = robj_to_coords(vertices);
+    let sources = to_u32(sources);
+    let targets = to_u32(targets);
+
+    let (dists, farthest) = fastcore::mesh::geodesic_farthest_mesh(
+        faces.view(),
+        n_vertices as usize,
+        coords.as_ref().map(|c| c.view()),
+        sources.as_deref(),
+        targets.as_deref(),
+        limit.map(|l| l as f32),
+        threads.map(|t| t as usize),
+    );
+
+    list!(distances = dists.to_vec(), farthest = farthest.to_vec()).into()
+}
+
 // ---------------------------------------------------------------------------
 // NBLAST / synBLAST
 // ---------------------------------------------------------------------------
@@ -1201,6 +1448,10 @@ extendr_module! {
     fn reroot_rewire;
     fn heal_skeleton;
     fn mesh_connected_components;
+    fn geodesic_matrix_mesh;
+    fn geodesic_matrix_graph;
+    fn geodesic_nearest_mesh;
+    fn geodesic_farthest_mesh;
     fn smat_auto_limit;
     fn nblast_allbyall;
     fn nblast;

@@ -89,9 +89,20 @@ mod fastcore {
     use super::mesh_connected_components_py;
 
     #[pymodule_export]
+    use super::geodesic_matrix_mesh_py;
+
+    #[pymodule_export]
+    use super::geodesic_matrix_graph_py;
+
+    #[pymodule_export]
+    use super::geodesic_nearest_mesh_py;
+
+    #[pymodule_export]
+    use super::geodesic_farthest_mesh_py;
+
+    #[pymodule_export]
     use super::stitch_fragments_py;
 
     #[pymodule_export]
     use super::reroot_rewire_py;
-
 }

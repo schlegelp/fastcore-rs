@@ -91,6 +91,9 @@ surface and how they spell it. `—` means that surface doesn't expose it direct
 | Capability | Rust (`fastcore`) | Python (`navis-fastcore`) | R (`nat.fastcore`) |
 |---|---|---|---|
 | Connected components of a triangle mesh | `mesh::mesh_connected_components` | `mesh_connected_components` | `mesh_connected_components` |
+| Geodesic distances across a mesh | `mesh::geodesic_matrix_mesh` | `geodesic_matrix_mesh` | `geodesic_matrix_mesh` |
+| Nearest / farthest target vertex | `mesh::geodesic_nearest_mesh`, `mesh::geodesic_farthest_mesh` | `geodesic_nearest_mesh`, `geodesic_farthest_mesh` | `geodesic_nearest_mesh`, `geodesic_farthest_mesh` |
+| Geodesic distances across any graph | `mesh::geodesic_matrix_graph` | `geodesic_matrix_graph` | `geodesic_matrix_graph` |
 
 ### Neuron similarity
 

@@ -284,6 +284,109 @@ heal_skeleton <- function(parents, x, y, z, method, max_dist, min_size, mask, ra
 #' @export
 mesh_connected_components <- function(faces, n_vertices) .Call(wrap__mesh_connected_components, faces, n_vertices)
 
+#' Geodesic ("along-the-mesh-edge") distances on a triangle mesh.
+#'
+#' The mesh counterpart to `geodesic_distances`, which works on skeletons. A
+#' skeleton is a tree, so distances there come from walking to the lowest common
+#' ancestor; a mesh is a general cyclic graph, so this runs one Dijkstra per source
+#' (or a BFS when unweighted), in parallel.
+#'
+#' Note this is the distance *along mesh edges*, not the exact surface geodesic:
+#' paths are constrained to run along edges, so on a coarse mesh they overshoot.
+#'
+#' Beware the size of the output: a full `V x V` matrix is ~107 GB at V = 164k. Use
+#' `sources` and/or `targets` — unlike `scipy`'s Dijkstra, passing `targets` here
+#' means only those columns are ever allocated.
+#'
+#' @param faces Integer or numeric `(F, 3)` matrix of triangle vertex indices
+#'   (0-based).
+#' @param n_vertices Integer; total number of vertices in the mesh.
+#' @param vertices Optional numeric `(V, 3)` matrix of vertex coordinates. If
+#'   given, edges are weighted by their euclidean length; if `NULL`, every edge has
+#'   weight 1 and the result is a hop count.
+#' @param sources Optional integer vector of source vertex indices; `NULL` uses
+#'   every vertex.
+#' @param targets Optional integer vector of target vertex indices; `NULL` uses
+#'   every vertex.
+#' @param limit Optional numeric; ignore vertices further away than this.
+#' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @return Numeric matrix of geodesic distances (sources in rows, targets in
+#'   columns). Unreachable pairs are `-1`.
+#' @export
+geodesic_matrix_mesh <- function(faces, n_vertices, vertices, sources, targets, limit, threads) .Call(wrap__geodesic_matrix_mesh, faces, n_vertices, vertices, sources, targets, limit, threads)
+
+#' Geodesic distances over an arbitrary graph given as an edge list.
+#'
+#' The general form of `geodesic_matrix_mesh`. Unlike `geodesic_distances`, this
+#' makes no tree assumption — cycles are fine.
+#'
+#' @param edges Integer or numeric `(E, 2)` matrix of edges (0-based node indices).
+#' @param n_nodes Integer; total number of nodes.
+#' @param weights Optional numeric vector with one length per edge; `NULL` counts
+#'   edges. Must be finite and non-negative. Parallel edges collapse to the
+#'   shortest.
+#' @param directed Logical; if `TRUE` an edge `(u, v)` may only be traversed from
+#'   `u` to `v`.
+#' @param sources Optional integer vector of source node indices; `NULL` uses every
+#'   node.
+#' @param targets Optional integer vector of target node indices; `NULL` uses every
+#'   node.
+#' @param limit Optional numeric; ignore nodes further away than this.
+#' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @return Numeric matrix of geodesic distances (sources in rows, targets in
+#'   columns). Unreachable pairs are `-1`.
+#' @export
+geodesic_matrix_graph <- function(edges, n_nodes, weights, directed, sources, targets, limit, threads) .Call(wrap__geodesic_matrix_graph, edges, n_nodes, weights, directed, sources, targets, limit, threads)
+
+#' Distance to the nearest target vertex, for each source vertex of a mesh.
+#'
+#' A memory-efficient alternative to `geodesic_matrix_mesh`: it keeps only the
+#' nearest target and the distance to it, so the output is `O(sources)` rather than
+#' `O(sources * targets)`. It is also faster, because the search stops at the first
+#' target it settles rather than exploring the whole component.
+#'
+#' Returns a list with `distances` and `nearest` (the vertex index of that nearest
+#' target). Sources with no reachable target get `-1`. A source that is itself a
+#' target is matched to its nearest *other* target, never to itself.
+#'
+#' @param faces Integer or numeric `(F, 3)` matrix of triangle vertex indices.
+#' @param n_vertices Integer; total number of vertices in the mesh.
+#' @param vertices Optional numeric `(V, 3)` matrix of vertex coordinates; `NULL`
+#'   counts edges.
+#' @param sources Optional integer vector of source vertex indices; `NULL` uses
+#'   every vertex.
+#' @param targets Optional integer vector of target vertex indices; `NULL` uses
+#'   every vertex.
+#' @param limit Optional numeric; ignore targets further away than this.
+#' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @return A list with `distances` and `nearest`.
+#' @export
+geodesic_nearest_mesh <- function(faces, n_vertices, vertices, sources, targets, limit, threads) .Call(wrap__geodesic_nearest_mesh, faces, n_vertices, vertices, sources, targets, limit, threads)
+
+#' Distance to the farthest target vertex, for each source vertex of a mesh.
+#'
+#' The mirror image of `geodesic_nearest_mesh`, with the same `O(sources)` memory
+#' footprint. Unlike `nearest`, this cannot stop early — it has to settle every
+#' target — but the farthest one then comes for free, because the search settles
+#' vertices in increasing order of distance.
+#'
+#' Returns a list with `distances` and `farthest`. Sources with no reachable target
+#' get `-1`. A source that is itself a target is matched to a *distinct* target.
+#'
+#' @param faces Integer or numeric `(F, 3)` matrix of triangle vertex indices.
+#' @param n_vertices Integer; total number of vertices in the mesh.
+#' @param vertices Optional numeric `(V, 3)` matrix of vertex coordinates; `NULL`
+#'   counts edges.
+#' @param sources Optional integer vector of source vertex indices; `NULL` uses
+#'   every vertex.
+#' @param targets Optional integer vector of target vertex indices; `NULL` uses
+#'   every vertex.
+#' @param limit Optional numeric; ignore targets further away than this.
+#' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @return A list with `distances` and `farthest`.
+#' @export
+geodesic_farthest_mesh <- function(faces, n_vertices, vertices, sources, targets, limit, threads) .Call(wrap__geodesic_farthest_mesh, faces, n_vertices, vertices, sources, targets, limit, threads)
+
 #' The `limit_dist="auto"` value for a scoring matrix.
 #'
 #' @param smat_values Numeric scoring matrix, or `NULL` for the built-in FCWB
