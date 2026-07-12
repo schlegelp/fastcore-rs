@@ -102,7 +102,7 @@ def break_segments(node_ids, parent_ids):
     >>> node_ids = np.arange(7)
     >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5])
     >>> fastcore.break_segments(node_ids, parent_ids)
-    [array([1, 0]), array([3, 2]), array([6, 5, 4])]
+    [array([1, 0]), array([3, 2, 1]), array([6, 5, 4, 1])]
 
     """
     # Convert parent IDs into indices
@@ -155,16 +155,16 @@ def segment_coords(
     >>> import numpy as np
     >>> node_ids = np.arange(7)
     >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5])
-    >>> coords = np.random.rand(7, 3)
+    >>> coords = np.random.RandomState(42).rand(7, 3)
     >>> fastcore.segment_coords(node_ids, parent_ids, coords)
-    [array([[5.30713899e-01, 8.26450947e-01, 2.46805326e-01],
-            [1.54144332e-04, 9.07823578e-01, 3.20199043e-01],
-            [6.64580597e-01, 3.23724555e-01, 3.18361918e-01],
-            [7.16579499e-01, 8.65568868e-02, 7.15686948e-01],
-            [5.94874740e-01, 5.95528161e-01, 8.14234930e-01]]),
-    array([[0.47814894, 0.84468164, 0.2765942 ],
-            [0.21748528, 0.36673489, 0.81449368],
-            [0.7165795 , 0.08655689, 0.71568695]])]
+    [array([[0.43194502, 0.29122914, 0.61185289],
+            [0.18340451, 0.30424224, 0.52475643],
+            [0.83244264, 0.21233911, 0.18182497],
+            [0.59865848, 0.15601864, 0.15599452],
+            [0.37454012, 0.95071431, 0.73199394]]),
+    array([[0.70807258, 0.02058449, 0.96990985],
+            [0.05808361, 0.86617615, 0.60111501],
+            [0.59865848, 0.15601864, 0.15599452]])]
 
     """
     # Convert parent IDs into indices
@@ -571,6 +571,7 @@ def geodesic_pairs(
     >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5])
     >>> pairs = np.array([(0, 1), (0, 2)])
     >>> fastcore.geodesic_pairs(node_ids, parent_ids, pairs)
+    array([1., 2.], dtype=float32)
 
     """
     # Convert parent IDs into indices
@@ -823,6 +824,7 @@ def prune_twigs(node_ids, parent_ids, threshold, weights=None, mask=None):
     array([0, 1, 4, 5, 6])
     >>> mask = np.array([True, True, True, False, True, True, True])
     >>> fastcore.prune_twigs(node_ids, parent_ids, 2, mask=mask)
+    array([0, 1, 2, 3, 4, 5, 6])
 
     """
     # Convert parent IDs into indices
@@ -938,7 +940,7 @@ def classify_nodes(node_ids, parent_ids):
     >>> node_ids = np.arange(8)
     >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5, 5])
     >>> fastcore.classify_nodes(node_ids, parent_ids)
-    array([2, 2, 1, 1, 2, 2, 1, 1], dtype=int32)
+    array([0, 2, 3, 1, 3, 2, 1, 1], dtype=int32)
 
     """
     # Convert parent IDs into indices
