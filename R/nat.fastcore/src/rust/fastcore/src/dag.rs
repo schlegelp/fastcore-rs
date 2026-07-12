@@ -1542,117 +1542,154 @@ pub fn strahler_index(
     to_ignore: &Option<Vec<i32>>,
     min_twig_size: &Option<i32>,
 ) -> Array1<i32> {
+    let n = parents.len();
+
     // Vector for the Strahler indices
-    let mut strahler: Array1<i32> = Array::from_elem(parents.len(), 0);
+    let mut strahler: Array1<i32> = Array::from_elem(n, 0);
 
-    // Vector for twigs that are too small and will be ignored -> need to be backfilled later
-    // Contains tuples of (node, first branch point)
+    // Child counts give us both leafs (no children) and branch points (2+ children) in one pass.
+    let n_children = number_of_children(parents);
+    let is_branch_point = |node: usize| n_children[node] >= 2;
+
+    // Twigs that don't contribute to the index and instead inherit the index of their first
+    // branch point. Contains tuples of (leaf, first branch point).
     let mut to_backfill: Vec<(usize, usize)> = vec![];
+    // Leafs whose twig is excluded from the calculation.
+    let mut is_ignored: Vec<bool> = vec![false; n];
 
-    // Get all leaf nodes
-    let leafs = find_leafs(parents, true, &None::<Array1<f32>>);
+    let ignore_set: Option<HashSet<i32>> =
+        to_ignore.as_ref().map(|ids| ids.iter().cloned().collect());
 
-    // Get childs per node
-    let children = extract_parent_child(parents);
+    for leaf in 0..n {
+        if n_children[leaf] != 0 {
+            continue;
+        }
 
-    // Get all branch points
-    let mut is_branch_point: Array1<bool> = Array::from_elem(parents.len(), false);
-    for bp in find_branch_points(parents) {
-        is_branch_point[bp as usize] = true;
-    }
+        // Leafs the caller asked us to ignore. Note we deliberately do *not* treat the root as a
+        // branch point here: a twig that reaches the root without passing one has nothing to
+        // inherit from and simply stays at 0.
+        if ignore_set.as_ref().is_some_and(|s| s.contains(&(leaf as i32))) {
+            is_ignored[leaf] = true;
 
-    for l in leafs.iter() {
-        // Skip if this leaf is to be ignored
-        if to_ignore.is_some() && to_ignore.as_ref().unwrap().contains(l) {
-            // Find the first branch point
-            let mut node = *l as usize;
+            let mut node = leaf;
             while parents[node] >= 0 {
-                if is_branch_point[node] {
-                    to_backfill.push((*l as usize, node));
+                if is_branch_point(node) {
+                    to_backfill.push((leaf, node));
                     break;
                 }
                 node = parents[node] as usize;
             }
-
             continue;
         }
-        let mut d: i32 = 1;
-        let mut node = *l as usize;
-        let mut si: i32 = 1; // start SI with 1
 
-        // Walk towards the root
-        loop {
-            // If this is a branch point and we have already seen it before
-            // we need to decide how to proceed
-            if is_branch_point[node] {
-                // If this is (the first) branch point and we haven't reached
-                // the min twig size yet
-                if min_twig_size.is_some() && d < min_twig_size.unwrap() {
-                    // Add leaf to list of small twigs
-                    to_backfill.push((*l as usize, node));
-                    break;
-                // If this branch point has been seen before
-                } else if strahler[node] > 0 {
-                    // Standard method
-                    if !greedy {
-                        // If Strahler index of the branch point is the same as the current Strahler index
-                        // we increment the Strahler index
-                        if strahler[node] == si {
-                            // Check if at least two of this branch point's children also have the same SI
-                            let mut n = 0;
-                            for child in children[node].iter() {
-                                if strahler[*child as usize] == si {
-                                    n += 1;
-                                }
-                            }
-                            if n >= 2 {
-                                si += 1;
-                            }
-                        // If the subsequent Strahler index is equal or higher we can break here
-                        } else if strahler[node] >= si {
-                            break;
-                        }
-                        // If it is lower, we need to propagate the higher Strahler index
-
-                        // Greedy method: always increment Strahler index
-                    } else {
-                        si = strahler[node] + 1;
+        // Twigs shorter than `min_twig_size`. Unlike above, a root *does* count as a branch point
+        // here. `d` counts nodes from the leaf up to and including the branch point.
+        if let Some(min_size) = min_twig_size {
+            let mut node = leaf;
+            let mut d: i32 = 1;
+            loop {
+                if is_branch_point(node) {
+                    if d < *min_size {
+                        is_ignored[leaf] = true;
+                        to_backfill.push((leaf, node));
                     }
+                    break;
                 }
+                if parents[node] < 0 {
+                    break;
+                }
+                node = parents[node] as usize;
+                d += 1;
             }
-
-            // Write the Strahler Index to the node
-            strahler[node] = si;
-
-            // Stop if we reached the root
-            if parents[node] < 0 {
-                break;
-            }
-
-            // Move to next node
-            node = parents[node] as usize;
-
-            // Track distance travelled (in case we have a min twig size threshold)
-            d += 1;
         }
     }
 
-    // Fill the small twigs/to ignore with the Strahler index of the first branch point
+    // A node contributes to the index if at least one contributing leaf sits below it. Every node
+    // between a leaf and its first branch point has exactly one child, so the nodes of an ignored
+    // twig are precisely the ones this misses -- we get them for free and needn't track them
+    // separately. Each node is marked at most once, so this stays O(N) overall.
+    let mut contributes: Vec<bool> = vec![false; n];
+    for leaf in 0..n {
+        if n_children[leaf] != 0 || is_ignored[leaf] {
+            continue;
+        }
+        let mut node = leaf;
+        while !contributes[node] {
+            contributes[node] = true;
+            if parents[node] < 0 {
+                break;
+            }
+            node = parents[node] as usize;
+        }
+    }
+
+    // Number of contributing children per node; doubles as the countdown telling us when a node
+    // has seen all its children and can be finalised.
+    let mut pending: Vec<i32> = vec![0; n];
+    for node in 0..n {
+        if contributes[node] && parents[node] >= 0 {
+            pending[parents[node] as usize] += 1;
+        }
+    }
+
+    // What the children have carried up so far. "standard" needs the highest index among the
+    // children and how many of them carry it; "greedy" simply sums them, which is what makes
+    // converging branches always increment.
+    let mut child_max: Vec<i32> = vec![0; n];
+    let mut child_max_count: Vec<i32> = vec![0; n];
+    let mut child_sum: Vec<i32> = vec![0; n];
+
+    // Walk the tree bottom-up, children before parents. A contributing node with children always
+    // has at least one contributing child, so the only nodes starting with nothing pending are the
+    // contributing leafs.
+    let mut queue: Vec<usize> = (0..n)
+        .filter(|&node| contributes[node] && n_children[node] == 0)
+        .collect();
+
+    while let Some(node) = queue.pop() {
+        let si = if n_children[node] == 0 {
+            1 // leafs start at 1
+        } else if greedy {
+            child_sum[node]
+        } else if child_max_count[node] >= 2 {
+            child_max[node] + 1 // two or more children tie for the highest index -> increment
+        } else {
+            child_max[node] // otherwise the highest index carries through unchanged
+        };
+        strahler[node] = si;
+
+        if parents[node] < 0 {
+            continue;
+        }
+        let parent = parents[node] as usize;
+
+        if greedy {
+            child_sum[parent] += si;
+        } else if si > child_max[parent] {
+            child_max[parent] = si;
+            child_max_count[parent] = 1;
+        } else if si == child_max[parent] {
+            child_max_count[parent] += 1;
+        }
+
+        pending[parent] -= 1;
+        if pending[parent] == 0 {
+            queue.push(parent);
+        }
+    }
+
+    // Fill the ignored twigs with the Strahler index of their first branch point.
     for (leaf, bp) in to_backfill.iter() {
-        // Strahler index of the first branch point
         let si = strahler[*bp];
-        // Walk towards the root
+
         let mut node = *leaf;
         loop {
-            // Write the Strahler Index to the node
             strahler[node] = si;
 
-            // Stop if we reached the root
-            if is_branch_point[node] || parents[node] < 0 {
+            if is_branch_point(node) || parents[node] < 0 {
                 break;
             }
 
-            // Move to next node
             node = parents[node] as usize;
         }
     }
@@ -1852,6 +1889,94 @@ mod tests {
 
         assert_eq!(types[4], 2); // three children -> branch point
         assert_eq!(types, arr1(&[0, 1, 1, 1, 2, 1]));
+    }
+
+    /// "standard" is the textbook Strahler index: a node's index only goes up when two or more of
+    /// its children tie for the highest index. The single-child branch below node 1 must *not*
+    /// bump it.
+    #[test]
+    fn strahler_standard_only_increments_on_a_tie() {
+        //   0 - 1 - 2 - 3
+        //        \
+        //         4 - 5 - 6
+        //              \
+        //               7
+        let parents = arr1(&[-1, 0, 1, 2, 1, 4, 5, 5]);
+
+        let si = strahler_index(&parents.view(), false, &None, &None);
+
+        // 5 ties two leafs -> 2, which carries up through 4 to 1; 1 sees {2 (SI 1), 4 (SI 2)},
+        // no tie at the max, so it stays 2.
+        assert_eq!(si, arr1(&[2, 2, 1, 1, 2, 2, 1, 1]));
+    }
+
+    /// "greedy" always increases the index at converging branches, whether or not they tie. That
+    /// makes a node's index the number of leafs below it -- note the trifurcation at node 5 gets
+    /// 3, which the standard method would only ever call 2.
+    #[test]
+    fn strahler_greedy_adds_up_converging_branches() {
+        //   0 - 1 - 2 (leaf)
+        //        \
+        //         3 - 4,5,6 (leafs)
+        let parents = arr1(&[-1, 0, 1, 1, 3, 3, 3]);
+
+        let greedy = strahler_index(&parents.view(), true, &None, &None);
+        let standard = strahler_index(&parents.view(), false, &None, &None);
+
+        assert_eq!(greedy, arr1(&[4, 4, 1, 3, 1, 1, 1])); // 4 leafs below the root
+        assert_eq!(standard, arr1(&[2, 2, 1, 2, 1, 1, 1]));
+    }
+
+    /// Twigs below `min_twig_size` must not contribute, and instead inherit the index of their
+    /// first branch point. Without the twig, node 1 has a single contributing child and stays 1.
+    ///
+    /// Careful with the threshold: the twig is measured from the leaf up to *and including* its
+    /// first branch point, so a one-node twig needs `min_twig_size = 3` to be dropped, not 2. That
+    /// is off by one against the documented "twigs with fewer nodes than this", but it is the
+    /// long-standing behaviour and callers are calibrated to it -- don't quietly change it.
+    #[test]
+    fn strahler_min_twig_size_excludes_and_backfills_short_twigs() {
+        //   0 - 1 - 2 - 3 (long branch)
+        //        \
+        //         4 (one-node twig)
+        let parents = arr1(&[-1, 0, 1, 2, 1]);
+
+        // No threshold: the twig counts, so node 1 ties two SI-1 children -> 2.
+        assert_eq!(
+            strahler_index(&parents.view(), false, &None, &None),
+            arr1(&[2, 2, 1, 1, 1])
+        );
+
+        // 2 is not enough to drop a one-node twig (see above).
+        assert_eq!(
+            strahler_index(&parents.view(), false, &None, &Some(2)),
+            arr1(&[2, 2, 1, 1, 1])
+        );
+
+        // 3 drops it: nothing ties at node 1 any more, and the twig inherits node 1's index.
+        assert_eq!(
+            strahler_index(&parents.view(), false, &None, &Some(3)),
+            arr1(&[1, 1, 1, 1, 1])
+        );
+    }
+
+    /// `to_ignore` drops a twig regardless of its length, backfilling it from its branch point.
+    #[test]
+    fn strahler_to_ignore_excludes_named_leafs() {
+        //   0 - 1 - 2 - 3
+        //        \
+        //         4 - 5
+        let parents = arr1(&[-1, 0, 1, 2, 1, 4]);
+
+        assert_eq!(
+            strahler_index(&parents.view(), false, &None, &None),
+            arr1(&[2, 2, 1, 1, 1, 1])
+        );
+        // Ignoring leaf 5 removes the 4->5 branch, so node 1 no longer ties.
+        assert_eq!(
+            strahler_index(&parents.view(), false, &Some(vec![5]), &None),
+            arr1(&[1, 1, 1, 1, 1, 1])
+        );
     }
 
     /// Characterisation test, not a specification. Cyclic input is malformed and no caller should
