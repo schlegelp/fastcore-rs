@@ -100,9 +100,85 @@ def test_generate_segments(swc, weights):
     segments, lengths = fastcore.generate_segments(nodes, parents, weights=weights)
     dur = time.time() - start
 
-    # print("Segments:", segments)
-    print(type(segments), type(segments[0]))
+    assert len(segments) == len(lengths)
+
+    # `lengths[i]` must describe `segments[i]`. The weighted branch used to sort the
+    # segments longest-first but hand back the lengths in their original order, so the
+    # two did not line up -- and nothing here caught it.
+    if weights is None:
+        expected = [len(s) for s in segments]
+    else:
+        w = dict(zip(nodes, weights))
+        expected = [sum(w[n] for n in s) for s in segments]
+    np.testing.assert_allclose(lengths, expected, rtol=1e-5)
+
+    # Segments come out longest-first.
+    assert list(lengths) == sorted(lengths, reverse=True)
+
+    # Every node is covered and none is invented. N.B. segments deliberately OVERLAP at
+    # branch points (a walk includes the already-seen node it stops at), so this is set
+    # coverage, not a partition.
+    assert set(np.concatenate(segments)) == set(nodes)
+
     print(f"Timing: {dur:.4f}s")
+
+
+def test_geodesic_pairs_disconnected_is_negative():
+    """Nodes in different components have no path between them.
+
+    That is reported as -1, matching `geodesic_matrix`. It used to be reported as 1.0,
+    which is indistinguishable from a genuine one-edge distance.
+    """
+    # Two separate components: {1, 2} and {3, 4}
+    nodes = np.array([1, 2, 3, 4], dtype=np.int64)
+    parents = np.array([-1, 1, -1, 3], dtype=np.int64)
+
+    dists = fastcore.geodesic_pairs(nodes, parents, np.array([[1, 3], [1, 2], [3, 4]]))
+
+    assert dists[0] == -1  # crosses components
+    assert dists[1] == 1  # a real one-edge distance
+    assert dists[2] == 1
+
+    # ... and it must agree with what the full matrix says about the same pair.
+    matrix = fastcore.geodesic_matrix(nodes, parents)
+    assert matrix[0, 2] == dists[0]
+
+
+def test_dist_to_root_counts_edges():
+    """`dist_to_root` counts edges, so a root is at distance 0, matching `geodesic_matrix`."""
+    from navis_fastcore import _fastcore
+
+    # chain 0 <- 1 <- 2
+    parents = np.array([-1, 0, 1], dtype=np.int32)
+
+    assert _fastcore.dist_to_root(parents, 0) == 0.0
+    assert _fastcore.dist_to_root(parents, 1) == 1.0
+    assert _fastcore.dist_to_root(parents, 2) == 2.0
+
+    # Must agree with all_dists_to_root, which it used to be off-by-one against.
+    assert_array_equal(
+        [_fastcore.dist_to_root(parents, n) for n in range(3)],
+        _fastcore.all_dists_to_root(parents, None, None),
+    )
+
+
+def test_has_cycles():
+    """Cycle detection: no false positives on forests, no false negatives on cycles."""
+    from navis_fastcore import _fastcore
+
+    # Acyclic: chain, forest of two trees, branching tree
+    assert not _fastcore.has_cycles(np.array([-1, 0, 1], dtype=np.int32))
+    assert not _fastcore.has_cycles(np.array([-1, 0, 1, -1, 3], dtype=np.int32))
+    assert not _fastcore.has_cycles(np.array([-1, 0, 0, 1, 1, 2], dtype=np.int32))
+
+    # Cyclic: self-loop, 2-cycle, 3-cycle with no root
+    assert _fastcore.has_cycles(np.array([0], dtype=np.int32))
+    assert _fastcore.has_cycles(np.array([1, 0], dtype=np.int32))
+    assert _fastcore.has_cycles(np.array([1, 2, 0], dtype=np.int32))
+
+    # A clean tree visited first, with a cycle off to the side. The pruning must not
+    # swallow the cycle just because nodes 0-2 were already cleared.
+    assert _fastcore.has_cycles(np.array([-1, 0, 1, 4, 3], dtype=np.int32))
 
 
 @pytest.mark.parametrize("swc", [swc32(), swc64()])

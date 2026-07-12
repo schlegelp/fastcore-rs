@@ -2,6 +2,7 @@ use itertools::Itertools;
 use ndarray::parallel::prelude::*;
 use ndarray::{s, Array, Array1, Array2, ArrayView1};
 use num::Float;
+use rayon::slice::ParallelSlice;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ops::AddAssign;
@@ -194,7 +195,7 @@ where
     } else {
         // If weights are provided we need to sort by the sum of the weights
         let weights = weights.unwrap();
-        lengths = Some(all_segments
+        let unsorted: Vec<T> = all_segments
             .iter()
             .map(|segment| {
                 segment
@@ -202,14 +203,18 @@ where
                     .map(|&node| weights[node as usize])
                     .sum::<T>()
             })
-            .collect());
-        let lengths_unwrapped = lengths.as_ref().unwrap();
+            .collect();
+
         // Generate indices for sorting
         let mut indices: Vec<usize> = (0..all_segments.len()).collect();
-        // Sort indices by the lengths
-        indices.sort_by(|a, b| lengths_unwrapped[*b].partial_cmp(&lengths_unwrapped[*a]).unwrap());
-        // Sort the segments by the sorted indices
+        // Sort indices by the lengths, longest first
+        indices.sort_by(|a, b| unsorted[*b].partial_cmp(&unsorted[*a]).unwrap());
+
+        // Permute segments AND lengths by the same indices. These have to move together:
+        // returning `unsorted` as-is (as we used to) leaves `lengths[i]` describing some
+        // other segment than `all_segments[i]`.
         all_segments = indices.iter().map(|&i| all_segments[i].clone()).collect();
+        lengths = Some(indices.iter().map(|&i| unsorted[i]).collect());
     }
     (all_segments, lengths)
 }
@@ -303,26 +308,65 @@ where
         x_sources = sources.as_ref().unwrap().to_owned();
     }
 
-    let mut node: i32;
+    let n = parents.len();
     let mut dists: Vec<T> = vec![T::zero(); x_sources.len()];
 
-    if weights.is_none() {
-        for i in 0..x_sources.len() {
-            node = x_sources[i];
-            while parents[node as usize] >= 0 {
-                dists[i] += T::one();
-                node = parents[node as usize];
+    // Memoize the distance for every node we touch. Without this, sources sharing a
+    // path to the root each re-walk that path: on a neuron (a long backbone with many
+    // twigs hanging off it) that is O(N * depth), i.e. quadratic. Walking up until we
+    // hit an already-solved node and then unwinding makes the total O(nodes touched),
+    // and it stays cheap when `sources` is only a small subset.
+    // This is the same path-unwind trick `connected_components` uses below.
+    let mut memo: Vec<T> = vec![T::zero(); n];
+    let mut solved: Vec<bool> = vec![false; n];
+    // Node indices are i32, so u32 is plenty and halves this buffer. It only ever grows to
+    // the length of the longest unsolved chain, and is reused across sources.
+    let mut path: Vec<u32> = Vec::new();
+
+    for i in 0..x_sources.len() {
+        let source = x_sources[i] as usize;
+        let mut node = source;
+
+        path.clear();
+        while !solved[node] && parents[node] >= 0 {
+            path.push(node as u32);
+            node = parents[node] as usize;
+            // Cycles are malformed input (see `has_cycles`) and used to hang here
+            // forever. A valid path visits each node at most once, so overshooting `n`
+            // means we are going round in circles: bail out rather than spin.
+            if path.len() > n {
+                break;
             }
         }
-    } else {
-        let weights = weights.as_ref().unwrap();
-        for i in 0..x_sources.len() {
-            node = x_sources[i];
-            while parents[node as usize] >= 0 {
-                dists[i] += weights[node as usize];
-                node = parents[node as usize];
+
+        // We stopped at either a root or an already-solved node. A root is distance
+        // zero from itself, which is what `memo` is already initialised to.
+        solved[node] = true;
+
+        // Unwind, filling in every node on the way back down.
+        // `d[node] = d[parent] + w(node)` -- the weight of an edge is stored on its
+        // child, which is what the original leaf-to-root accumulation did.
+        let mut acc = memo[node];
+        match weights.as_ref() {
+            None => {
+                for &nd in path.iter().rev() {
+                    let nd = nd as usize;
+                    acc += T::one();
+                    memo[nd] = acc;
+                    solved[nd] = true;
+                }
+            }
+            Some(w) => {
+                for &nd in path.iter().rev() {
+                    let nd = nd as usize;
+                    acc += w[nd];
+                    memo[nd] = acc;
+                    solved[nd] = true;
+                }
             }
         }
+
+        dists[i] = memo[source];
     }
 
     dists
@@ -337,11 +381,15 @@ where
 ///
 /// Returns:
 ///
-/// A f32 value indicating the distance between the node and the root.
+/// A f32 value indicating the distance between the node and the root. This counts edges,
+/// so a root is at distance 0 -- matching `all_dists_to_root`.
 pub fn dist_to_root(parents: &ArrayView1<i32>, node: i32) -> f32 {
     let mut dist = 0.;
     let mut node = node;
-    while node >= 0 {
+    // N.B. the condition is on the PARENT: we count edges traversed, not nodes visited.
+    // This previously read `while node >= 0`, which counted the start node itself and so
+    // reported a root as 1.0 and disagreed with `all_dists_to_root` by exactly one.
+    while node >= 0 && parents[node as usize] >= 0 {
         dist += 1.;
         node = parents[node as usize];
     }
@@ -556,64 +604,89 @@ where
     let mut dists: Array2<T> =
         Array::from_elem((sources.len(), targets.len()), T::from(-1.0).unwrap());
 
-    // Get a list of leafs
-    let leafs = find_leafs(&parents.view(), true, weights);
+    // Both passes below walk parent -> child, so build the child lists once and share them.
+    let children = extract_parent_child(parents);
+    let roots = find_roots(parents);
+    let ctx = PartialCtx {
+        children: &children,
+        is_source: &is_source,
+        is_target: &is_target,
+        weights,
+        source_to_index: &source_to_index,
+        target_to_index: &target_to_index,
+    };
 
-    // Prepare some more variables
-    let mut node: usize;
-    let mut d: T;
+    // --- Pass 1: pairs where one node lies on the other's path to the root ---------------
+    //
+    // Two nodes that share a root-path are necessarily ancestor and descendant, so their
+    // distance is simply the difference of their depths.
+    //
+    // This used to walk from EVERY leaf all the way up to the root, re-treading the shared
+    // trunk once per leaf -- O(leafs * depth), which on a neuron (a long backbone with a twig
+    // every few nodes) is quadratic. The old comment here conceded as much: "We could be a
+    // bit more clever by using stop conditions to avoid going over the same part of the tree
+    // twice". It also asked `find_leafs` to sort the leafs by distance, an ordering nothing
+    // downstream used.
+    //
+    // Instead: one depth-first walk per root, carrying the sources and targets seen so far on
+    // the current root-path. Each node is visited once and each matrix cell is written once,
+    // so the cost is O(N + cells written) -- and the cells are the output, so that is optimal.
 
-    // From each leaf walk towards the root and track the forward distances
-    // N.B. We could be a bit more clever by using stop conditions to avoid going over
-    // the same part of the tree twice but so far this part doesn't seem to be the bottle neck
-    for leaf in leafs.iter() {
-        node = *leaf as usize; // start with the distance between the node and itself
-        d = T::zero();
+    // Sources/targets on the path from the root down to wherever we currently are, with their
+    // depth. Both stay sorted by depth (weights are distances, so never negative), which the
+    // `directed` early-out in `visit_forward` relies on.
+    let mut active_sources: Vec<(usize, Depth)> = vec![];
+    let mut active_targets: Vec<(usize, Depth)> = vec![];
 
-        // Prepare vector to track (node, distance) tuples
-        let mut this_sources: Vec<(usize, T)> = vec![];
-        let mut this_targets: Vec<(usize, T)> = vec![];
+    // Explicit DFS stack of (node, next child to descend into, depth from root). Recursing
+    // here would blow the stack on a deep neuron, exactly as `walk_up_and_count` used to.
+    let mut stack: Vec<(u32, u32, Depth)> = vec![];
 
-        // Walk towards the root
-        loop {
-            // If this node is a source, track the distance
-            if is_source[node] {
-                this_sources.push((node, d));
-            }
-            // If this node is a target, track the distance
-            if is_target[node] {
-                this_targets.push((node, d));
-            }
+    for &root in roots.iter() {
+        let root = root as usize;
+        visit_forward(
+            &ctx,
+            root,
+            0.0,
+            directed,
+            &mut active_sources,
+            &mut active_targets,
+            &mut dists,
+        );
+        stack.push((root as u32, 0, 0.0));
 
-            // Track distance travelled
-            d += if weights.is_some() {
-                weights.as_ref().unwrap()[node]
+        while !stack.is_empty() {
+            let top = stack.len() - 1;
+            let (node, next_child, depth) = stack[top];
+            let siblings = ctx.children.children(node as usize);
+
+            if (next_child as usize) < siblings.len() {
+                let child = siblings[next_child as usize] as usize;
+                stack[top].1 += 1;
+
+                // An edge's weight is stored on its child, so depth(child) = depth(parent) + w.
+                let child_depth = depth + edge_weight(&ctx, child);
+
+                visit_forward(
+                    &ctx,
+                    child,
+                    child_depth,
+                    directed,
+                    &mut active_sources,
+                    &mut active_targets,
+                    &mut dists,
+                );
+                stack.push((child as u32, 0, child_depth));
             } else {
-                T::one()
-            };
-
-            // Stop if we reached the root
-            if parents[node] < 0 {
-                break;
-            }
-
-            node = parents[node] as usize;
-        }
-
-        // Fill in the forward distances
-        for (source, d1) in this_sources.iter() {
-            for (target, d2) in this_targets.iter() {
-                // If we only want the directed distances, skip if d1 > d2
-                // (i.e. the source is further down the path than the target)
-                if directed && d1 > d2 {
-                    continue;
+                stack.pop();
+                // Leaving this node: it is no longer on the path, so drop whatever it added.
+                let node = node as usize;
+                if is_source[node] {
+                    active_sources.pop();
                 }
-
-                // The distance between the two is the absolute value of the difference
-                dists[[
-                    source_to_index[&(*source as i32)],
-                    target_to_index[&(*target as i32)],
-                ]] = (*d1 - *d2).abs();
+                if is_target[node] {
+                    active_targets.pop();
+                }
             }
         }
     }
@@ -623,28 +696,85 @@ where
         return dists;
     }
 
-    // Now the reverse distances
-
-    // Calculate parent -> children direction for each node
-    // This is a vector of [(child1, child2, ...), ...]
-    let children = extract_parent_child(parents);
-
-    // From each root start walking up the tree and calculate the reverse distances
-    for root in find_roots(parents) {
-        let (_, _) = walk_up_and_count_recursively(
-            root,
-            T::zero(),
-            &children,
-            &is_target,
-            &is_source,
-            &weights,
-            &mut dists,
-            &source_to_index,
-            &target_to_index,
-        );
+    // --- Pass 2: pairs that meet at a branch point (their lowest common ancestor) ---------
+    for &root in roots.iter() {
+        walk_up_and_count(&ctx, root, &mut dists);
     }
 
-    return dists;
+    dists
+}
+
+/// Record one node during the forward walk: pair it with every source/target already on the
+/// current root-path, then add it to the path itself.
+#[allow(clippy::too_many_arguments)]
+fn visit_forward<T>(
+    ctx: &PartialCtx<T>,
+    node: usize,
+    depth: Depth,
+    directed: bool,
+    active_sources: &mut Vec<(usize, Depth)>,
+    active_targets: &mut Vec<(usize, Depth)>,
+    dists: &mut Array2<T>,
+) where
+    T: Float + AddAssign,
+{
+    let node_is_source = ctx.is_source[node];
+    let node_is_target = ctx.is_target[node];
+    if !node_is_source && !node_is_target {
+        return;
+    }
+
+    let row = if node_is_source {
+        Some(ctx.source_to_index[&(node as i32)])
+    } else {
+        None
+    };
+    let col = if node_is_target {
+        Some(ctx.target_to_index[&(node as i32)])
+    } else {
+        None
+    };
+
+    // This node as a source, against every target above it. Those are all strict ancestors,
+    // so the target is upstream of the source and `directed` accepts every one of them --
+    // no filtering needed, and every iteration writes a cell.
+    if let Some(row) = row {
+        for (target_ix, target_depth) in active_targets.iter() {
+            dists[[row, *target_ix]] = narrow((depth - *target_depth).abs());
+        }
+    }
+
+    // This node as a target, against every source above it. Now the roles are reversed: the
+    // sources are *upstream* of the target, which is the direction `directed` rejects.
+    // `active_sources` is sorted by depth, so walking it backwards lets us stop at the first
+    // strictly shallower source rather than scanning the whole path (which would put the
+    // quadratic straight back in).
+    if let Some(col) = col {
+        if directed {
+            for (source_ix, source_depth) in active_sources.iter().rev() {
+                if *source_depth < depth {
+                    break;
+                }
+                dists[[*source_ix, col]] = narrow((*source_depth - depth).abs());
+            }
+        } else {
+            for (source_ix, source_depth) in active_sources.iter() {
+                dists[[*source_ix, col]] = narrow((*source_depth - depth).abs());
+            }
+        }
+    }
+
+    // A node that is both a source and a target is zero away from itself.
+    if let (Some(row), Some(col)) = (row, col) {
+        dists[[row, col]] = T::zero();
+    }
+
+    if let Some(row) = row {
+        active_sources.push((row, depth));
+    }
+    if let Some(col) = col {
+        active_targets.push((col, depth));
+    }
 }
 
 /// Calculate the distance to the nearest target for each source.
@@ -825,7 +955,7 @@ where
     while head < order.len() {
         let node = order[head];
         head += 1;
-        for &c in children[node].iter() {
+        for &c in children.children(node).iter() {
             order.push(c as usize);
         }
     }
@@ -897,7 +1027,7 @@ where
         let mut cs_d = sentinel;
         let mut cs_t = -1i32;
 
-        for &c in children[v].iter() {
+        for &c in children.children(v).iter() {
             let c = c as usize;
             if !down1_dist[c].is_finite() {
                 continue; // no target in this child's subtree
@@ -937,7 +1067,7 @@ where
 
     // Pre-order: parents before children
     for &p in order.iter() {
-        for &c in children[p].iter() {
+        for &c in children.children(p).iter() {
             let c = c as usize;
             // Distance from `p` to the best target that is not inside the subtree of `c`. Those
             // targets fall into three disjoint groups: outside the subtree of `p`, `p` itself,
@@ -1008,119 +1138,250 @@ where
 /// and the second contains the distances from targets to the root node. The distances are
 /// tuples of (index in the distance matrix, distance).
 ///
-fn walk_up_and_count_recursively<T>(
+/// The read-only context shared by every step of the walk below. Bundled into a struct
+/// purely to keep the argument list sane.
+struct PartialCtx<'a, T> {
+    children: &'a ChildList,
+    is_source: &'a Array1<bool>,
+    is_target: &'a Array1<bool>,
+    weights: &'a Option<Array1<T>>,
+    source_to_index: &'a HashMap<i32, usize>,
+    target_to_index: &'a HashMap<i32, usize>,
+}
+
+/// Depths are carried in f64 whatever `T` is, and every distance is derived as a difference of
+/// two of them.
+///
+/// That difference is unavoidable: an algorithm that writes each matrix cell exactly once must
+/// reconstruct distances from precomputed depths instead of re-accumulating them per pair --
+/// re-accumulating is precisely what made this quadratic. But a difference of two depths is a
+/// cancellation, and in f32 that costs real accuracy: deep inside a neuron the depths are large
+/// while the distance between two nearby nodes is small, so the leading digits cancel and the
+/// answer is left with whatever noise the f32 depths carried. Accumulating and subtracting in
+/// f64, then narrowing to `T`, keeps ~9 significant digits in hand -- comfortably enough for the
+/// f32 result to come out correctly rounded.
+type Depth = f64;
+
+/// One pending branch point on the DFS stack -- i.e. one frame of what used to be a
+/// recursive call.
+struct Frame {
+    /// The branch point this segment ran into.
+    branch_node: usize,
+    /// Depth of `branch_node`, measured from the root.
+    branch_depth: Depth,
+    /// Sources/targets sitting on this segment itself, with their depth from the root.
+    source_dists: Vec<(usize, Depth)>,
+    target_dists: Vec<(usize, Depth)>,
+    /// Which child of `branch_node` we descend into next.
+    next_child: usize,
+    /// Union of the sources/targets of every child subtree finished so far.
+    acc_sources: Vec<(usize, Depth)>,
+    acc_targets: Vec<(usize, Depth)>,
+}
+
+/// Fold `other` into `acc`, keeping whichever is already bigger as the destination.
+///
+/// This "small to large" rule is what stops the roll-up being quadratic. Because the entries
+/// carry depths measured from the *root*, merging is pure concatenation -- nothing has to be
+/// rewritten -- so we are free to pick whichever direction moves fewer elements. An entry only
+/// ever moves when it is in the smaller half, which at least doubles the size of the list it
+/// lands in, so it can move at most log2(N) times in total.
+fn merge_small_to_large<T>(acc: &mut Vec<T>, mut other: Vec<T>) {
+    if acc.len() < other.len() {
+        std::mem::swap(acc, &mut other);
+    }
+    acc.append(&mut other);
+}
+
+/// Walk a single unbranched segment from `start_node` downwards, collecting the sources and
+/// targets on it, each tagged with its depth from the root.
+///
+/// Returns `Some((branch_node, depth))` if the segment ended at a branch point, or `None` if
+/// it ran into a leaf.
+#[allow(clippy::type_complexity)]
+fn walk_segment<T>(
+    ctx: &PartialCtx<T>,
     start_node: i32,
-    start_dist: T,
-    children: &Vec<Vec<i32>>,
-    is_target: &Array1<bool>,
-    is_source: &Array1<bool>,
-    weights: &Option<Array1<T>>,
-    dists: &mut Array2<T>,
-    source_to_index: &HashMap<i32, usize>,
-    target_to_index: &HashMap<i32, usize>,
-) -> (Vec<(usize, T)>, Vec<(usize, T)>)
+    start_depth: Depth,
+) -> (
+    Vec<(usize, Depth)>,
+    Vec<(usize, Depth)>,
+    Option<(usize, Depth)>,
+)
 where
     T: Float + AddAssign,
 {
-    // Track the distance and the source/target distances on this subtree
-    // These vectors contain (node index into dists array, distance to root)
-    let mut source_dists: Vec<(usize, T)> = vec![];
-    let mut target_dists: Vec<(usize, T)> = vec![];
+    let mut source_dists: Vec<(usize, Depth)> = vec![];
+    let mut target_dists: Vec<(usize, Depth)> = vec![];
 
-    // Walk up the tree and track the distances
     let mut node = start_node as usize;
-    let mut d: T = start_dist;
+    let mut d: Depth = start_depth;
+
     loop {
-        // If this node is a source, track the distance
-        if is_source[node] {
-            source_dists.push((source_to_index[&(node as i32)], d));
+        if ctx.is_source[node] {
+            source_dists.push((ctx.source_to_index[&(node as i32)], d));
         }
-        // If this node is a target, track the distance
-        if is_target[node] {
-            target_dists.push((target_to_index[&(node as i32)], d));
+        if ctx.is_target[node] {
+            target_dists.push((ctx.target_to_index[&(node as i32)], d));
         }
 
-        // If this node is a leaf node, we can stop moving up
-        if children[node].len() == 0 {
-            break;
+        let n_children = ctx.children.children(node).len();
+
+        // Leaf: nothing below us.
+        if n_children == 0 {
+            return (source_dists, target_dists, None);
         }
-        // If this node is a branch point, we need to recurse into the children
-        if children[node].len() > 1 {
-            // We need to keep track of the distances from each of the branches
-            let mut branch_sources_dists: Vec<Vec<(usize, T)>> = vec![];
-            let mut branch_targets_dists: Vec<Vec<(usize, T)>> = vec![];
-
-            for child in children[node].iter() {
-                let child_dist = if weights.is_some() {
-                    weights.as_ref().unwrap()[*child as usize]
-                } else {
-                    T::one()
-                };
-                let (child_sources, child_targets) = walk_up_and_count_recursively(
-                    *child,
-                    child_dist,
-                    children,
-                    is_target,
-                    is_source,
-                    weights,
-                    dists,
-                    source_to_index,
-                    target_to_index,
-                );
-                branch_sources_dists.push(child_sources);
-                branch_targets_dists.push(child_targets);
-            }
-
-            // Now we know, for each of the branches, which sources and targets are on it and at what distance
-            // We can now calculate the distances between all sources and targets on different branches and
-            // write that to `dists`
-            for (i, branch1) in branch_sources_dists.iter().enumerate() {
-                for (j, branch2) in branch_targets_dists.iter().enumerate() {
-                    // Skip sources/targets on the same branch
-                    if i == j {
-                        continue;
-                    }
-                    for (source_ix, d1) in branch1.iter() {
-                        for (target_ix, d2) in branch2.iter() {
-                            dists[[*source_ix, *target_ix]] = *d1 + *d2;
-                        }
-                    }
-                }
-            }
-
-            // Next, we need to add these distances to the local source/target distances
-            // AND add the current distance
-            for branch in branch_sources_dists.iter() {
-                for (source_ix, d1) in branch.iter() {
-                    source_dists.push((*source_ix, *d1 + d));
-                }
-            }
-            for branch in branch_targets_dists.iter() {
-                for (target_ix, d2) in branch.iter() {
-                    target_dists.push((*target_ix, *d2 + d));
-                }
-            }
-
-            break;
+        // Branch point: the caller has to fan out into the children.
+        if n_children > 1 {
+            return (source_dists, target_dists, Some((node, d)));
         }
 
-        node = children[node][0] as usize;
+        node = ctx.children.children(node)[0] as usize;
 
-        // Track distance travelled
-        // N.B. that here we're incrementing the distance AFTER going to the next node
-        d += if weights.is_some() {
-            weights.as_ref().unwrap()[node]
-        } else {
-            T::one()
-        };
+        // N.B. we increment the depth AFTER moving, i.e. an edge's weight is stored on
+        // the child.
+        d += edge_weight(ctx, node);
+    }
+}
+
+/// Depth contributed by the edge above `node`, in f64. An edge's weight is stored on its child.
+#[inline]
+fn edge_weight<T>(ctx: &PartialCtx<T>, node: usize) -> Depth
+where
+    T: Float + AddAssign,
+{
+    match ctx.weights {
+        Some(w) => w[node].to_f64().expect("weight is not representable as f64"),
+        None => 1.0,
+    }
+}
+
+/// Narrow an f64 distance back down to the matrix's element type.
+#[inline]
+fn narrow<T: Float>(d: Depth) -> T {
+    T::from(d).expect("distance is not representable in the output type")
+}
+
+/// Absorb one finished child subtree into its branch point.
+///
+/// Every source in this child and every target in a *previously* absorbed child meet at this
+/// branch point, so this is where their distance becomes known -- and the only place it is
+/// written. Pairing each child against the running union (rather than against every other
+/// child in turn) means the work is proportional to the cells actually written, instead of
+/// quadratic in the number of children.
+fn absorb_child<T>(
+    frame: &mut Frame,
+    child_sources: Vec<(usize, Depth)>,
+    child_targets: Vec<(usize, Depth)>,
+    dists: &mut Array2<T>,
+) where
+    T: Float + AddAssign,
+{
+    let branch_depth = frame.branch_depth;
+
+    // Subtract the branch depth from each side *before* adding, rather than computing
+    // `depth_s + depth_t - 2 * branch_depth`: each difference is a real path length, so this
+    // keeps the magnitudes small and the cancellation as mild as possible.
+    for (source_ix, source_depth) in child_sources.iter() {
+        for (target_ix, target_depth) in frame.acc_targets.iter() {
+            dists[[*source_ix, *target_ix]] =
+                narrow((*source_depth - branch_depth) + (*target_depth - branch_depth));
+        }
+    }
+    for (target_ix, target_depth) in child_targets.iter() {
+        for (source_ix, source_depth) in frame.acc_sources.iter() {
+            dists[[*source_ix, *target_ix]] =
+                narrow((*source_depth - branch_depth) + (*target_depth - branch_depth));
+        }
     }
 
-    // println!("Start Node: {} (at dist {})", start_node, start_dist);
-    // println!(" Finished at: {}", node);
-    // println!(" Sources: {:?}", source_dists);
-    // println!(" Targets: {:?}", target_dists);
+    merge_small_to_large(&mut frame.acc_sources, child_sources);
+    merge_small_to_large(&mut frame.acc_targets, child_targets);
+}
 
-    (source_dists, target_dists)
+/// Walk the tree below `root` and fill in the distance for every source/target pair whose
+/// paths meet at a branch point (their lowest common ancestor).
+///
+/// This used to recurse once per branch point. A neuron whose backbone branches at nearly
+/// every node therefore recursed as deep as it had nodes and **blew the stack** -- a hard
+/// segfault, not an error, on inputs of ~45k chained branch points. `geodesic_extreme`
+/// already went iterative for exactly this reason; this is the same treatment. The DFS
+/// state now lives in an explicit heap stack, so depth costs memory rather than crashing.
+///
+/// It also used to be quadratic: every source and target was copied into a fresh vector at
+/// every branch point on its way to the root, because the distances were stored relative to
+/// each segment's start and so had to be rewritten on each hop. Storing depths from the root
+/// instead makes the roll-up a plain concatenation, which in turn allows the small-to-large
+/// merge in `merge_small_to_large` -- so an entry moves O(log N) times instead of once per
+/// branch point above it.
+fn walk_up_and_count<T>(ctx: &PartialCtx<T>, root: i32, dists: &mut Array2<T>)
+where
+    T: Float + AddAssign,
+{
+    let (source_dists, target_dists, branch) = walk_segment(ctx, root, 0.0);
+
+    // A root whose segment runs straight into a leaf has no branch point, so there is no
+    // pair whose LCA lies below it: nothing to do.
+    let Some((branch_node, branch_depth)) = branch else {
+        return;
+    };
+
+    let mut stack: Vec<Frame> = vec![Frame {
+        branch_node,
+        branch_depth,
+        source_dists,
+        target_dists,
+        next_child: 0,
+        acc_sources: vec![],
+        acc_targets: vec![],
+    }];
+
+    while let Some(frame) = stack.last_mut() {
+        let siblings = ctx.children.children(frame.branch_node);
+
+        if frame.next_child < siblings.len() {
+            let child = siblings[frame.next_child];
+            frame.next_child += 1;
+
+            let child_depth = frame.branch_depth + edge_weight(ctx, child as usize);
+
+            let (source_dists, target_dists, branch) = walk_segment(ctx, child, child_depth);
+
+            match branch {
+                // The child's segment ran into a leaf, so its subtree is fully described by
+                // what we just collected: fold it straight into the branch point.
+                None => {
+                    let frame = stack.last_mut().unwrap();
+                    absorb_child(frame, source_dists, target_dists, dists);
+                }
+                // The child branches again: descend. It gets folded into us when its own
+                // frame pops, which happens before we move on to the next sibling.
+                Some((branch_node, branch_depth)) => stack.push(Frame {
+                    branch_node,
+                    branch_depth,
+                    source_dists,
+                    target_dists,
+                    next_child: 0,
+                    acc_sources: vec![],
+                    acc_targets: vec![],
+                }),
+            }
+            continue;
+        }
+
+        // Every child of this branch point has been folded in. All that is left is to add the
+        // nodes on this frame's own segment. Those sit *above* the branch point, so they are
+        // ancestors of everything below it and their pairs were already handled by the forward
+        // pass -- they are not cross-paired here, only carried upward.
+        let mut frame = stack.pop().unwrap();
+        merge_small_to_large(&mut frame.acc_sources, std::mem::take(&mut frame.source_dists));
+        merge_small_to_large(&mut frame.acc_targets, std::mem::take(&mut frame.target_dists));
+
+        // Hand the finished subtree to our parent branch point (if any).
+        if let Some(parent) = stack.last_mut() {
+            absorb_child(parent, frame.acc_sources, frame.acc_targets, dists);
+        }
+    }
 }
 
 /// Compute geodesic distances between pairs of nodes.
@@ -1154,35 +1415,84 @@ pub fn geodesic_pairs(
     let pairs_source: Vec<i32> = pairs_source.iter().cloned().collect();
     let pairs_target: Vec<i32> = pairs_target.iter().cloned().collect();
 
-    let dists: Vec<_> = pairs_source
-        .par_iter()
-        .zip(pairs_target.par_iter())
-        .map(|(idx1, idx2)| {
-            geodesic_distances_single_pair(
-                parents,
-                *idx1 as usize,
-                *idx2 as usize,
-                weights,
-                directed,
-            )
+    // Split the pairs into exactly one chunk per worker, and give each chunk one set of
+    // scratch buffers that it reuses for every pair it handles.
+    //
+    // Two traps here. Allocating an N-element array *per pair* (the original) costs O(N) per
+    // pair while the walk itself is only O(depth), so on a large neuron the allocation *is*
+    // the runtime. But `map_init` is not the fix: rayon calls its initialiser once per
+    // work-split, not once per thread, so it quietly keeps far more N-sized buffers alive
+    // than there are threads (measured 45 MB vs 17 MB at N=200k). Chunking explicitly bounds
+    // the number of live buffers to the thread count.
+    let n_chunks = rayon::current_num_threads().max(1);
+    let chunk_size = pairs_source.len().div_ceil(n_chunks).max(1);
+
+    let chunks: Vec<Vec<f32>> = pairs_source
+        .par_chunks(chunk_size)
+        .zip(pairs_target.par_chunks(chunk_size))
+        .map(|(sources, targets)| {
+            let mut seen = vec![-1.0f32; parents.len()];
+            let mut touched: Vec<u32> = Vec::new();
+
+            sources
+                .iter()
+                .zip(targets.iter())
+                .map(|(idx1, idx2)| {
+                    geodesic_distances_single_pair(
+                        parents,
+                        *idx1 as usize,
+                        *idx2 as usize,
+                        weights,
+                        directed,
+                        &mut seen,
+                        &mut touched,
+                    )
+                })
+                .collect()
         })
         .collect();
 
     // Convert the vector to an array and return
-    Array::from(dists)
+    Array::from(chunks.concat())
 }
 
+/// Distance between a single pair, using caller-owned scratch buffers.
+///
+/// `seen` must arrive filled with -1.0 and is left that way again on return; `touched`
+/// records which entries we dirtied so we only have to reset those.
 fn geodesic_distances_single_pair(
     parents: &ArrayView1<i32>,
     idx1: usize,
     idx2: usize,
     weights: &Option<Array1<f32>>,
     directed: bool,
+    seen: &mut [f32],
+    touched: &mut Vec<u32>,
+) -> f32 {
+    let dist = walk_pair(parents, idx1, idx2, weights, directed, seen, touched);
+
+    // Hand the buffer back clean for the next pair on this thread. Resetting the
+    // O(depth) entries we actually wrote is what makes reusing it sound *and* cheap.
+    for &node in touched.iter() {
+        seen[node as usize] = -1.0;
+    }
+    touched.clear();
+
+    dist
+}
+
+fn walk_pair(
+    parents: &ArrayView1<i32>,
+    idx1: usize,
+    idx2: usize,
+    weights: &Option<Array1<f32>>,
+    directed: bool,
+    seen: &mut [f32],
+    touched: &mut Vec<u32>,
 ) -> f32 {
     // Walk from idx1 to root node
     let mut node: usize = idx1;
     let mut d: f32 = 0.0;
-    let mut seen: Array1<f32> = Array::from_elem(parents.len(), -1.0);
 
     loop {
         // If come across the target node, return here
@@ -1191,6 +1501,7 @@ fn geodesic_distances_single_pair(
             return d;
         };
         seen[node] = d;
+        touched.push(node as u32);
 
         // Break if we hit the root node
         if parents[node] < 0 {
@@ -1216,24 +1527,21 @@ fn geodesic_distances_single_pair(
                 d += if let Some(w) = weights { w[node] } else { 1.0 };
 
                 // If we hit the root node again, then idx1 and idx2 are on disconnected
-                // branches
+                // branches. Report that as -1, the same "unreachable" sentinel used by the
+                // directed case above and by `geodesic_distances_all_by_all`. This used to
+                // return 1.0, which is indistinguishable from a genuine one-edge distance.
                 if parents[node] < 0 {
-                    break;
+                    return -1.0;
                 }
 
                 node = parents[node] as usize;
             }
-
-            break;
         }
         // Track distance travelled
         d += if let Some(w) = weights { w[node] } else { 1.0 };
 
         node = parents[node] as usize;
     }
-
-    // If we made it until here, then idx1 and idx2 are disconnected
-    return 1.0;
 }
 
 /// Calculate synapse flow centrality for each node.
@@ -1426,17 +1734,60 @@ pub fn connected_components(parents: &ArrayView1<i32>) -> Array1<i32> {
 ///
 /// Returns:
 ///
-/// A vector of vectors where each vector contains the children of a node.
-/// For example parent array `[-1, 0, 1, 1]` would return `[[1], [2, 3], [], []]`.
+/// A `ChildList` giving `children(node) -> &[i32]`.
+/// For example parent array `[-1, 0, 1, 1]` yields `[1]`, `[2, 3]`, `[]`, `[]`.
 ///
-fn extract_parent_child(parents: &ArrayView1<i32>) -> Vec<Vec<i32>> {
-    let mut parent_child: Vec<Vec<i32>> = vec![vec![]; parents.len()];
-    for (i, parent) in parents.iter().enumerate() {
-        if *parent >= 0 {
-            parent_child[*parent as usize].push(i as i32);
+fn extract_parent_child(parents: &ArrayView1<i32>) -> ChildList {
+    ChildList::new(parents)
+}
+
+/// Children of each node, in one flat allocation (a CSR/adjacency layout).
+///
+/// The obvious `Vec<Vec<i32>>` costs one heap allocation *per node* -- ~40-50 bytes each
+/// once you count the `Vec` header, the allocation itself and allocator overhead, so
+/// ~10 MB for a 200k-node neuron to hold 800 KB of actual data -- and it scatters the
+/// children across the heap so every lookup is a pointer chase. Two flat vectors hold the
+/// same thing in 8 bytes per node, contiguously.
+struct ChildList {
+    /// `offsets[node]..offsets[node + 1]` is the slice of `flat` holding node's children.
+    offsets: Vec<u32>,
+    flat: Vec<i32>,
+}
+
+impl ChildList {
+    fn new(parents: &ArrayView1<i32>) -> Self {
+        let n = parents.len();
+
+        // Count children per node, then prefix-sum into offsets.
+        let mut offsets: Vec<u32> = vec![0; n + 1];
+        for parent in parents.iter() {
+            if *parent >= 0 {
+                offsets[*parent as usize + 1] += 1;
+            }
         }
+        for i in 0..n {
+            offsets[i + 1] += offsets[i];
+        }
+
+        // Scatter the children into place. `cursor` tracks the next free slot per node;
+        // children therefore land in ascending node order, matching the old `push` order.
+        let mut flat: Vec<i32> = vec![0; offsets[n] as usize];
+        let mut cursor: Vec<u32> = offsets[..n].to_vec();
+        for (child, parent) in parents.iter().enumerate() {
+            if *parent >= 0 {
+                let slot = &mut cursor[*parent as usize];
+                flat[*slot as usize] = child as i32;
+                *slot += 1;
+            }
+        }
+
+        ChildList { offsets, flat }
     }
-    parent_child
+
+    #[inline]
+    fn children(&self, node: usize) -> &[i32] {
+        &self.flat[self.offsets[node] as usize..self.offsets[node + 1] as usize]
+    }
 }
 
 /// Prune terminal twigs below a given size threshold.
@@ -1744,36 +2095,67 @@ pub fn classify_nodes(parents: &ArrayView1<i32>) -> Array1<i32> {
 /// A boolean indicating whether the tree has cycles
 ///
 pub fn has_cycles(parents: &ArrayView1<i32>) -> bool {
-    let mut node: usize;
-    let mut seen: Array1<bool> = Array::from_elem(parents.len(), false);
-    let mut checked: Array1<bool> = Array::from_elem(parents.len(), false);
+    // Standard three-colour walk:
+    //   0 = unvisited, 1 = on the path we are currently walking, 2 = known cycle-free.
+    //
+    // The state is what makes this linear. Two things used to make it quadratic: a
+    // full O(N) reset of the `seen` array once per node (which ran even for nodes that
+    // were about to be skipped), and the absence of any stop condition *inside* the
+    // walk -- so on a topologically sorted input (i.e. every SWC file) no node was ever
+    // pruned and every one of them walked all the way to the root.
+    const UNVISITED: u8 = 0;
+    const ON_PATH: u8 = 1;
+    const CYCLE_FREE: u8 = 2;
 
-    // Walk from each node to the root node
+    // One byte per node is the entire footprint: because a node has at most one parent, the
+    // "path" we are walking is just a chain we can re-walk to mark, so we never have to
+    // store it. (The old code kept two full bool arrays.)
+    let mut state: Vec<u8> = vec![UNVISITED; parents.len()];
+
     for idx in 0..parents.len() {
-        // Reset `seen` to all false values
-        seen.fill(false);
-
-        // Skip if this node has already been checked (as part of a previous run)
-        if checked[idx] {
+        if state[idx] != UNVISITED {
             continue;
         }
 
-        node = idx;
+        // Walk up, marking the chain as we go.
+        let mut node = idx;
+        let mut looped = false;
         loop {
-            // If this node has already been seen, we have a cycle
-            if seen[node] {
-                return true;
+            match state[node] {
+                // Walked into a node already on the chain we are building: that is a cycle
+                // (a self-loop is just the length-1 case).
+                ON_PATH => {
+                    looped = true;
+                    break;
+                }
+                // Walked into a node we already cleared, so everything above it is clear
+                // too. This is the stop condition the old code lacked, and it is what makes
+                // the total work O(N) instead of O(N * depth).
+                CYCLE_FREE => break,
+                _ => {}
             }
 
-            // Mark this node as seen and checked
-            seen[node] = true;
-            checked[node] = true;
+            state[node] = ON_PATH;
 
-            // Stop if we reached the root node
             if parents[node] < 0 {
                 break;
             }
+            node = parents[node] as usize;
+        }
 
+        if looped {
+            return true;
+        }
+
+        // No cycle: re-walk the same chain and promote it to CYCLE_FREE. Each node is
+        // ON_PATH exactly once across the whole run, so this second pass is still O(N)
+        // overall -- it buys us the whole path buffer for free.
+        let mut node = idx;
+        while state[node] == ON_PATH {
+            state[node] = CYCLE_FREE;
+            if parents[node] < 0 {
+                break;
+            }
             node = parents[node] as usize;
         }
     }
@@ -1990,5 +2372,218 @@ mod tests {
         let types = classify_nodes(&parents.view());
 
         assert_eq!(types, arr1(&[3]));
+    }
+
+    /// `dist_to_root` counts EDGES, so a root is at distance zero. It used to count nodes
+    /// (root = 1.0), which disagreed with `all_dists_to_root` by exactly one. These two are
+    /// the same measurement and must not drift apart again.
+    #[test]
+    fn dist_to_root_counts_edges_and_agrees_with_all_dists_to_root() {
+        //   0 - 1 - 2
+        let parents = arr1(&[-1, 0, 1]);
+
+        let all: Vec<f32> = all_dists_to_root(&parents.view(), &None, &None::<Array1<f32>>);
+        assert_eq!(all, vec![0.0, 1.0, 2.0]);
+
+        for node in 0..3 {
+            assert_eq!(dist_to_root(&parents.view(), node), all[node as usize]);
+        }
+    }
+
+    /// Memoizing `all_dists_to_root` must not change what it returns -- for a subset of
+    /// sources, for weights, or across a multi-root forest where each tree has its own root.
+    #[test]
+    fn all_dists_to_root_handles_subsets_weights_and_forests() {
+        //   0 - 1 - 2      3 - 4      (two separate roots)
+        let parents = arr1(&[-1, 0, 1, -1, 3]);
+
+        assert_eq!(
+            all_dists_to_root(&parents.view(), &None, &None::<Array1<f32>>),
+            vec![0.0, 1.0, 2.0, 0.0, 1.0]
+        );
+
+        // A subset of sources must give the same answers, in the order asked for.
+        assert_eq!(
+            all_dists_to_root(&parents.view(), &Some(arr1(&[4, 2, 0])), &None::<Array1<f32>>),
+            vec![1.0, 2.0, 0.0]
+        );
+
+        // Weights live on the child, i.e. an edge contributes the weight of the node below it.
+        let weights = Some(arr1(&[100.0f32, 2.0, 3.0, 100.0, 5.0]));
+        assert_eq!(
+            all_dists_to_root(&parents.view(), &None, &weights),
+            vec![0.0, 2.0, 5.0, 0.0, 5.0]
+        );
+    }
+
+    /// `has_cycles` used to be quadratic *and* is easy to get subtly wrong: the walk needs a
+    /// stop condition for nodes already proven clean, without that stop leaking across into
+    /// "already on the current path" (which is what a cycle actually is).
+    #[test]
+    fn has_cycles_detects_cycles_without_false_positives_on_forests() {
+        // Acyclic: a chain, a forest of two trees, a single root, and a converging tree.
+        assert!(!has_cycles(&arr1(&[-1, 0, 1]).view()));
+        assert!(!has_cycles(&arr1(&[-1, 0, 1, -1, 3]).view()));
+        assert!(!has_cycles(&arr1(&[-1]).view()));
+        assert!(!has_cycles(&arr1(&[-1, 0, 0, 1, 1, 2]).view()));
+        assert!(!has_cycles(&arr1::<i32>(&[]).view()));
+
+        // Cyclic: a self-loop, a two-node cycle, a three-node cycle with no root at all...
+        assert!(has_cycles(&arr1(&[0]).view()));
+        assert!(has_cycles(&arr1(&[1, 0]).view()));
+        assert!(has_cycles(&arr1(&[1, 2, 0]).view()));
+
+        // ...and the case the `checked`-array pruning could plausibly swallow: a perfectly
+        // good tree that is visited FIRST, with a cycle hanging off to the side. Nodes 0-2
+        // get marked clean, then the walk from 3 must still find 3 -> 4 -> 3.
+        assert!(has_cycles(&arr1(&[-1, 0, 1, 4, 3]).view()));
+    }
+
+    /// The weighted branch of `generate_segments` sorts its segments longest-first but used to
+    /// return the lengths in the ORIGINAL order, so `lengths[i]` described some other segment
+    /// than `segments[i]`. They have to be permuted together.
+    #[test]
+    fn generate_segments_lengths_line_up_with_their_segments() {
+        //   0 - 1 - 2 - 3
+        //        \
+        //         4 - 5 - 6
+        // Weight the shorter branch heavily so that sorting by weight reorders the segments
+        // relative to the order the leafs come out in -- otherwise the bug hides.
+        let parents = arr1(&[-1, 0, 1, 2, 1, 4, 5]);
+        let weights = arr1(&[1.0f32, 1.0, 1.0, 1.0, 50.0, 50.0, 50.0]);
+
+        let (segments, lengths) = generate_segments(&parents.view(), Some(weights.clone()));
+        let lengths = lengths.expect("weighted input must return lengths");
+
+        assert_eq!(segments.len(), lengths.len());
+        for (segment, reported) in segments.iter().zip(lengths.iter()) {
+            let actual: f32 = segment.iter().map(|&n| weights[n as usize]).sum();
+            assert_eq!(actual, *reported);
+        }
+
+        // And they must still come out longest-first.
+        assert!(lengths.windows(2).all(|w| w[0] >= w[1]));
+    }
+
+    /// A tree where every backbone node also carries a twig, so the branch points form one
+    /// long chain -- the shape that made the old recursive `walk_up_and_count_recursively`
+    /// recurse once per branch point. This checks the iterative traversal still gets the
+    /// distances right; `partial_survives_a_deep_chain_of_branch_points` checks it survives
+    /// a depth that used to segfault.
+    #[test]
+    fn partial_matches_all_by_all_on_a_chain_of_branch_points() {
+        // backbone 0-1-2-3, each with a twig hanging off it
+        //   0 - 1 - 2 - 3
+        //   |   |   |   |
+        //   4   5   6   7
+        let parents = arr1(&[-1, 0, 1, 2, 0, 1, 2, 3]);
+
+        let full = geodesic_distances_all_by_all(&parents.view(), &None::<Array1<f32>>, false);
+
+        // Asking for a subset of sources must agree with the full matrix, row for row.
+        let sources = Some(arr1(&[4, 7, 0]));
+        let partial =
+            geodesic_distances_partial(&parents.view(), &sources, &None, &None::<Array1<f32>>, false);
+
+        for (row, &source) in [4usize, 7, 0].iter().enumerate() {
+            for target in 0..8usize {
+                assert_eq!(
+                    partial[[row, target]],
+                    full[[source, target]],
+                    "source {source} -> target {target}"
+                );
+            }
+        }
+    }
+
+    /// A branch point with many children. The cross-pairing at a branch point used to loop over
+    /// every ordered pair of children; it now folds each child into a running union instead, so
+    /// this is the case that would break if the folding missed a direction (source in an early
+    /// child vs target in a later one, or the other way round).
+    #[test]
+    fn partial_matches_all_by_all_at_a_wide_branch_point() {
+        // A root with eight children, each carrying a two-node tail.
+        //   0 -> 1..8, and each i -> i+8
+        let mut parents: Vec<i32> = vec![-1];
+        for _ in 0..8 {
+            parents.push(0);
+        }
+        for i in 1..=8 {
+            parents.push(i);
+        }
+        let parents = Array1::from(parents);
+        let n = parents.len();
+
+        let weights = Some(Array1::from(
+            (0..n).map(|i| 1.0 + (i as f32) * 0.5).collect::<Vec<f32>>(),
+        ));
+
+        let full = geodesic_distances_all_by_all(&parents.view(), &weights, false);
+
+        // Every source subset must reproduce the corresponding rows of the full matrix.
+        let sources = Some(arr1(&[9, 16, 0, 4]));
+        let partial =
+            geodesic_distances_partial(&parents.view(), &sources, &None, &weights, false);
+
+        for (row, &source) in [9usize, 16, 0, 4].iter().enumerate() {
+            for target in 0..n {
+                assert_eq!(
+                    partial[[row, target]],
+                    full[[source, target]],
+                    "source {source} -> target {target}"
+                );
+            }
+        }
+    }
+
+    /// Regression guard for a hard segfault: `walk_up_and_count` used to recurse once per
+    /// branch point, so a backbone that branches at every node blew the stack somewhere north
+    /// of ~45k branch points. Keep this at a depth that would actually have crashed.
+    #[test]
+    fn partial_survives_a_deep_chain_of_branch_points() {
+        // 60k backbone nodes, each with a twig: 60k branch points, all in one chain.
+        const BACKBONE: usize = 60_000;
+        let mut parents: Vec<i32> = Vec::with_capacity(BACKBONE * 2);
+        parents.push(-1);
+        for i in 1..BACKBONE {
+            parents.push(i as i32 - 1);
+        }
+        for b in 0..BACKBONE {
+            parents.push(b as i32);
+        }
+        let parents = Array1::from(parents);
+
+        let sources = Some(arr1(&[0]));
+        let targets = Some(arr1(&[BACKBONE as i32 - 1]));
+        let dists = geodesic_distances_partial(
+            &parents.view(),
+            &sources,
+            &targets,
+            &None::<Array1<f32>>,
+            false,
+        );
+
+        // Node 0 to the far end of the backbone is BACKBONE - 1 edges.
+        assert_eq!(dists[[0, 0]], (BACKBONE - 1) as f32);
+    }
+
+    /// Nodes in different connected components have no path between them. That is reported as
+    /// -1, the same sentinel `geodesic_distances_all_by_all` uses. It used to be reported as
+    /// 1.0, which is indistinguishable from a genuine one-edge distance.
+    #[test]
+    fn geodesic_pairs_reports_disconnected_as_minus_one() {
+        //   0 - 1        2 - 3      (two components)
+        let parents = arr1(&[-1, 0, -1, 2]);
+
+        let dists = geodesic_pairs(
+            &parents.view(),
+            &arr1(&[0, 0, 2]).view(),
+            &arr1(&[2, 1, 3]).view(),
+            &None,
+            false,
+        );
+
+        // 0 -> 2 crosses components; the other two are real one-edge distances.
+        assert_eq!(dists, arr1(&[-1.0, 1.0, 1.0]));
     }
 }

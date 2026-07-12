@@ -1,8 +1,8 @@
-use ndarray::{Array, Array1, Array2};
+use ndarray::{Array, Array1, Array2, ArrayView1};
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1};
 use pyo3::prelude::Python;
 use pyo3::prelude::*;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use fastcore::dag::{
     all_dists_to_root, break_segments, classify_nodes, connected_components, dist_to_root,
@@ -28,35 +28,78 @@ use fastcore::dag::{
 ///
 /// An array of indices for each node indicating the index of the parent node.
 ///
+/// Shared implementation behind `node_indices_{16,32,64}`.
+///
+/// This runs on nearly every public call (the Python layer maps IDs to indices before it
+/// touches the core), so it is worth more than a `HashMap`. Two strategies:
+///
+/// - **Dense**: SWC files number their nodes `1..N`, so the ID range is contiguous. A
+///   direct lookup table indexed by `id - min` beats any hash and is the common case.
+/// - **Sparse**: CATMAID-style arbitrary 64-bit IDs. Fall back to a hash map, but with a
+///   fast integer hasher -- the std hasher is SipHash, which we would pay 2N times.
+fn node_indices_impl<T>(nodes: &ArrayView1<T>, to_map: &ArrayView1<T>) -> Vec<i32>
+where
+    T: Copy + Into<i64>,
+{
+    let n = nodes.len();
+    let mut indices: Vec<i32> = vec![-1; to_map.len()];
+    if n == 0 {
+        return indices;
+    }
+
+    let mut min_id = i64::MAX;
+    let mut max_id = i64::MIN;
+    for &node in nodes.iter() {
+        let v: i64 = node.into();
+        min_id = min_id.min(v);
+        max_id = max_id.max(v);
+    }
+
+    // Use i128 so a min/max spanning the whole i64 range cannot overflow. Cap the table
+    // at 4x the node count so that one outlier ID can't blow the table up.
+    let span = (max_id as i128) - (min_id as i128) + 1;
+
+    if span <= (n as i128) * 4 {
+        let mut lut: Vec<i32> = vec![-1; span as usize];
+        for (index, &node) in nodes.iter().enumerate() {
+            let v: i64 = node.into();
+            // Duplicate IDs: last one wins, matching the HashMap this replaces.
+            lut[(v - min_id) as usize] = index as i32;
+        }
+        for (i, &id) in to_map.iter().enumerate() {
+            let v: i64 = id.into();
+            // Negative IDs (parents of roots) and IDs outside the range stay at -1.
+            if v >= 0 && v >= min_id && v <= max_id {
+                indices[i] = lut[(v - min_id) as usize];
+            }
+        }
+        return indices;
+    }
+
+    let mut node_to_index: FxHashMap<i64, i32> =
+        FxHashMap::with_capacity_and_hasher(n, Default::default());
+    for (index, &node) in nodes.iter().enumerate() {
+        node_to_index.insert(node.into(), index as i32);
+    }
+    for (i, &id) in to_map.iter().enumerate() {
+        let v: i64 = id.into();
+        if v < 0 {
+            continue;
+        }
+        if let Some(&index) = node_to_index.get(&v) {
+            indices[i] = index;
+        }
+    }
+    indices
+}
+
 #[pyfunction]
 pub fn node_indices_64<'py>(
     py: Python<'py>,
     nodes: PyReadonlyArray1<i64>,
     to_map: PyReadonlyArray1<i64>,
 ) -> Bound<'py, PyArray1<i32>> {
-    let mut indices: Vec<i32> = vec![-1; to_map.len().expect("Failed to get length of nodes")];
-    let x_nodes = nodes.as_array();
-    let to_map = to_map.as_array();
-
-    // Create a HashMap where the keys are nodes and the values are indices
-    let node_to_index: HashMap<_, _> = x_nodes
-        .iter()
-        .enumerate()
-        .map(|(index, node)| (*node, index as i32))
-        .collect();
-
-    for (i, parent) in to_map.iter().enumerate() {
-        if *parent < 0 {
-            indices[i] = -1;
-            continue;
-        }
-        // Use the HashMap to find the index of the parent node
-        if let Some(index) = node_to_index.get(parent) {
-            indices[i] = *index;
-        }
-    }
-
-    indices.into_pyarray(py)
+    node_indices_impl(&nodes.as_array(), &to_map.as_array()).into_pyarray(py)
 }
 
 #[pyfunction]
@@ -65,29 +108,7 @@ pub fn node_indices_32<'py>(
     nodes: PyReadonlyArray1<i32>,
     to_map: PyReadonlyArray1<i32>,
 ) -> Bound<'py, PyArray1<i32>> {
-    let mut indices: Vec<i32> = vec![-1; to_map.len().expect("Failed to get length of nodes")];
-    let x_nodes = nodes.as_array();
-    let to_map = to_map.as_array();
-
-    // Create a HashMap where the keys are nodes and the values are indices
-    let node_to_index: HashMap<_, _> = x_nodes
-        .iter()
-        .enumerate()
-        .map(|(index, node)| (*node, index as i32))
-        .collect();
-
-    for (i, parent) in to_map.iter().enumerate() {
-        if *parent < 0 {
-            indices[i] = -1;
-            continue;
-        }
-        // Use the HashMap to find the index of the parent node
-        if let Some(index) = node_to_index.get(parent) {
-            indices[i] = *index;
-        }
-    }
-
-    indices.into_pyarray(py)
+    node_indices_impl(&nodes.as_array(), &to_map.as_array()).into_pyarray(py)
 }
 
 #[pyfunction]
@@ -96,29 +117,7 @@ pub fn node_indices_16<'py>(
     nodes: PyReadonlyArray1<i16>,
     to_map: PyReadonlyArray1<i16>,
 ) -> Bound<'py, PyArray1<i32>> {
-    let mut indices: Vec<i32> = vec![-1; to_map.len().expect("Failed to get length of nodes")];
-    let x_nodes = nodes.as_array();
-    let to_map = to_map.as_array();
-
-    // Create a HashMap where the keys are nodes and the values are indices
-    let node_to_index: HashMap<_, _> = x_nodes
-        .iter()
-        .enumerate()
-        .map(|(index, node)| (*node, index as i32))
-        .collect();
-
-    for (i, parent) in to_map.iter().enumerate() {
-        if *parent < 0 {
-            indices[i] = -1;
-            continue;
-        }
-        // Use the HashMap to find the index of the parent node
-        if let Some(index) = node_to_index.get(parent) {
-            indices[i] = *index;
-        }
-    }
-
-    indices.into_pyarray(py)
+    node_indices_impl(&nodes.as_array(), &to_map.as_array()).into_pyarray(py)
 }
 
 /// Generate linear segments while maximizing segment lengths.
