@@ -1743,3 +1743,127 @@ pub fn has_cycles(parents: &ArrayView1<i32>) -> bool {
 
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::arr1;
+
+    /// Guards the one asymmetry between `geodesic_nearest` and `geodesic_farthest`: a target
+    /// sitting on the node we walk through is at distance zero, which wins a minimum but *loses*
+    /// a maximum. Collapsing the guarded merge in `geodesic_extreme` back into an unconditional
+    /// "if the parent is a target, take it" would make this return node 1 at distance 1.
+    #[test]
+    fn directed_farthest_skips_nearer_target_ancestor() {
+        // 0 <- 1 <- 2, every node a target, unit weights
+        let parents = arr1(&[-1, 0, 1]);
+        let sources = Some(arr1(&[2]));
+
+        let (dist, tgt) = geodesic_farthest::<f32>(&parents.view(), &sources, &None, &None, true);
+        assert_eq!(dist[0], 2.0); // node 0, not the closer target ancestor node 1
+        assert_eq!(tgt[0], 0);
+
+        let (dist, tgt) = geodesic_nearest::<f32>(&parents.view(), &sources, &None, &None, true);
+        assert_eq!(dist[0], 1.0);
+        assert_eq!(tgt[0], 1);
+    }
+
+    /// A source that is its own only target has no *distinct* target and must report "none".
+    #[test]
+    fn farthest_excludes_self() {
+        let parents = arr1(&[-1, 0, 1]);
+        let sources = Some(arr1(&[1]));
+        let targets = Some(arr1(&[1]));
+
+        let (dist, tgt) = geodesic_farthest::<f32>(&parents.view(), &sources, &targets, &None, false);
+        assert_eq!(dist[0], -1.0);
+        assert_eq!(tgt[0], -1);
+    }
+
+    /// The undirected rerooting DP has to look *through* the parent, not just into the subtree.
+    #[test]
+    fn undirected_farthest_reaches_across_the_root() {
+        //     0
+        //    / \
+        //   1   3
+        //   |
+        //   2
+        let parents = arr1(&[-1, 0, 1, 0]);
+        let sources = Some(arr1(&[2]));
+        let targets = Some(arr1(&[0, 3]));
+
+        let (dist, tgt) = geodesic_farthest::<f32>(&parents.view(), &sources, &targets, &None, false);
+        assert_eq!(dist[0], 3.0); // 2 -> 1 -> 0 -> 3
+        assert_eq!(tgt[0], 3);
+    }
+
+    /// The canonical example from the Python docstring; also the doctest in `dag.py`.
+    #[test]
+    fn classify_matches_the_documented_example() {
+        //   0 - 1 - 2 - 3
+        //        \
+        //         4 - 5 - 6
+        //              \
+        //               7
+        let parents = arr1(&[-1, 0, 1, 2, 1, 4, 5, 5]);
+
+        let types = classify_nodes(&parents.view());
+
+        assert_eq!(types, arr1(&[0, 2, 3, 1, 3, 2, 1, 1]));
+    }
+
+    /// Roots outrank every other class. A root with no children is still a root (not a leaf) and
+    /// a root with two children is still a root (not a branch point) -- dropping the `p < 0` arm
+    /// to the bottom of the match would silently reclassify both.
+    #[test]
+    fn classify_gives_roots_priority_over_leafs_and_branch_points() {
+        assert_eq!(classify_nodes(&arr1(&[-1]).view()), arr1(&[0])); // isolated root, 0 children
+        assert_eq!(classify_nodes(&arr1(&[-1, 0]).view()), arr1(&[0, 1])); // root, 1 child
+        assert_eq!(classify_nodes(&arr1(&[-1, 0, 0]).view()), arr1(&[0, 1, 1])); // root, 2 children
+    }
+
+    /// Every node of a forest is classified relative to its own root; the components don't
+    /// interact.
+    #[test]
+    fn classify_handles_multi_root_forests() {
+        //   1       4 - 6
+        //  /       /
+        // 0       3
+        //  \       \
+        //   2       5
+        let parents = arr1(&[-1, 0, 0, -1, 3, 3, 4]);
+
+        let types = classify_nodes(&parents.view());
+
+        assert_eq!(types, arr1(&[0, 1, 1, 0, 3, 1, 1]));
+    }
+
+    /// Three or more children is still a branch point, not something else.
+    #[test]
+    fn classify_treats_trifurcations_as_branch_points() {
+        //   1        2
+        //  /        /
+        // 0 - 4 - 3
+        //          \
+        //           5
+        let parents = arr1(&[-1, 0, 4, 4, 0, 4]);
+
+        let types = classify_nodes(&parents.view());
+
+        assert_eq!(types[4], 2); // three children -> branch point
+        assert_eq!(types, arr1(&[0, 1, 1, 1, 2, 1]));
+    }
+
+    /// Characterisation test, not a specification. Cyclic input is malformed and no caller should
+    /// rely on this, but it used to *hang forever* (the leaf-sorting pass in `find_leafs` walked
+    /// each leaf to a root that a cycle never reaches). Classifying by child count terminates
+    /// instead. Don't "fix" this back into a leaf-to-root walk.
+    #[test]
+    fn classify_terminates_on_cyclic_input() {
+        let parents = arr1(&[0]); // node 0 is its own parent
+
+        let types = classify_nodes(&parents.view());
+
+        assert_eq!(types, arr1(&[3]));
+    }
+}

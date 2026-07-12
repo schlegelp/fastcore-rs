@@ -5,6 +5,7 @@ import navis_fastcore as fastcore
 import numpy as np
 import pandas as pd
 
+from numpy.testing import assert_array_equal
 from scipy.spatial import cKDTree as KDTree
 from pathlib import Path
 from collections import namedtuple
@@ -212,6 +213,68 @@ def test_geodesic_nearest(swc, directed, sources, targets, weights):
 
 @pytest.mark.parametrize("swc", [swc32(), swc64()])
 @pytest.mark.parametrize("directed", [True, False])
+@pytest.mark.parametrize(
+    "sources,targets",
+    [
+        (None, None),
+        ([1, 2, 3, 50, 51], [4, 5, 6, 50, 99]),  # overlapping sets (self-exclusion)
+        ([10, 20, 30], None),
+    ],
+)
+@pytest.mark.parametrize("weights", [None, np.random.rand(N_NODES)])
+def test_geodesic_farthest(swc, directed, sources, targets, weights):
+    nodes, parents, _ = swc
+
+    dist, farthest = fastcore.geodesic_farthest(
+        nodes,
+        parents,
+        sources=sources,
+        targets=targets,
+        directed=directed,
+        weights=weights,
+    )
+
+    # Build an oracle from the full (masked) distance matrix. Note that unreachable pairs must
+    # be masked with -inf here so they *lose* the maximum instead of winning it.
+    mat = fastcore.geodesic_matrix(
+        nodes,
+        parents,
+        directed=directed,
+        sources=sources,
+        targets=targets,
+        weights=weights,
+    ).astype(float)
+    mat[mat < 0] = -np.inf
+
+    src_arr = np.asarray(sources) if sources is not None else nodes
+    tgt_arr = np.asarray(targets) if targets is not None else nodes
+
+    # Mask self-matches (a source that is also a target must not match itself)
+    for i, s in enumerate(src_arr):
+        mat[i, tgt_arr == s] = -np.inf
+
+    oracle_dist = mat.max(axis=1)
+    has = np.isfinite(oracle_dist)
+
+    # Distances must match the per-row maximum
+    got = dist.astype(float).copy()
+    got[got < 0] = -np.inf
+    assert np.allclose(got[has], oracle_dist[has], atol=1e-4)
+
+    # Sources with no reachable (distinct) target must be -1 / -1
+    assert np.all(dist[~has] == -1)
+    assert np.all(farthest[~has] == -1)
+
+    # The returned farthest target must actually sit at the maximum distance
+    # (compare distances rather than IDs to be robust against ties).
+    tgt_to_col = {t: j for j, t in enumerate(tgt_arr)}
+    for i in np.where(has)[0]:
+        j = tgt_to_col[farthest[i]]
+        assert np.isclose(mat[i, j], oracle_dist[i], atol=1e-4)
+
+
+@pytest.mark.parametrize("swc", [swc32(), swc64()])
+@pytest.mark.parametrize("directed", [True, False])
 @pytest.mark.parametrize("weights", [None, np.random.rand(N_NODES)])
 def test_geodesic_pairs(swc, directed, weights):
     nodes, parents, _ = swc
@@ -312,6 +375,47 @@ def test_classify_nodes(swc):
 
     print("Node types:", types)
     print(f"Timing: {dur:.4f}s")
+
+    # A node's type is determined by its number of children, except for roots which
+    # outrank every other class (a root with no children is still a root, not a leaf).
+    n_children = (
+        pd.Series(parents[parents >= 0]).value_counts().reindex(nodes).fillna(0).values
+    )
+    is_root = parents < 0
+
+    assert types.dtype == np.int32
+    assert len(types) == len(nodes)
+    assert set(np.unique(types)) <= {0, 1, 2, 3}  # never the -1 "unvisited" sentinel
+    assert (types[is_root] == 0).all()
+    assert (types[~is_root & (n_children == 0)] == 1).all()
+    assert (types[~is_root & (n_children >= 2)] == 2).all()
+    assert (types[~is_root & (n_children == 1)] == 3).all()
+
+
+def test_classify_nodes_example():
+    """The example from the docstring: 0=root, 1=leaf, 2=branch point, 3=slab."""
+    node_ids = np.arange(8)
+    parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5, 5])
+
+    types = fastcore.classify_nodes(node_ids, parent_ids)
+
+    assert_array_equal(types, [0, 2, 3, 1, 3, 2, 1, 1])
+
+
+@pytest.mark.parametrize("swc", [swc32(), swc64()])
+def test_classify_nodes_is_order_invariant(swc):
+    """Classification depends only on the topology, not on the order nodes are given in.
+
+    `classify_nodes` counts children rather than walking leaf-to-root, so this should hold
+    trivially -- but it is the property that lets us skip sorting the leaves, so pin it.
+    """
+    nodes, parents, _ = swc
+    types = fastcore.classify_nodes(nodes, parents)
+
+    perm = np.random.permutation(len(nodes))
+    shuffled = fastcore.classify_nodes(nodes[perm], parents[perm])
+
+    assert_array_equal(shuffled, types[perm])
 
 
 # NBLAST is covered by tests/test_nblast.py.
