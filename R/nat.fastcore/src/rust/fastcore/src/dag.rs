@@ -1677,52 +1677,22 @@ pub fn strahler_index(
 /// - 3: slab
 ///
 pub fn classify_nodes(parents: &ArrayView1<i32>) -> Array1<i32> {
-    // Vector for the node types
-    let mut node_types: Array1<i32> = Array::from_elem(parents.len(), -1);
+    // A node's type is fully determined by its number of children plus whether it is a root,
+    // so two linear passes suffice. Note that roots take priority: a root can also be a leaf
+    // (no children) or a branch point (2+ children) but is always reported as a root.
+    let n_children = number_of_children(parents);
 
-    // Get all leaf nodes
-    let leafs = find_leafs(parents, true, &None::<Array1<f32>>);
-
-    // Walk from each leaf to the root node
-    for l in leafs.iter() {
-        let mut node = *l as usize;
-
-        node_types[node] = 1; // leaf
-
-        // Walk towards the root
-        loop {
-            // If this is a branch point it means we've already seen it before
-            // and we can break here
-            if node_types[node] == 2 {
-                break;
-            // If this node is already a slab, we know we're visiting it for the
-            // second time which means it's actually a branch point
-            } else if node_types[node] == 3 {
-                node_types[node] = 2;
-
-                // If this node is not a root, we can stop here
-                if parents[node] >= 0 {
-                    break;
-                }
-            // If this node is unvisited (-1) we mark it as a slab
-            } else if node_types[node] < 0 {
-                node_types[node] = 3;
-            }
-
-            // If this node's parent is -1, it's a root and we can stop early
-            // Important thing to keep in mind here: roots can also be branch points
-            // or leafs
-            if parents[node] < 0 {
-                node_types[node] = 0;
-                break;
-            }
-
-            // Move to next node
-            node = parents[node] as usize;
-        }
-    }
-
-    node_types
+    Array1::from_iter(
+        parents
+            .iter()
+            .zip(n_children.iter())
+            .map(|(&parent, &n)| match (parent, n) {
+                (p, _) if p < 0 => 0, // root
+                (_, 0) => 1,          // leaf
+                (_, 1) => 3,          // slab
+                _ => 2,               // branch point
+            }),
+    )
 }
 
 

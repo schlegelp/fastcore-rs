@@ -914,10 +914,6 @@ def strahler_index(
 def classify_nodes(node_ids, parent_ids):
     """Classify nodes.
 
-    Note to self: this function is not significantly faster than the
-    pandas/numpy-based implementation in navis which is already pretty
-    fast. May need to test on larger neurons to see if there is a difference.
-
     Parameters
     ----------
     node_ids :          (N, ) array
