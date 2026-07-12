@@ -57,6 +57,19 @@ geodesic_distances <- function(parents, sources, targets, weights, directed) .Ca
 #' @export
 strahler_index <- function(parents, greedy, to_ignore, min_twig_size) .Call(wrap__strahler_index, parents, greedy, to_ignore, min_twig_size)
 
+#' Height of the subtree below each node.
+#'
+#' A node's height is the geodesic distance from it down to the farthest leaf
+#' below it; leaves have a height of 0 and a root carries the length of the
+#' longest root-to-leaf path in its component.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param weights Optional numeric vector of child-to-parent edge weights;
+#'   `NULL` counts edges (hop distance).
+#' @return Numeric vector with the height of each node.
+#' @export
+subtree_height <- function(parents, weights) .Call(wrap__subtree_height, parents, weights)
+
 #' Connected components.
 #'
 #' @param parents Integer vector of 0-based parent indices (roots are `< 0`).

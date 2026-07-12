@@ -8,7 +8,7 @@ use fastcore::dag::{
     all_dists_to_root, break_segments, classify_nodes, connected_components, dist_to_root,
     generate_segments, geodesic_distances_all_by_all, geodesic_distances_partial,
     geodesic_farthest, geodesic_nearest, geodesic_pairs, prune_twigs, strahler_index,
-    synapse_flow_centrality, has_cycles,
+    subtree_height, synapse_flow_centrality, has_cycles,
 };
 
 /// For each node ID in `parents` find its index in `nodes`.
@@ -545,6 +545,32 @@ pub fn strahler_index_py<'py>(
         &min_twig_size,
     );
     strahler.into_pyarray(py)
+}
+
+/// Calculate the height of the subtree below each node.
+///
+/// This function wrangles the Python arrays into Rust arrays.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent IDs
+/// - `weights`: optional array of weights for each child -> parent connection
+///
+/// Returns:
+///
+/// A 1D array of f32 values with the height of each node (leafs are 0).
+///
+#[pyfunction]
+#[pyo3(name = "subtree_height", signature = (parents, weights=None))]
+pub fn subtree_height_py<'py>(
+    py: Python<'py>,
+    parents: PyReadonlyArray1<i32>,
+    weights: Option<PyReadonlyArray1<f32>>,
+) -> Bound<'py, PyArray1<f32>> {
+    let weights: Option<Array1<f32>> = weights.map(|w| w.as_array().to_owned());
+
+    let height: Array1<f32> = subtree_height(&parents.as_array(), &weights);
+    height.into_pyarray(py)
 }
 
 /// Classify nodes into roots, leaves, branch points and slabs.

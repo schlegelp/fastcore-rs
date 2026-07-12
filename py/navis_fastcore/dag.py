@@ -14,6 +14,8 @@ __all__ = [
     "segment_coords",
     "prune_twigs",
     "strahler_index",
+    "subtree_height",
+    "dist_to_root",
     "classify_nodes",
 ]
 
@@ -910,6 +912,124 @@ def strahler_index(
 
     # Map node indices back to IDs
     return strahler_index
+
+
+def subtree_height(node_ids, parent_ids, weights=None):
+    """Calculate the height of the subtree below each node.
+
+    A node's height is the geodesic distance from it *down* to the farthest leaf
+    below it. Leafs therefore have a height of 0, and a root has the length of
+    the longest root-to-leaf path in its component.
+
+    Parameters
+    ----------
+    node_ids :   (N, ) array
+                 Array of node IDs.
+    parent_ids : (N, ) array
+                 Array of parent IDs for each node. Root nodes' parents
+                 must be -1.
+    weights :    (N, ) float32 array, optional
+                 Array of distances for each child -> parent connection.
+                 If ``None`` all node to node distances are set to 1. Weights are
+                 expected to be non-negative. A root's own entry is never read,
+                 so the ``NaN`` :func:`parent_dist` leaves there is harmless.
+
+    Returns
+    -------
+    heights :    float32 (single) array
+                 Height of each node, in the same order as `node_ids`.
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> node_ids = np.arange(8)
+    >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5, 5])
+    >>> fastcore.subtree_height(node_ids, parent_ids)
+    array([4., 3., 1., 0., 2., 1., 0., 0.], dtype=float32)
+
+    See Also
+    --------
+    :func:`geodesic_farthest`
+                 Answers a different question: its ``directed`` mode looks towards
+                 the root, and its undirected mode can leave the subtree entirely.
+
+    """
+    # Convert parent IDs into indices
+    parent_ix = _ids_to_indices(node_ids, parent_ids)
+
+    if weights is not None:
+        weights = np.asarray(weights, dtype=np.float32, order="C")
+        assert len(weights) == len(node_ids), (
+            "`weights` must have the same length as `node_ids`"
+        )
+
+    # Already aligned with `node_ids`, so no index -> ID mapping needed
+    return _fastcore.subtree_height(parent_ix, weights=weights)
+
+
+def dist_to_root(node_ids, parent_ids, sources=None, weights=None):
+    """Calculate the distance from each node to its root.
+
+    Parameters
+    ----------
+    node_ids :   (N, ) array
+                 Array of node IDs.
+    parent_ids : (N, ) array
+                 Array of parent IDs for each node. Root nodes' parents
+                 must be -1.
+    sources :    iterable, optional
+                 Node IDs to measure from. If ``None`` all nodes are used.
+    weights :    (N, ) float32 array, optional
+                 Array of distances for each child -> parent connection.
+                 If ``None`` all node to node distances are set to 1.
+
+    Returns
+    -------
+    distances :  float32 (single) array
+                 Distance to the root for each node. Roots are at distance 0 from
+                 themselves. Ordered to match `sources` (or `node_ids` if `sources`
+                 is ``None``).
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> node_ids = np.arange(7)
+    >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5])
+    >>> fastcore.dist_to_root(node_ids, parent_ids)
+    array([0., 1., 2., 3., 2., 3., 4.], dtype=float32)
+
+    """
+    # Convert parent IDs into indices
+    parent_ix = _ids_to_indices(node_ids, parent_ids)
+
+    node_ids = np.asarray(node_ids)
+
+    if weights is not None:
+        weights = np.asarray(weights, dtype=np.float32, order="C")
+        assert len(weights) == len(node_ids), (
+            "`weights` must have the same length as `node_ids`"
+        )
+
+    # Translate sources into indices (if provided).
+    # This will also de-duplicate the IDs!
+    if sources is not None:
+        sources_ix = np.where(np.isin(node_ids, sources))[0].astype(np.int32)
+        assert len(sources_ix), "`sources` must not be empty"
+    else:
+        sources_ix = None
+
+    distances = _fastcore.all_dists_to_root(
+        parent_ix, sources=sources_ix, weights=weights
+    )
+
+    # If sources are provided, re-order to match the order they were passed in
+    if sources is not None:
+        id2ix = {nid: ix for ix, nid in enumerate(node_ids[sources_ix])}
+        distances = distances[[id2ix[nid] for nid in sources]]
+
+    return distances
 
 
 def classify_nodes(node_ids, parent_ids):

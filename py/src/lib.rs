@@ -83,6 +83,9 @@ mod fastcore {
     use super::strahler_index_py;
 
     #[pymodule_export]
+    use super::subtree_height_py;
+
+    #[pymodule_export]
     use super::classify_nodes_py;
 
     #[pymodule_export]

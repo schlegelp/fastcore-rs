@@ -2048,6 +2048,79 @@ pub fn strahler_index(
     strahler
 }
 
+/// Calculate the height of the subtree below each node.
+///
+/// A node's height is the geodesic distance from it *down* to the farthest leaf below it. Leafs
+/// therefore have a height of 0, and a root carries the length of the longest root-to-leaf path in
+/// its component.
+///
+/// This accumulates the height straight from the leafs rather than subtracting two distances to
+/// the root (`height = depth(deepest leaf below) - depth(node)`). The direct form needs no root
+/// distances at all, and it keeps every addition small: the subtraction cancels two ~1e6 nm depths
+/// against each other, which at f32 leaves ~0.1 nm of error in a quantity callers then compare
+/// against a threshold.
+///
+/// Weights are assumed to be non-negative, as everywhere else in this module.
+///
+/// See also `geodesic_farthest`, which answers a *different* question: its `directed` mode looks
+/// towards the root, and its undirected mode can leave the subtree entirely.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent IDs
+/// - `weights`: optional array of weights for each child -> parent connection; if not provided
+///   all connections are assumed to have a weight of 1
+///
+/// Returns:
+///
+/// A 1D array with the height of each node.
+///
+pub fn subtree_height<T>(parents: &ArrayView1<i32>, weights: &Option<Array1<T>>) -> Array1<T>
+where
+    T: Float + AddAssign,
+{
+    let n = parents.len();
+    let mut height: Array1<T> = Array::from_elem(n, T::zero());
+
+    // The same Kahn-style countdown `strahler_index` uses: a node is ready to be folded into its
+    // parent once every one of its children has been folded into *it*, and the nodes that start out
+    // ready are exactly the leafs. Iterative rather than recursive because a neuron can be a 100k
+    // node chain. Cycle-safe as a side effect: a node on a cycle never reaches a pending count of
+    // zero, so it is never visited and keeps its zero instead of hanging the sweep.
+    let mut pending: Vec<i32> = number_of_children(parents).to_vec();
+    let mut queue: Vec<usize> = (0..n).filter(|&node| pending[node] == 0).collect();
+
+    while let Some(node) = queue.pop() {
+        let parent = parents[node];
+        if parent < 0 {
+            continue; // a root has nothing above it to carry its height into
+        }
+        let parent = parent as usize;
+
+        // The weight of the node -> parent edge is stored on the *child*, matching
+        // `all_dists_to_root`'s `d[node] = d[parent] + w[node]`. Note we never read a root's own
+        // weight, which is what makes the NaN `parent_dist` leaves there harmless.
+        let candidate = height[node]
+            + match weights.as_ref() {
+                Some(w) => w[node],
+                None => T::one(),
+            };
+
+        // `height` starts at zero, so this is really `max(0, max over the children)`. With
+        // non-negative weights that is the plain maximum.
+        if candidate > height[parent] {
+            height[parent] = candidate;
+        }
+
+        pending[parent] -= 1;
+        if pending[parent] == 0 {
+            queue.push(parent);
+        }
+    }
+
+    height
+}
+
 /// Classify nodes into roots, leaves, branch points and slabs.
 ///
 /// This function wrangles the Python arrays into Rust arrays.
@@ -2585,5 +2658,98 @@ mod tests {
 
         // 0 -> 2 crosses components; the other two are real one-edge distances.
         assert_eq!(dists, arr1(&[-1.0, 1.0, 1.0]));
+    }
+
+    /// A node's height is the distance *down* to the farthest leaf below it, so leafs are 0 and a
+    /// root carries the longest root-to-leaf path. Node 1 has to take the *longest* of its two
+    /// branches, not the first or the last one it happens to see.
+    #[test]
+    fn subtree_height_measures_the_longest_path_below_each_node() {
+        //   0 - 1 - 2 - 3
+        //        \
+        //         4 - 5 - 6
+        //              \
+        //               7
+        let parents = arr1(&[-1, 0, 1, 2, 1, 4, 5, 5]);
+
+        let height = subtree_height::<f32>(&parents.view(), &None);
+
+        // Node 1 sees a 2-hop branch (2, 3) and a 3-hop one (4, 5, 6) -> 3, not 2.
+        assert_eq!(height, arr1(&[4.0, 3.0, 1.0, 0.0, 2.0, 1.0, 0.0, 0.0]));
+    }
+
+    /// The weight of an edge lives on its *child*: `weights[node]` is the node -> parent edge, as
+    /// in `all_dists_to_root`. Reading it off the parent instead would still produce plausible
+    /// numbers, so this pins a tree where the longest branch by hop count is *not* the longest by
+    /// weight.
+    #[test]
+    fn subtree_height_weights_the_child_to_parent_edge() {
+        //   0 - 1 - 2 - 3
+        //        \
+        //         4 - 5 - 6
+        let parents = arr1(&[-1, 0, 1, 2, 1, 4, 5]);
+        //   node:            0    1    2     3    4    5    6
+        let weights = arr1(&[0.0, 1.0, 5.0, 10.0, 1.0, 1.0, 1.0]);
+
+        let height = subtree_height(&parents.view(), &Some(weights));
+
+        // 1 -> 2 -> 3 weighs 5 + 10 = 15; the *longer* 1 -> 4 -> 5 -> 6 only weighs 1 + 1 + 1 = 3.
+        assert_eq!(height, arr1(&[16.0f32, 15.0, 10.0, 0.0, 2.0, 1.0, 0.0]));
+    }
+
+    /// Every component is measured against its own leafs and the components don't interact --
+    /// unlike the depth-subtraction formulation, this needs no root distances to get that right.
+    /// An isolated root is both a leaf and a root, and has height 0.
+    #[test]
+    fn subtree_height_handles_multi_root_forests() {
+        //   1        4 - 6      7 (isolated root)
+        //  /        /
+        // 0        3
+        //  \        \
+        //   2        5
+        let parents = arr1(&[-1, 0, 0, -1, 3, 3, 4, -1]);
+
+        let height = subtree_height::<f32>(&parents.view(), &None);
+
+        assert_eq!(height, arr1(&[1.0, 0.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0]));
+    }
+
+    /// `parent_dist` leaves NaN in the root's weight slot. We never read a root's own weight, so
+    /// that NaN must not leak into any height. A naive `deepest - depth` would propagate it.
+    #[test]
+    fn subtree_height_ignores_the_roots_nan_weight() {
+        //   0 - 1 - 2
+        let parents = arr1(&[-1, 0, 1]);
+        let weights = arr1(&[f32::NAN, 2.0, 3.0]);
+
+        let height = subtree_height(&parents.view(), &Some(weights));
+
+        assert_eq!(height, arr1(&[5.0f32, 3.0, 0.0]));
+    }
+
+    /// A cycle is malformed input (see `has_cycles`) but it must not hang the sweep. Cycle nodes
+    /// never reach a pending count of zero, so they are never visited and keep their zero; the rest
+    /// of the tree is unaffected. The recursive formulation of this DP would instead spin forever.
+    #[test]
+    fn subtree_height_does_not_hang_on_a_cycle() {
+        // 0 -> 1 -> 2 -> 0 (a 3-cycle), plus an unrelated tree 4 -> 3
+        let parents = arr1(&[1, 2, 0, -1, 3]);
+
+        let height = subtree_height::<f32>(&parents.view(), &None);
+
+        assert_eq!(height, arr1(&[0.0, 0.0, 0.0, 1.0, 0.0]));
+    }
+
+    /// The sweep is iterative, so an unbranched chain far deeper than the stack must not blow it.
+    #[test]
+    fn subtree_height_survives_a_very_deep_chain() {
+        let n = 200_000;
+        // 0 <- 1 <- 2 <- ... : node i's parent is i - 1, so 0 is the root and n - 1 the only leaf.
+        let parents = Array1::from_iter((0..n).map(|i| i as i32 - 1));
+
+        let height = subtree_height::<f32>(&parents.view(), &None);
+
+        assert_eq!(height[0], (n - 1) as f32);
+        assert_eq!(height[n - 1], 0.0);
     }
 }

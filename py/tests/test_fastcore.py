@@ -442,6 +442,82 @@ def test_strahler_index(swc, method, min_twig_size):
     print(f"Timing: {dur:.4f}s")
 
 
+def test_subtree_height_example():
+    #   0 - 1 - 2 - 3
+    #        \
+    #         4 - 5 - 6
+    #              \
+    #               7
+    nodes = np.arange(8)
+    parents = np.array([-1, 0, 1, 2, 1, 4, 5, 5])
+
+    heights = fastcore.subtree_height(nodes, parents)
+
+    # Node 1 must take its 3-hop branch (4, 5, 6), not its 2-hop one (2, 3)
+    assert_array_equal(heights, [4, 3, 1, 0, 2, 1, 0, 0])
+
+
+@pytest.mark.parametrize("swc", [swc32(), swc64()])
+def test_subtree_height(swc):
+    nodes, parents, coords = swc
+    weights = fastcore.dag.parent_dist(nodes, parents, coords, root_dist=0)
+
+    heights = fastcore.subtree_height(nodes, parents, weights=weights)
+
+    assert heights.dtype == np.float32
+    assert len(heights) == len(nodes)
+    assert (heights >= 0).all()
+
+    # Leafs (nodes that are nobody's parent) sit at the bottom -> height exactly 0
+    is_leaf = ~np.isin(nodes, parents)
+    assert (heights[is_leaf] == 0).all()
+
+    # Cross-check against the reference formulation: a node's height is the depth of the deepest
+    # leaf below it minus its own depth. We compute the reference in float64 because that
+    # subtraction cancels two large depths against each other -- which is exactly why
+    # `subtree_height` does *not* work that way, so the tolerance below is the reference's error
+    # budget, not ours.
+    depth = fastcore.dist_to_root(nodes, parents, weights=weights).astype(np.float64)
+    ix = {n: i for i, n in enumerate(nodes.tolist())}
+    parent_ix = np.array([ix.get(p, -1) for p in parents.tolist()], dtype=np.int64)
+    deepest = np.full(len(nodes), -np.inf)
+    leaf_ix = np.where(is_leaf)[0]
+    for i in leaf_ix[np.argsort(-depth[leaf_ix])]:
+        dl, v = depth[i], i
+        while v != -1 and deepest[v] < dl:
+            deepest[v] = dl
+            v = parent_ix[v]
+    expected = deepest - depth
+
+    assert np.isfinite(expected).all()  # every node has at least one leaf below it
+    np.testing.assert_allclose(heights, expected, rtol=1e-3, atol=1.0)
+
+
+@pytest.mark.parametrize("swc", [swc32(), swc64()])
+def test_dist_to_root(swc):
+    nodes, parents, coords = swc
+    weights = fastcore.dag.parent_dist(nodes, parents, coords, root_dist=0)
+
+    dists = fastcore.dist_to_root(nodes, parents, weights=weights)
+
+    assert dists.dtype == np.float32
+    assert len(dists) == len(nodes)
+    assert (dists[parents < 0] == 0).all()  # a root is 0 away from itself
+
+    # Same as the geodesic distance from the root to every node
+    roots = nodes[parents < 0]
+    assert len(roots) == 1, "test SWC is expected to have a single root"
+    ref = fastcore.geodesic_matrix(nodes, parents, sources=roots, weights=weights)
+    np.testing.assert_allclose(dists, ref[0], rtol=1e-5, atol=1e-3)
+
+    # `sources` subsets and preserves the order the caller passed them in
+    some = nodes[[100, 5, 1]]
+    np.testing.assert_array_equal(
+        fastcore.dist_to_root(nodes, parents, sources=some, weights=weights),
+        dists[[100, 5, 1]],
+    )
+
+
 @pytest.mark.parametrize("swc", [swc32(), swc64()])
 def test_classify_nodes(swc):
     nodes, parents, _ = swc

@@ -44,10 +44,12 @@ Operations on [rooted trees](../concepts/trees.md):
 - [`geodesic_pairs`](geodesic.md#navis_fastcore.geodesic_pairs): geodesic distances between given pairs of nodes
 - [`geodesic_nearest`](geodesic.md#navis_fastcore.geodesic_nearest): distance to the nearest target for each source, without building the full matrix
 - [`geodesic_farthest`](geodesic.md#navis_fastcore.geodesic_farthest): distance to the farthest target for each source, without building the full matrix
+- [`dist_to_root`](geodesic.md#navis_fastcore.dist_to_root): distance from each node to its root
 - [`connected_components`](cc.md#navis_fastcore.connected_components): generate the connected components
 - [`classify_nodes`](morphology.md#navis_fastcore.classify_nodes): classify nodes into roots, leaves, branch points and slabs
 - [`synapse_flow_centrality`](morphology.md#navis_fastcore.synapse_flow_centrality): synapse flow centrality ([Schneider-Mizell, eLife, 2016](https://elifesciences.org/articles/12059))
 - [`strahler_index`](morphology.md#navis_fastcore.strahler_index): calculate Strahler index
+- [`subtree_height`](morphology.md#navis_fastcore.subtree_height): distance from each node down to the farthest leaf below it
 - [`prune_twigs`](morphology.md#navis_fastcore.prune_twigs): remove terminal twigs below a certain size
 - [`break_segments`](segments.md#navis_fastcore.break_segments): break the neuron into the linear segments connecting leafs, branches and roots
 - [`generate_segments`](segments.md#navis_fastcore.generate_segments): same as `break_segments` but maximizing segment lengths, i.e. the longest segment goes from the most distal leaf to the root and so on

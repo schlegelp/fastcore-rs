@@ -146,6 +146,25 @@ pub fn strahler_index(
     fastcore::dag::strahler_index(&parents.view(), greedy, &to_ignore, &min_twig_size).to_vec()
 }
 
+/// Height of the subtree below each node.
+///
+/// A node's height is the geodesic distance from it down to the farthest leaf
+/// below it; leaves have a height of 0 and a root carries the length of the
+/// longest root-to-leaf path in its component.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param weights Optional numeric vector of child-to-parent edge weights;
+///   `NULL` counts edges (hop distance).
+/// @return Numeric vector with the height of each node.
+/// @export
+#[extendr]
+pub fn subtree_height(parents: Vec<i32>, weights: Option<Vec<f64>>) -> Vec<f64> {
+    let parents = Array1::from_vec(parents);
+    let weights: Option<Array1<f64>> = weights.map(Array1::from_vec);
+
+    fastcore::dag::subtree_height(&parents.view(), &weights).to_vec()
+}
+
 /// Connected components.
 ///
 /// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
@@ -1432,6 +1451,7 @@ extendr_module! {
     fn node_indices;
     fn geodesic_distances;
     fn strahler_index;
+    fn subtree_height;
     fn connected_components;
     fn prune_twigs;
     fn child_to_parent_dists;
