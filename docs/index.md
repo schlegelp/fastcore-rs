@@ -64,6 +64,7 @@ surface and how they spell it. `—` means that surface doesn't expose it direct
 | Geodesic distance matrix | `dag::geodesic_distances_all_by_all`, `dag::geodesic_distances_partial` | `geodesic_matrix` | `geodesic_distances` |
 | Geodesic distances for given pairs | `dag::geodesic_pairs` | `geodesic_pairs` | `geodesic_pairs` |
 | Distance to the nearest target | `dag::geodesic_nearest` | `geodesic_nearest` | `geodesic_nearest` |
+| Distance to the farthest target | `dag::geodesic_farthest` | `geodesic_farthest` | `geodesic_farthest` |
 | Distances to the root | `dag::all_dists_to_root`, `dag::dist_to_root` | — (see `parent_dist`) | `all_dists_to_root`, `dist_to_root` |
 | Connected components | `dag::connected_components` | `connected_components` | `connected_components` |
 | Break into linear segments | `dag::generate_segments`, `dag::break_segments` | `generate_segments`, `break_segments`, `segment_coords` | `generate_segments`, `break_segments` |

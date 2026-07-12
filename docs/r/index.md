@@ -86,6 +86,7 @@ healed = heal_skeleton(parents, s$d$X, s$d$Y, s$d$Z, method="ALL",
 - `geodesic_distances`: geodesic distances between all/subsets of nodes
 - `geodesic_pairs`: geodesic distances for explicit pairs of nodes
 - `geodesic_nearest`: distance to the nearest target for each source (no full matrix)
+- `geodesic_farthest`: distance to the farthest target for each source (no full matrix)
 - `strahler_index`: calculate the Strahler index
 - `connected_components`: extract connected components
 - `classify_nodes`: classify nodes into roots, leaves, branch points and slabs

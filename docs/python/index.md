@@ -43,6 +43,7 @@ Operations on [rooted trees](../concepts/trees.md):
 - [`geodesic_matrix`](geodesic.md#navis_fastcore.geodesic_matrix): geodesic ("along-the-arbor") distances, either all-by-all or between specific sources and targets
 - [`geodesic_pairs`](geodesic.md#navis_fastcore.geodesic_pairs): geodesic distances between given pairs of nodes
 - [`geodesic_nearest`](geodesic.md#navis_fastcore.geodesic_nearest): distance to the nearest target for each source, without building the full matrix
+- [`geodesic_farthest`](geodesic.md#navis_fastcore.geodesic_farthest): distance to the farthest target for each source, without building the full matrix
 - [`connected_components`](cc.md#navis_fastcore.connected_components): generate the connected components
 - [`classify_nodes`](morphology.md#navis_fastcore.classify_nodes): classify nodes into roots, leaves, branch points and slabs
 - [`synapse_flow_centrality`](morphology.md#navis_fastcore.synapse_flow_centrality): synapse flow centrality ([Schneider-Mizell, eLife, 2016](https://elifesciences.org/articles/12059))

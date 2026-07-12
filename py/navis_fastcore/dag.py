@@ -5,6 +5,7 @@ from . import _fastcore
 __all__ = [
     "geodesic_matrix",
     "geodesic_nearest",
+    "geodesic_farthest",
     "geodesic_pairs",
     "connected_components",
     "synapse_flow_centrality",
@@ -412,6 +413,121 @@ def geodesic_nearest(
     nearest[found] = node_ids[nearest_ix[found]]
 
     return distances, nearest
+
+
+def geodesic_farthest(
+    node_ids,
+    parent_ids,
+    sources=None,
+    targets=None,
+    directed=False,
+    weights=None,
+):
+    """Find the farthest target for each source.
+
+    This is the mirror image of :func:`geodesic_nearest`: it uses the same
+    linear-time algorithm but keeps, for each source, the distance to and ID of
+    the *farthest* target. Like its counterpart it never materialises the full
+    ``sources x targets`` distance matrix and therefore scales to several 100k
+    nodes.
+
+    A source that is itself a target is matched to the farthest *other*
+    (distinct) target, never to itself.
+
+    Parameters
+    ----------
+    node_ids :   (N, ) array
+                 Array of node IDs.
+    parent_ids : (N, ) array
+                 Array of parent IDs for each node. Root nodes' parents
+                 must be -1.
+    sources :    iterable, optional
+                 Source node IDs. If ``None`` all nodes are used as sources.
+    targets :    iterable, optional
+                 Target node IDs. If ``None`` all nodes are used as targets.
+    directed :   bool, optional
+                 If ``True`` only consider targets in the direction of the
+                 child -> parent (i.e. towards the root) relationship. Note that
+                 with non-negative weights the farthest such target is the target
+                 ancestor closest to the root.
+    weights :    (N, ) float32 array, optional
+                 Array of distances for each child -> parent connection.
+                 If ``None`` all node to node distances are set to 1.
+
+    Returns
+    -------
+    distances :  float32 (single) array
+                 Distance from each source to its farthest target. Sources
+                 without a reachable target are set to ``-1``. Ordered to match
+                 `sources` (or `node_ids` if `sources` is ``None``).
+    farthest :   array
+                 Node ID of the farthest target for each source, in the same
+                 order as `distances`. Sources without a reachable target are
+                 set to ``-1``.
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> node_ids = np.arange(7)
+    >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4, 5])
+    >>> dist, farthest = fastcore.geodesic_farthest(
+    ...     node_ids, parent_ids,
+    ...     sources=[0, 3], targets=[5, 6]
+    ...     )
+    >>> dist
+    array([4., 5.], dtype=float32)
+    >>> farthest
+    array([6, 6])
+
+    """
+    # Convert parent IDs into indices
+    parent_ix = _ids_to_indices(node_ids, parent_ids)
+
+    node_ids = np.asarray(node_ids)
+
+    if weights is not None:
+        weights = np.asarray(weights, dtype=np.float32, order="C")
+        assert len(weights) == len(node_ids), (
+            "`weights` must have the same length as `node_ids`"
+        )
+
+    # Translate sources and targets into indices (if provided).
+    # This will also de-duplicate the IDs!
+    if sources is not None:
+        sources_ix = np.where(np.isin(node_ids, sources))[0].astype(np.int32)
+        assert len(sources_ix), "`sources` must not be empty"
+    else:
+        sources_ix = None
+
+    if targets is not None:
+        targets_ix = np.where(np.isin(node_ids, targets))[0].astype(np.int32)
+        assert len(targets_ix), "`targets` must not be empty"
+    else:
+        targets_ix = None
+
+    # Calculate farthest distances and target indices (in node-index space)
+    distances, farthest_ix = _fastcore.geodesic_farthest(
+        parent_ix,
+        sources=sources_ix,
+        targets=targets_ix,
+        weights=weights,
+        directed=directed,
+    )
+
+    # If sources are provided, re-order to match the order they were passed in
+    if sources is not None:
+        id2ix = {nid: ix for ix, nid in enumerate(node_ids[sources_ix])}
+        order = [id2ix[nid] for nid in sources]
+        distances = distances[order]
+        farthest_ix = farthest_ix[order]
+
+    # Translate the farthest target node indices back into node IDs (-1 = no target)
+    found = farthest_ix >= 0
+    farthest = np.full(len(farthest_ix), -1, dtype=node_ids.dtype)
+    farthest[found] = node_ids[farthest_ix[found]]
+
+    return distances, farthest
 
 
 def geodesic_pairs(

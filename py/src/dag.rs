@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use fastcore::dag::{
     all_dists_to_root, break_segments, classify_nodes, connected_components, dist_to_root,
     generate_segments, geodesic_distances_all_by_all, geodesic_distances_partial,
-    geodesic_nearest, geodesic_pairs, prune_twigs, strahler_index, synapse_flow_centrality,
-    has_cycles,
+    geodesic_farthest, geodesic_nearest, geodesic_pairs, prune_twigs, strahler_index,
+    synapse_flow_centrality, has_cycles,
 };
 
 /// For each node ID in `parents` find its index in `nodes`.
@@ -321,6 +321,57 @@ pub fn geodesic_nearest_py<'py>(
         geodesic_nearest(&parents.as_array(), &sources, &targets, &weights, directed);
 
     (dists.into_pyarray(py), nearest.into_pyarray(py))
+}
+
+/// Compute the distance to the farthest target for each source.
+///
+/// The mirror image of `geodesic_nearest`: same linear-time algorithm, but it keeps the farthest
+/// rather than the nearest target. Never materialises the full distance matrix.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent IDs
+/// - `sources`: optional array of source IDs
+/// - `targets`: optional array of target IDs
+/// - `weights`: optional array of weights for each node
+/// - `directed`: boolean indicating whether to only consider targets towards the root
+///
+/// Returns:
+///
+/// A tuple `(distances, farthest)` of 1D arrays: the distance to and node index of the farthest
+/// target for each source. Sources without a reachable target get `-1.0` / `-1`.
+///
+#[pyfunction]
+#[pyo3(name = "geodesic_farthest", signature = (parents, sources, targets, weights, directed=false))]
+pub fn geodesic_farthest_py<'py>(
+    py: Python<'py>,
+    parents: PyReadonlyArray1<i32>,
+    sources: Option<PyReadonlyArray1<i32>>,
+    targets: Option<PyReadonlyArray1<i32>>,
+    weights: Option<PyReadonlyArray1<f32>>,
+    directed: bool,
+) -> (Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<i32>>) {
+    let weights: Option<Array1<f32>> = if weights.is_some() {
+        Some(weights.unwrap().as_array().to_owned())
+    } else {
+        None
+    };
+
+    let sources = if sources.is_some() {
+        Some(sources.unwrap().as_array().to_owned())
+    } else {
+        None
+    };
+    let targets = if targets.is_some() {
+        Some(targets.unwrap().as_array().to_owned())
+    } else {
+        None
+    };
+
+    let (dists, farthest) =
+        geodesic_farthest(&parents.as_array(), &sources, &targets, &weights, directed);
+
+    (dists.into_pyarray(py), farthest.into_pyarray(py))
 }
 
 /// Compute geodesic distances along the tree for pairs of nodes.

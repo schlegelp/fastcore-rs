@@ -5,3 +5,5 @@
 ::: navis_fastcore.geodesic_pairs
 
 ::: navis_fastcore.geodesic_nearest
+
+::: navis_fastcore.geodesic_farthest

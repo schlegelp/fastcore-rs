@@ -672,7 +672,7 @@ where
 /// A tuple `(distances, nearest)` where `distances[i]` is the distance from source `i` to its
 /// nearest target and `nearest[i]` is that target's node index. Sources without any reachable
 /// (distinct) target get `-1.0` / `-1` respectively. Both are ordered to match the order of
-/// `sources`.
+/// `sources`. Ties are broken arbitrarily but deterministically.
 ///
 pub fn geodesic_nearest<T>(
     parents: &ArrayView1<i32>,
@@ -680,6 +680,85 @@ pub fn geodesic_nearest<T>(
     targets: &Option<Array1<i32>>,
     weights: &Option<Array1<T>>,
     directed: bool,
+) -> (Array1<T>, Array1<i32>)
+where
+    T: Float + AddAssign,
+{
+    geodesic_extreme(parents, sources, targets, weights, directed, false)
+}
+
+/// Calculate the distance to the farthest target for each source.
+///
+/// This is the mirror image of `geodesic_nearest`: same linear-time (O(N)) rerooting tree DP,
+/// but it keeps, for each source, the distance to and the node index of the *farthest* target
+/// instead of the nearest one. A source that is itself a target is matched to the farthest
+/// *other* (distinct) target, never to itself.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent IDs
+/// - `sources`: optional array of source IDs (defaults to all nodes)
+/// - `targets`: optional array of target IDs (defaults to all nodes)
+/// - `weights`: optional array of weights for each child -> parent connection
+/// - `directed`: if `true` only consider targets reachable by walking towards the root (i.e.
+///               proper ancestors of the source); with non-negative weights the farthest such
+///               target is the target ancestor closest to the root
+///
+/// Returns:
+///
+/// A tuple `(distances, farthest)` where `distances[i]` is the distance from source `i` to its
+/// farthest target and `farthest[i]` is that target's node index. Sources without any reachable
+/// (distinct) target get `-1.0` / `-1` respectively. Both are ordered to match the order of
+/// `sources`. Ties are broken arbitrarily but deterministically.
+///
+pub fn geodesic_farthest<T>(
+    parents: &ArrayView1<i32>,
+    sources: &Option<Array1<i32>>,
+    targets: &Option<Array1<i32>>,
+    weights: &Option<Array1<T>>,
+    directed: bool,
+) -> (Array1<T>, Array1<i32>)
+where
+    T: Float + AddAssign,
+{
+    geodesic_extreme(parents, sources, targets, weights, directed, true)
+}
+
+/// Shared implementation behind `geodesic_nearest` and `geodesic_farthest`.
+///
+/// The two are the very same DP and differ only in which end of the distance spectrum we keep,
+/// so the objective is parametrised by:
+///
+/// - a `sentinel` that is, by construction, the *worst* possible value ( `+inf` when minimising,
+///   `-inf` when maximising). Plain comparisons against it therefore work unchanged and "did we
+///   find a target?" is simply `x.is_finite()`.
+/// - a `better(a, b)` comparison (`a < b` when minimising, `a > b` when maximising).
+///
+/// Careful: wherever "the parent is itself a target" competes with an already-known candidate it
+/// must be *merged*, not blindly assigned. A target sitting on the node is at distance zero -
+/// always the best candidate when minimising, always the worst one when maximising.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent IDs
+/// - `sources`: optional array of source IDs (defaults to all nodes)
+/// - `targets`: optional array of target IDs (defaults to all nodes)
+/// - `weights`: optional array of weights for each child -> parent connection
+/// - `directed`: if `true` only consider targets reachable by walking towards the root
+/// - `farthest`: if `true` keep the farthest target instead of the nearest one
+///
+/// Returns:
+///
+/// A tuple `(distances, target)` ordered like `sources`. Sources without any reachable (distinct)
+/// target get `-1.0` / `-1`.
+///
+fn geodesic_extreme<T>(
+    parents: &ArrayView1<i32>,
+    sources: &Option<Array1<i32>>,
+    targets: &Option<Array1<i32>>,
+    weights: &Option<Array1<T>>,
+    directed: bool,
+    farthest: bool,
 ) -> (Array1<T>, Array1<i32>)
 where
     T: Float + AddAssign,
@@ -699,21 +778,27 @@ where
         targets.as_ref().unwrap().clone()
     };
 
-    // Map source node indices to their position in the output arrays.
-    // (Must happen before any potential reordering.)
-    let source_to_index: HashMap<_, _> = sources
-        .iter()
-        .enumerate()
-        .map(|(i, node)| (*node, i))
-        .collect();
-
     // Boolean mask indicating whether a node is a target
     let mut is_target: Array1<bool> = Array::from_elem(n, false);
     for &node in targets.iter() {
         is_target[node as usize] = true;
     }
 
-    let inf = T::infinity();
+    // The sentinel is the worst possible value for our objective, so a value is "real" (i.e. we
+    // did find a target) exactly when it is finite.
+    let sentinel = if farthest {
+        T::neg_infinity()
+    } else {
+        T::infinity()
+    };
+    let zero = T::zero();
+    let better = |a: T, b: T| -> bool {
+        if farthest {
+            a > b
+        } else {
+            a < b
+        }
+    };
 
     // Edge weight of the connection from `node` to its parent
     let weight = |node: usize| -> T {
@@ -745,9 +830,9 @@ where
         }
     }
 
-    // ---- Directed case: nearest target among proper ancestors ----
+    // ---- Directed case: best target among proper ancestors ----
     if directed {
-        let mut ddir_dist: Vec<T> = vec![inf; n];
+        let mut ddir_dist: Vec<T> = vec![sentinel; n];
         let mut ddir_tgt: Vec<i32> = vec![-1i32; n];
 
         // Pre-order: parents before children
@@ -757,23 +842,24 @@ where
                 continue; // root has no ancestors
             }
             let p = p as usize;
-            // Nearest target at `p` or above it
+            // Best target at `p` or above it. `p` itself has to *compete* here: a target sitting
+            // on `p` is at distance zero, which only wins if nothing better is reachable further
+            // up (for `nearest` that is always, for `farthest` only if there is nothing at all).
             let mut cd = ddir_dist[p];
             let mut ct = ddir_tgt[p];
-            if is_target[p] {
-                cd = T::zero();
+            if is_target[p] && better(zero, cd) {
+                cd = zero;
                 ct = p as i32;
             }
-            if cd < inf {
+            if cd.is_finite() {
                 ddir_dist[node] = cd + weight(node);
                 ddir_tgt[node] = ct;
             }
         }
 
-        for &s in sources.iter() {
+        for (idx, &s) in sources.iter().enumerate() {
             let s = s as usize;
-            if ddir_dist[s] < inf {
-                let idx = source_to_index[&(s as i32)];
+            if ddir_dist[s].is_finite() {
                 out_dist[idx] = ddir_dist[s];
                 out_tgt[idx] = ddir_tgt[s];
             }
@@ -783,53 +869,55 @@ where
 
     // ---- Undirected case: rerooting DP ----
 
-    // `down1`: nearest target within the subtree of a node (including the node itself).
-    let mut down1_dist: Vec<T> = vec![inf; n];
+    // `down1`: best target within the subtree of a node (including the node itself).
+    let mut down1_dist: Vec<T> = vec![sentinel; n];
     let mut down1_tgt: Vec<i32> = vec![-1i32; n];
     // Best/second-best child contribution `down1[child] + w(child)` at each node. We keep the
     // best child's node index so a child can exclude its own contribution when reading siblings.
-    let mut cbest_dist: Vec<T> = vec![inf; n];
+    let mut cbest_dist: Vec<T> = vec![sentinel; n];
     let mut cbest_tgt: Vec<i32> = vec![-1i32; n];
     let mut cbest_child: Vec<i32> = vec![-1i32; n];
-    let mut csec_dist: Vec<T> = vec![inf; n];
+    let mut csec_dist: Vec<T> = vec![sentinel; n];
     let mut csec_tgt: Vec<i32> = vec![-1i32; n];
 
     // Post-order: children before parents (reverse BFS order)
     for &v in order.iter().rev() {
-        let mut d1d = inf;
+        let mut d1d = sentinel;
         let mut d1t = -1i32;
         if is_target[v] {
-            d1d = T::zero();
+            // `d1d` is still the sentinel here, so this is an initialisation rather than a merge
+            // and needs no comparison (unlike the `up` pass below).
+            d1d = zero;
             d1t = v as i32;
         }
 
-        let mut cb_d = inf;
+        let mut cb_d = sentinel;
         let mut cb_t = -1i32;
         let mut cb_c = -1i32;
-        let mut cs_d = inf;
+        let mut cs_d = sentinel;
         let mut cs_t = -1i32;
 
         for &c in children[v].iter() {
             let c = c as usize;
-            if down1_dist[c] >= inf {
+            if !down1_dist[c].is_finite() {
                 continue; // no target in this child's subtree
             }
             let val = down1_dist[c] + weight(c);
             let t = down1_tgt[c];
-            if val < cb_d {
+            if better(val, cb_d) {
                 cs_d = cb_d;
                 cs_t = cb_t;
                 cb_d = val;
                 cb_t = t;
                 cb_c = c as i32;
-            } else if val < cs_d {
+            } else if better(val, cs_d) {
                 cs_d = val;
                 cs_t = t;
             }
         }
 
-        // down1 = min(self, best child contribution)
-        if cb_d < d1d {
+        // down1 = best(self, best child contribution)
+        if better(cb_d, d1d) {
             d1d = cb_d;
             d1t = cb_t;
         }
@@ -843,19 +931,22 @@ where
         csec_tgt[v] = cs_t;
     }
 
-    // `up`: nearest target outside the subtree of a node, reaching it through its parent.
-    let mut up_dist: Vec<T> = vec![inf; n];
+    // `up`: best target outside the subtree of a node, reaching it through its parent.
+    let mut up_dist: Vec<T> = vec![sentinel; n];
     let mut up_tgt: Vec<i32> = vec![-1i32; n];
 
     // Pre-order: parents before children
     for &p in order.iter() {
         for &c in children[p].iter() {
             let c = c as usize;
-            // Distance from `p` to the nearest target that is not inside the subtree of `c`
+            // Distance from `p` to the best target that is not inside the subtree of `c`. Those
+            // targets fall into three disjoint groups: outside the subtree of `p`, `p` itself,
+            // and `c`'s sibling subtrees. As in the directed pass, `p` itself has to compete
+            // rather than overwrite.
             let mut cd = up_dist[p];
             let mut ct = up_tgt[p];
-            if is_target[p] {
-                cd = T::zero();
+            if is_target[p] && better(zero, cd) {
+                cd = zero;
                 ct = p as i32;
             }
             // Targets in `p`'s other subtrees: best child contribution that is not `c`
@@ -864,28 +955,29 @@ where
             } else {
                 (csec_dist[p], csec_tgt[p])
             };
-            if sd < cd {
+            if better(sd, cd) {
                 cd = sd;
                 ct = st;
             }
-            if cd < inf {
+            if cd.is_finite() {
                 up_dist[c] = cd + weight(c);
                 up_tgt[c] = ct;
             }
         }
     }
 
-    // Final answer per source: nearest *other* target = min(best-in-subtree-excl-self, outside)
-    for &s in sources.iter() {
+    // Final answer per source: best *other* target = best(best-in-subtree-excl-self, outside).
+    // Reading `cbest` (and not `down1`) is what keeps a source that is itself a target from
+    // matching itself.
+    for (idx, &s) in sources.iter().enumerate() {
         let s = s as usize;
         let mut bd = cbest_dist[s];
         let mut bt = cbest_tgt[s];
-        if up_dist[s] < bd {
+        if better(up_dist[s], bd) {
             bd = up_dist[s];
             bt = up_tgt[s];
         }
-        if bd < inf {
-            let idx = source_to_index[&(s as i32)];
+        if bd.is_finite() {
             out_dist[idx] = bd;
             out_tgt[idx] = bt;
         }

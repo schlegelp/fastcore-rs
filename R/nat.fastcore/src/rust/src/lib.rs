@@ -283,6 +283,47 @@ pub fn geodesic_nearest(
     list!(distances = dists.to_vec(), nearest = nearest.to_vec()).into()
 }
 
+/// Distance to the farthest target for each source.
+///
+/// The mirror image of `geodesic_nearest`: same linear-time algorithm, but it keeps
+/// the farthest rather than the nearest target and never materialises the full
+/// distance matrix. Returns a list with `distances` (distance to the farthest
+/// target) and `farthest` (index of that target); sources without a reachable
+/// target get `-1`. A source that is itself a target is matched to the farthest
+/// *other* target, never to itself.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param sources Optional integer vector of source node indices; `NULL` uses
+///   every node.
+/// @param targets Optional integer vector of target node indices; `NULL` uses
+///   every node.
+/// @param weights Optional numeric vector of edge weights; `NULL` counts edges.
+/// @param directed Logical; if `TRUE` only traverse edges child-to-parent. With
+///   non-negative weights the farthest such target is the target ancestor closest
+///   to the root.
+/// @return List with `distances` (numeric, distance to the farthest target) and
+///   `farthest` (integer target index, `-1` when unreachable).
+/// @export
+#[extendr]
+pub fn geodesic_farthest(
+    parents: Vec<i32>,
+    sources: Option<Vec<i32>>,
+    targets: Option<Vec<i32>>,
+    weights: Option<Vec<f64>>,
+    directed: bool,
+) -> Robj {
+    let parents = Array1::from_vec(parents);
+    let sources = sources.map(Array1::from_vec);
+    let targets = targets.map(Array1::from_vec);
+    let weights: Option<Array1<f32>> =
+        weights.map(|w| Array1::from_vec(w.iter().map(|x| *x as f32).collect()));
+
+    let (dists, farthest) =
+        fastcore::dag::geodesic_farthest(&parents.view(), &sources, &targets, &weights, directed);
+
+    list!(distances = dists.to_vec(), farthest = farthest.to_vec()).into()
+}
+
 /// Synapse flow centrality for each node.
 ///
 /// `presynapses`/`postsynapses` give the number of pre-/post-synapses at each node.
@@ -1152,6 +1193,7 @@ extendr_module! {
     fn has_cycles;
     fn geodesic_pairs;
     fn geodesic_nearest;
+    fn geodesic_farthest;
     fn synapse_flow_centrality;
     fn generate_segments;
     fn break_segments;
