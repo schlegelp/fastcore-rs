@@ -388,7 +388,7 @@ pub(crate) fn index_bar(total: u64) -> ProgressBar {
 /// Shared constructor for the index / scoring bars: a stderr `ProgressBar`
 /// prefixed with `label`. See [`scoring_bar`] for why we draw through
 /// `ProgressDrawTarget::term_like` rather than `ProgressDrawTarget::stderr()`.
-fn make_bar(label: &str, total: u64) -> ProgressBar {
+pub(crate) fn make_bar(label: &str, total: u64) -> ProgressBar {
     let target = ProgressDrawTarget::term_like(Box::new(Term::stderr()));
     let pb = ProgressBar::with_draw_target(Some(total), target);
     pb.set_style(

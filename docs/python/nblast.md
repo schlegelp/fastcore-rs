@@ -151,3 +151,56 @@ Both `nblast_allbyall` and `nblast` accept the same options:
 ::: navis_fastcore.synblast
 
 ::: navis_fastcore.Synapses
+
+## Extracting matches
+
+Once you have a score matrix, pulling the best matches back out of it is its own problem —
+the matrices are big (a few 100k on a side is tens of GB), so the extraction must not copy
+or transpose them. Three criteria, all reading the matrix at its native width (`float16`,
+`float32` or `float64`) and returning plain numpy arrays:
+
+```python
+import numpy as np
+import navis_fastcore as fastcore
+
+scores = fastcore.nblast_allbyall(dps)          # (n, n) float32
+
+# The 5 best targets per query, best first. `skip_self` drops the diagonal, which
+# would otherwise be every neuron's own top hit.
+indices, values = fastcore.top_matches(scores, 5, skip_self=True)
+
+# Everything above an absolute cutoff, or within 5% of each query's own best match.
+# Ragged, so returned CSR-style: query `q` owns indices[offsets[q]:offsets[q + 1]].
+offsets, indices, values = fastcore.matches_above(scores, threshold=0.5)
+offsets, indices, values = fastcore.matches_above(scores, percentage=0.05)
+```
+
+Expand the ragged result into a long-format table without a Python loop:
+
+```python
+counts = np.diff(offsets)
+query = np.repeat(np.arange(len(counts)), counts)
+rank = np.arange(len(indices)) - np.repeat(offsets[:-1], counts)
+```
+
+Notes:
+
+- `axis=1` gives matches per *target* instead of per query. It costs no more than `axis=0`
+  and does **not** transpose: the kernel walks column stripes of the row-major buffer, so
+  the matrix is read exactly once either way. Passing a transposed view (`scores.T`) is
+  likewise free.
+- The matrix is borrowed, never copied — including a `np.memmap`. Nothing here will cast
+  your dtype behind your back, so a strided view or an unsupported dtype raises rather
+  than silently materialising tens of GB.
+- `distances=True` if lower is better.
+- `NaN` is never a match. A query with no valid scores yields `-1`/`NaN` slots
+  (`top_matches`) or an empty group (`matches_above`).
+- Ties break toward the lower index, so results don't depend on the thread count.
+- `matches_above` counts before it allocates, so `max_matches` can refuse an over-broad
+  cutoff instead of exhausting the machine. Use `count_matches` to size a result first.
+
+::: navis_fastcore.top_matches
+
+::: navis_fastcore.matches_above
+
+::: navis_fastcore.count_matches

@@ -12,7 +12,10 @@ crate-type = ["cdylib"]
 
 [dependencies]
 rand = "0.8.4"
-numpy = "=0.27.0"
+# `half` gives numpy an `Element` impl for f16 (-> NPY_HALF), so a float16 score
+# matrix can be borrowed at its native width instead of being doubled to f32.
+numpy = { version = "=0.27.0", features = ["half"] }
+half = "2"
 ndarray = { version = "0.16", features = ["rayon"] }
 rayon = "1.8.0"
 num = "0.4.0"

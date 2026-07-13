@@ -27,6 +27,10 @@ console = "0.15"
 # name (`ndarray_017`). Cargo allows both versions to coexist in one crate.
 ndarray = { version = "0.16", features = ["rayon"] }
 ndarray_017 = { package = "ndarray", version = "0.17" }
+# `matches` reads score matrices at their native width. f16 matters there: it is what
+# `nblast(precision=16)` emits, and it halves the footprint of the very matrices that
+# module exists for. `num::Float` is not implemented for f16, hence the direct dep.
+half = "2"
 # NBLAST pipeline: shull (3D Delaunay) + aann-graph (neighbourhood-graph NN).
 shull = "0.3.0"
 aann-graph = "0.1.2"

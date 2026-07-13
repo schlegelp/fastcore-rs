@@ -15,6 +15,9 @@
 //! - [`mesh`] — connected components of a triangle mesh.
 //! - [`nblast`] / [`synblast`] — NBLAST neuron similarity, on skeleton points and
 //!   on synapses respectively.
+//! - [`matches`] — pulling the top matches back out of a score matrix (top-N, an
+//!   absolute threshold, or a percentage band around each group's best), without
+//!   copying or transposing a matrix that may be tens of GB.
 //!
 //! # Representing a tree
 //!
@@ -25,6 +28,8 @@
 pub mod nblast;
 
 pub mod synblast;
+
+pub mod matches;
 
 pub mod dag;
 

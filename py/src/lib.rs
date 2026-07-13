@@ -4,6 +4,9 @@ use pyo3::prelude::{pymodule, PyModule, PyResult, Python};
 mod nblast;
 use nblast::*;
 
+mod matches;
+use matches::*;
+
 mod dag;
 use dag::*;
 
@@ -60,6 +63,15 @@ mod fastcore {
 
     #[pymodule_export]
     use super::nblast_pairs_py;
+
+    #[pymodule_export]
+    use super::top_matches_py;
+
+    #[pymodule_export]
+    use super::matches_above_py;
+
+    #[pymodule_export]
+    use super::count_matches_py;
 
     #[pymodule_export]
     use super::synblast_allbyall_py;

@@ -20,7 +20,7 @@ use fastcore::synblast::{synblast_allbyall, synblast_query_target};
 /// thread, so the compute has to run off it. On an interrupt we flip `cancel` (which
 /// the NBLAST loops poll and short-circuit) and re-raise the caught exception; the
 /// worker's partially-filled, discarded result never reaches Python.
-fn run_interruptible<T, F>(py: Python<'_>, cancel: &AtomicBool, compute: F) -> PyResult<T>
+pub(crate) fn run_interruptible<T, F>(py: Python<'_>, cancel: &AtomicBool, compute: F) -> PyResult<T>
 where
     T: Send,
     F: FnOnce() -> T + Send,
