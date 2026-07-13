@@ -7,3 +7,4 @@ from .matches import *
 from .mesh import *
 from .topo import *
 from .cmtk import *
+from .elastix import *

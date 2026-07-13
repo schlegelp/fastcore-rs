@@ -20,13 +20,12 @@ def tiny_dir():
     return DATA / "tiny_warp.list"
 
 
-@pytest.fixture(scope="session")
-def golden():
-    """`streamxform`'s own output for 5 sample points, keyed by case."""
+def _read_golden(path):
+    """A `case,i,x,y,z` golden file -> {case: (N, 3) array}, rows ordered by `i`."""
     import numpy as np
 
     rows = np.genfromtxt(
-        DATA / "streamxform_golden.csv", delimiter=",", dtype=None, names=True, encoding="utf-8"
+        path, delimiter=",", dtype=None, names=True, encoding="utf-8"
     )
     out = {}
     for case in np.unique(rows["case"]):
@@ -34,3 +33,21 @@ def golden():
         sel = sel[np.argsort(sel["i"])]
         out[str(case)] = np.stack([sel["x"], sel["y"], sel["z"]], axis=1)
     return out
+
+
+@pytest.fixture(scope="session")
+def golden():
+    """`streamxform`'s own output for 5 sample points, keyed by case."""
+    return _read_golden(DATA / "streamxform_golden.csv")
+
+
+@pytest.fixture(scope="session")
+def elastix_dir():
+    """Synthetic elastix fixtures: one file per transform type, plus a Compose chain."""
+    return DATA / "elastix"
+
+
+@pytest.fixture(scope="session")
+def elastix_golden(elastix_dir):
+    """`transformix`'s own output for 41 sample points, keyed by case."""
+    return _read_golden(elastix_dir / "transformix_golden.csv")

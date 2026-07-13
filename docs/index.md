@@ -120,11 +120,17 @@ surface and how they spell it. `—` means that surface doesn't expose it direct
 | Capability | Rust (`fastcore`) | Python (`navis-fastcore`) | R (`nat.fastcore`) |
 |---|---|---|---|
 | Read a CMTK `*.list` registration | `cmtk::Registration::from_path`, `cmtk::Chain` | `CmtkRegistration`, `load_cmtk_registration` | `cmtk_read` |
-| Apply it to points (forward) | `cmtk::transform_points` | `CmtkRegistration.xform` | `cmtk_xform` |
-| Apply it to points (inverse) | `cmtk::inverse_transform_points` | `CmtkRegistration.xform_inv` | `cmtk_xform_inv` |
-| Registration properties | fields on `Registration` / `SplineWarp` | `.affine`, `.dims`, `.spacing` | `cmtk_affine`, `cmtk_domain`, `cmtk_dims`, `cmtk_spacing` |
+| Apply it to points (forward / inverse) | `cmtk::transform_points`, `cmtk::inverse_transform_points` | `CmtkRegistration.xform`, `.xform_inv` | `cmtk_xform`, `cmtk_xform_inv` |
+| CMTK registration properties | fields on `Registration` / `SplineWarp` | `.affine`, `.dims`, `.spacing` | `cmtk_affine`, `cmtk_domain`, `cmtk_dims`, `cmtk_spacing` |
+| Read an Elastix `TransformParameters` file | `elastix::ElastixTransform::from_path`, `elastix::Chain` | `ElastixTransform`, `load_elastix_transform` | `elastix_read` |
+| Apply it to points (forward / inverse) | `elastix::transform_points`, `elastix::inverse_transform_points` | `ElastixTransform.xform`, `.xform_inv` | `elastix_xform`, `elastix_xform_inv` |
+| Elastix transform properties | fields on `Linear` / `BSpline` | `.affine`, `.kinds`, `.grid_size`, `.grid_spacing`, `.grid_origin` | `elastix_affine`, `elastix_kinds`, `elastix_grid_size`, `elastix_grid_spacing`, `elastix_grid_origin` |
 
-CMTK does not need to be installed — see [CMTK transforms](python/cmtk.md).
+Neither CMTK nor Elastix needs to be installed — see [CMTK transforms](python/cmtk.md) and
+[Elastix transforms](python/elastix.md). The two differ in one important respect: outside the
+region it was fitted on, CMTK **fails** a point (we return `NaN`) while Elastix returns it
+**unchanged**. Each binding follows its own tool. Elastix additionally gains an **inverse**,
+which Elastix itself cannot compute.
 
 ### Python only
 

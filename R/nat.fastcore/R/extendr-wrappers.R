@@ -559,5 +559,35 @@ CmtkRegistration$xform_inv <- function(coords, transform, initial_guess, max_ite
 #' @export
 `[[.CmtkRegistration` <- `$.CmtkRegistration`
 
+ElastixTransformPtr <- new.env(parent = emptyenv())
+
+ElastixTransformPtr$load <- function(paths, invert) .Call(wrap__ElastixTransformPtr__load, paths, invert)
+
+ElastixTransformPtr$n_transforms <- function() .Call(wrap__ElastixTransformPtr__n_transforms, self)
+
+ElastixTransformPtr$paths <- function() .Call(wrap__ElastixTransformPtr__paths, self)
+
+ElastixTransformPtr$invertible <- function() .Call(wrap__ElastixTransformPtr__invertible, self)
+
+ElastixTransformPtr$kinds <- function() .Call(wrap__ElastixTransformPtr__kinds, self)
+
+ElastixTransformPtr$affine <- function() .Call(wrap__ElastixTransformPtr__affine, self)
+
+ElastixTransformPtr$grid_size <- function() .Call(wrap__ElastixTransformPtr__grid_size, self)
+
+ElastixTransformPtr$grid_spacing <- function() .Call(wrap__ElastixTransformPtr__grid_spacing, self)
+
+ElastixTransformPtr$grid_origin <- function() .Call(wrap__ElastixTransformPtr__grid_origin, self)
+
+ElastixTransformPtr$xform <- function(coords, out_of_bounds, n_cores, progress) .Call(wrap__ElastixTransformPtr__xform, self, coords, out_of_bounds, n_cores, progress)
+
+ElastixTransformPtr$xform_inv <- function(coords, out_of_bounds, initial_guess, max_iter, seed_iter, tolerance, accuracy, lattice_points, n_cores, progress) .Call(wrap__ElastixTransformPtr__xform_inv, self, coords, out_of_bounds, initial_guess, max_iter, seed_iter, tolerance, accuracy, lattice_points, n_cores, progress)
+
+#' @export
+`$.ElastixTransformPtr` <- function (self, name) { func <- ElastixTransformPtr[[name]]; environment(func) <- environment(); func }
+
+#' @export
+`[[.ElastixTransformPtr` <- `$.ElastixTransformPtr`
+
 
 # nolint end

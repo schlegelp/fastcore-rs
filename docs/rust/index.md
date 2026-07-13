@@ -15,6 +15,7 @@ translate each language's idioms into the core's index-based API.
 | `synblast` | Synapse-based NBLAST: `synblast_query_target`, `synblast_allbyall`. |
 | `matches` | Pulling the top matches back out of a score matrix — `top_matches` (top-N), `matches_above` (absolute threshold or a percentage band around each group's best), `count_matches` — without copying or transposing a matrix that may be tens of GB. |
 | `cmtk` | CMTK spatial transforms: `Registration::from_path` reads a `*.list` registration (12-DOF affine + cubic B-spline warp), `transform_points` / `inverse_transform_points` apply it. Matches CMTK's `streamxform` to ~4e-7 without needing CMTK installed. |
+| `elastix` | Elastix spatial transforms: `ElastixTransform::from_path` reads a `TransformParameters` file *and* the initial-transform chain hanging off it (affine / Euler / similarity / translation, plus cubic B-spline warps), `transform_points` / `inverse_transform_points` apply it. Matches `transformix` to 5e-7 without needing Elastix installed — and adds an inverse, which Elastix itself cannot compute. |
 
 See [Concepts › Rooted trees](../concepts/trees.md) and
 [Concepts › NBLAST](../concepts/nblast.md) for the ideas behind them, and the

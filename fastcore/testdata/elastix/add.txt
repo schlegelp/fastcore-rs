@@ -1,0 +1,30 @@
+(Transform "AffineTransform")
+(NumberOfParameters 12)
+(TransformParameters 0.98 0.05 0 0 1.03 -0.04 0.06 0 0.95 -1.5 2 0.75)
+(CenterOfRotationPoint 50 50 40)
+(InitialTransformParametersFileName "affine.txt")
+(UseBinaryFormatForTransformationParameters "false")
+(HowToCombineTransforms "Add")
+
+// Image specific
+(FixedImageDimension 3)
+(MovingImageDimension 3)
+(FixedInternalImagePixelType "float")
+(MovingInternalImagePixelType "float")
+(Size 100 100 80)
+(Index 0 0 0)
+(Spacing 1.0000000000 1.0000000000 1.0000000000)
+(Origin 0.0000000000 0.0000000000 0.0000000000)
+(Direction 1.0000000000 0.0000000000 0.0000000000 0.0000000000 1.0000000000 0.0000000000 0.0000000000 0.0000000000 1.0000000000)
+(UseDirectionCosines "true")
+
+// ResampleInterpolator specific
+(ResampleInterpolator "FinalBSplineInterpolator")
+(FinalBSplineInterpolationOrder 3)
+
+// Resampler specific
+(Resampler "DefaultResampler")
+(DefaultPixelValue 0.000000)
+(ResultImageFormat "nrrd")
+(ResultImagePixelType "float")
+(CompressResultImage "true")

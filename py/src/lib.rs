@@ -10,6 +10,9 @@ use matches::*;
 mod cmtk;
 use cmtk::*;
 
+mod elastix;
+use elastix::*;
+
 mod dag;
 use dag::*;
 
@@ -126,4 +129,7 @@ mod fastcore {
 
     #[pymodule_export]
     use super::PyCmtkRegistration;
+
+    #[pymodule_export]
+    use super::PyElastixTransform;
 }

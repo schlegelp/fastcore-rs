@@ -3,6 +3,7 @@ use ndarray::{Array1, Array2, ArrayView1};
 use std::collections::HashMap;
 
 use fastcore::cmtk::{self, Chain, InverseOpts, Mode, XformOpts};
+use fastcore::elastix::{self, OutOfBounds};
 use fastcore::nblast::{load_smat, load_smat_alpha, Opts, Smat};
 
 /// For each node ID in `parents` find its index in `nodes`.
@@ -1632,12 +1633,200 @@ impl CmtkRegistration {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Elastix transforms
+// ---------------------------------------------------------------------------
+
+fn elastix_oob(out_of_bounds: &str) -> OutOfBounds {
+    match out_of_bounds {
+        "identity" => OutOfBounds::Identity,
+        "nan" => OutOfBounds::Nan,
+        other => panic!("`out_of_bounds` must be \"identity\" or \"nan\", got \"{other}\""),
+    }
+}
+
+/// A loaded Elastix transform, or a chain of them.
+///
+/// Held behind an external pointer so the file is parsed **once** and then applied as often as
+/// you like -- BANC's `BANC_to_template.txt` is 56 MB, and `xform_brain`-style code applies a
+/// transform to every neuron in a dataset.
+pub struct ElastixTransformPtr {
+    chain: elastix::Chain,
+    paths: Vec<String>,
+}
+
+#[extendr]
+impl ElastixTransformPtr {
+    /// Read one or more `TransformParameters` files.
+    ///
+    /// `invert` is 0/1 per path (1 = traverse that transform backwards). It is an integer vector
+    /// rather than a logical one because extendr cannot take a `Vec<bool>` as input; the R wrapper
+    /// takes a proper logical and converts.
+    ///
+    /// NB: extendr 0.7 cannot turn an `Err` into an R condition -- it unwraps it -- and a panic
+    /// raised from an *associated* function (unlike a method) loses its payload, so R would only
+    /// ever see "User function panicked: load". `elastix_read()` therefore validates the paths
+    /// before we get here; this panic is the backstop for a corrupt file.
+    fn load(paths: Vec<String>, invert: Vec<i32>) -> Self {
+        let pbs: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
+        let inv: Vec<bool> = invert.iter().map(|&i| i != 0).collect();
+        let chain = elastix::Chain::from_paths(&pbs, &inv).unwrap_or_else(|e| panic!("{e}"));
+        ElastixTransformPtr { chain, paths }
+    }
+
+    fn n_transforms(&self) -> i32 {
+        self.chain.n_transforms() as i32
+    }
+
+    fn paths(&self) -> Vec<String> {
+        self.paths.clone()
+    }
+
+    /// Whether `xform_inv` can run at all. `elastix_xform_inv()` asks before calling in: extendr
+    /// cannot carry a Rust panic's message across to R (it arrives as the useless "User function
+    /// panicked: xform_inv"), so the check has to happen on the R side to produce a real error.
+    fn invertible(&self) -> bool {
+        self.chain.is_invertible()
+    }
+
+    /// The resolved step kinds of each transform, initial first, one string per transform
+    /// (e.g. `"linear+bspline"`).
+    fn kinds(&self) -> Vec<String> {
+        self.chain
+            .xforms
+            .iter()
+            .map(|x| {
+                x.steps
+                    .iter()
+                    .map(|(t, _)| t.kind())
+                    .collect::<Vec<_>>()
+                    .join("+")
+            })
+            .collect()
+    }
+
+    /// The 4x4 matrix of the first linear step of the first transform, or `NULL`.
+    fn affine(&self) -> Robj {
+        match self.chain.xforms[0].linear() {
+            Some(l) => coords_to_rmatrix(&l.as_array()),
+            None => NULL.into(),
+        }
+    }
+
+    /// Control-point grid size of every B-spline in the chain, as a `(k, 3)` matrix.
+    fn grid_size(&self) -> Robj {
+        let rows: Vec<[usize; 3]> = self
+            .chain
+            .xforms
+            .iter()
+            .flat_map(|x| x.splines())
+            .map(|s| s.size)
+            .collect();
+        if rows.is_empty() {
+            return NULL.into();
+        }
+        RArray::new_matrix(rows.len(), 3, |r, c| rows[r][c] as f64).into()
+    }
+
+    /// Control-point spacing of every B-spline in the chain, as a `(k, 3)` matrix.
+    fn grid_spacing(&self) -> Robj {
+        let rows: Vec<[f64; 3]> = self
+            .chain
+            .xforms
+            .iter()
+            .flat_map(|x| x.splines())
+            .map(|s| s.spacing)
+            .collect();
+        if rows.is_empty() {
+            return NULL.into();
+        }
+        RArray::new_matrix(rows.len(), 3, |r, c| rows[r][c]).into()
+    }
+
+    /// Control-point grid origin of every B-spline in the chain, as a `(k, 3)` matrix.
+    fn grid_origin(&self) -> Robj {
+        let rows: Vec<[f64; 3]> = self
+            .chain
+            .xforms
+            .iter()
+            .flat_map(|x| x.splines())
+            .map(|s| s.origin)
+            .collect();
+        if rows.is_empty() {
+            return NULL.into();
+        }
+        RArray::new_matrix(rows.len(), 3, |r, c| rows[r][c]).into()
+    }
+
+    fn xform(
+        &self,
+        coords: RMatrix<f64>,
+        out_of_bounds: &str,
+        n_cores: Option<i32>,
+        progress: bool,
+    ) -> Robj {
+        let pts = rmatrix_to_coords(&coords, "xyz");
+        let opts = elastix::XformOpts {
+            out_of_bounds: elastix_oob(out_of_bounds),
+            threads: n_cores.map(|n| n.max(1) as usize),
+            progress,
+            cancel: None,
+        };
+        let out = elastix::transform_points(&self.chain, pts.view(), opts)
+            .unwrap_or_else(|e| panic!("{e}"));
+        coords_to_rmatrix(&out)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn xform_inv(
+        &self,
+        coords: RMatrix<f64>,
+        out_of_bounds: &str,
+        initial_guess: Option<Robj>,
+        max_iter: i32,
+        seed_iter: i32,
+        tolerance: f64,
+        accuracy: f64,
+        lattice_points: i32,
+        n_cores: Option<i32>,
+        progress: bool,
+    ) -> Robj {
+        let pts = rmatrix_to_coords(&coords, "xyz");
+        // R's NULL arrives as Some(Robj::null()), not None.
+        let guess: Option<Array2<f64>> = initial_guess.filter(|g| !g.is_null()).map(|g| {
+            let m = <RMatrix<f64>>::try_from(g)
+                .expect("`initial_guess` must be a numeric (N, 3) matrix");
+            rmatrix_to_coords(&m, "initial_guess")
+        });
+        let opts = elastix::InverseOpts {
+            out_of_bounds: elastix_oob(out_of_bounds),
+            max_iter: max_iter.max(1) as usize,
+            seed_iter: seed_iter.max(0) as usize,
+            tolerance,
+            accuracy,
+            lattice_points: lattice_points.max(0) as usize,
+            threads: n_cores.map(|n| n.max(1) as usize),
+            progress,
+            cancel: None,
+        };
+        let out = elastix::inverse_transform_points(
+            &self.chain,
+            pts.view(),
+            guess.as_ref().map(|g| g.view()),
+            opts,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        coords_to_rmatrix(&out)
+    }
+}
+
 // Macro to generate exports.
 // This ensures exported functions are registered with R.
 // See corresponding C code in `entrypoint.c`.
 extendr_module! {
     mod nat_fastcore;
     impl CmtkRegistration;
+    impl ElastixTransformPtr;
     fn all_dists_to_root;
     fn node_indices;
     fn geodesic_distances;

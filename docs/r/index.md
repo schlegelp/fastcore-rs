@@ -131,6 +131,25 @@ xyzmatrix(n) <- cmtk_xform(reg, xyzmatrix(n))
 # reports them as FAILED
 ```
 
+**Elastix transforms** — see [Elastix transforms](../python/elastix.md) for the full story
+
+- `elastix_read`: read a `TransformParameters` file (its initial-transform chain is followed
+  automatically, however deep)
+- `elastix_xform` / `elastix_xform_inv`: apply it to points, forwards / backwards
+- `elastix_affine`, `elastix_kinds`, `elastix_grid_size`, `elastix_grid_spacing`,
+  `elastix_grid_origin`: properties
+
+Elastix itself does **not** need to be installed — no shelling out to `transformix`:
+
+```r
+xf <- elastix_read("TransformParameters.FixedFANC.txt")
+xyzmatrix(n) <- elastix_xform(xf, xyzmatrix(n))
+
+# NB the opposite convention to CMTK: points outside the control-point grid come back
+# *unchanged*, which is what Elastix does. Pass out_of_bounds = "nan" to see the boundary.
+back <- elastix_xform_inv(xf, xyzmatrix(n))   # Elastix itself cannot invert at all
+```
+
 ## Function reference
 
 Per-function documentation is generated from the package's roxygen docs and

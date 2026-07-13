@@ -21,6 +21,10 @@
 //! - [`cmtk`] — CMTK spatial transforms: read a `*.list` registration (affine +
 //!   cubic B-spline warp) and apply it to points, forward or inverse, without
 //!   shelling out to CMTK's `streamxform`.
+//! - [`elastix`] — Elastix spatial transforms: read a `TransformParameters` file
+//!   (and the initial-transform chain hanging off it) and apply it to points,
+//!   without shelling out to `transformix` — which also buys an inverse, something
+//!   Elastix itself cannot do.
 //!
 //! # Representing a tree
 //!
@@ -35,6 +39,8 @@ pub mod synblast;
 pub mod matches;
 
 pub mod cmtk;
+
+pub mod elastix;
 
 pub mod dag;
 
