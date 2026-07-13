@@ -107,6 +107,25 @@ surface and how they spell it. `—` means that surface doesn't expose it direct
 | synNBLAST (synapse-based) | `synblast::synblast_query_target`, `synblast::synblast_allbyall` | `synblast` | `synblast`, `synblast_allbyall` |
 | `limit_dist` heuristic for a scoring matrix | `nblast::Smat` | — (via `limit_dist="auto"`) | `smat_auto_limit` |
 
+### Match extraction
+
+| Capability | Rust (`fastcore`) | Python (`navis-fastcore`) | R (`nat.fastcore`) |
+|---|---|---|---|
+| Top-N matches per query | `matches::top_matches` | `top_matches` | — |
+| Matches above a threshold / percentage band | `matches::matches_above` | `matches_above` | — |
+| Count matches without allocating them | `matches::count_matches` | `count_matches` | — |
+
+### Spatial transforms
+
+| Capability | Rust (`fastcore`) | Python (`navis-fastcore`) | R (`nat.fastcore`) |
+|---|---|---|---|
+| Read a CMTK `*.list` registration | `cmtk::Registration::from_path`, `cmtk::Chain` | `CmtkRegistration`, `load_cmtk_registration` | `cmtk_read` |
+| Apply it to points (forward) | `cmtk::transform_points` | `CmtkRegistration.xform` | `cmtk_xform` |
+| Apply it to points (inverse) | `cmtk::inverse_transform_points` | `CmtkRegistration.xform_inv` | `cmtk_xform_inv` |
+| Registration properties | fields on `Registration` / `SplineWarp` | `.affine`, `.dims`, `.spacing` | `cmtk_affine`, `cmtk_domain`, `cmtk_dims`, `cmtk_spacing` |
+
+CMTK does not need to be installed — see [CMTK transforms](python/cmtk.md).
+
 ### Python only
 
 `navis_fastcore.wrappers.csgraph` provides drop-in replacements for some

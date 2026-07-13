@@ -529,5 +529,35 @@ synblast_allbyall <- function(points, types, smat_values, dist_edges, dot_edges,
 #' @export
 synblast <- function(q_points, q_types, t_points, t_types, smat_values, dist_edges, dot_edges, normalize, n_cores, precision, progress) .Call(wrap__synblast, q_points, q_types, t_points, t_types, smat_values, dist_edges, dot_edges, normalize, n_cores, precision, progress)
 
+CmtkRegistration <- new.env(parent = emptyenv())
+
+CmtkRegistration$load <- function(paths, invert) .Call(wrap__CmtkRegistration__load, paths, invert)
+
+CmtkRegistration$n_registrations <- function() .Call(wrap__CmtkRegistration__n_registrations, self)
+
+CmtkRegistration$paths <- function() .Call(wrap__CmtkRegistration__paths, self)
+
+CmtkRegistration$versions <- function() .Call(wrap__CmtkRegistration__versions, self)
+
+CmtkRegistration$has_spline <- function() .Call(wrap__CmtkRegistration__has_spline, self)
+
+CmtkRegistration$affine <- function() .Call(wrap__CmtkRegistration__affine, self)
+
+CmtkRegistration$dims <- function() .Call(wrap__CmtkRegistration__dims, self)
+
+CmtkRegistration$spacing <- function() .Call(wrap__CmtkRegistration__spacing, self)
+
+CmtkRegistration$domain <- function() .Call(wrap__CmtkRegistration__domain, self)
+
+CmtkRegistration$xform <- function(coords, transform, allow_extrapolation, fallback_to_affine, n_cores, progress) .Call(wrap__CmtkRegistration__xform, self, coords, transform, allow_extrapolation, fallback_to_affine, n_cores, progress)
+
+CmtkRegistration$xform_inv <- function(coords, transform, initial_guess, max_iter, tolerance, accuracy, clamp_to_domain, n_cores, progress) .Call(wrap__CmtkRegistration__xform_inv, self, coords, transform, initial_guess, max_iter, tolerance, accuracy, clamp_to_domain, n_cores, progress)
+
+#' @export
+`$.CmtkRegistration` <- function (self, name) { func <- CmtkRegistration[[name]]; environment(func) <- environment(); func }
+
+#' @export
+`[[.CmtkRegistration` <- `$.CmtkRegistration`
+
 
 # nolint end

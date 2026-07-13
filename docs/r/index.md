@@ -113,6 +113,24 @@ healed = heal_skeleton(parents, s$d$X, s$d$Y, s$d$Z, method="ALL",
 - `synblast` / `synblast_allbyall`: synapse-based NBLAST
 - `smat_auto_limit`: the `limit_dist="auto"` value for a scoring matrix
 
+**CMTK transforms** — see [CMTK transforms](../python/cmtk.md) for the full story
+
+- `cmtk_read`: read a CMTK `.list` registration (or a chain of them)
+- `cmtk_xform` / `cmtk_xform_inv`: apply it to points, forwards / backwards
+- `cmtk_affine`, `cmtk_domain`, `cmtk_dims`, `cmtk_spacing`, `cmtk_versions`: properties
+
+CMTK itself does **not** need to be installed — no shelling out to `streamxform`:
+
+```r
+reg <- cmtk_read("JFRC2_FCWB.list")
+
+n <- Cell07PNs[[1]]
+xyzmatrix(n) <- cmtk_xform(reg, xyzmatrix(n))
+
+# points outside the registration's domain come back as NaN, exactly as CMTK
+# reports them as FAILED
+```
+
 ## Function reference
 
 Per-function documentation is generated from the package's roxygen docs and

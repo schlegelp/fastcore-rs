@@ -22,6 +22,7 @@ nav = [
     { "Mesh" = "python/mesh.md" },
     { "Healing" = "python/healing.md" },
     { "NBLAST" = "python/nblast.md" },
+    { "CMTK transforms" = "python/cmtk.md" },
     { "Scipy wrappers" = "python/wrappers.md" },
   ] },
   { "R (nat.fastcore)" = "r/index.md" },

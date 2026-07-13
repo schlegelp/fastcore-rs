@@ -2,6 +2,7 @@ use extendr_api::prelude::*;
 use ndarray::{Array1, Array2, ArrayView1};
 use std::collections::HashMap;
 
+use fastcore::cmtk::{self, Chain, InverseOpts, Mode, XformOpts};
 use fastcore::nblast::{load_smat, load_smat_alpha, Opts, Smat};
 
 /// For each node ID in `parents` find its index in `nodes`.
@@ -1442,11 +1443,201 @@ pub fn synblast(
     flat_to_rmatrix(&flat, nq, nt)
 }
 
+// ---------------------------------------------------------------------------
+// CMTK transforms
+// ---------------------------------------------------------------------------
+
+/// An `(N, 3)` R matrix -> row-major coordinates. R matrices are column-major.
+fn rmatrix_to_coords(m: &RMatrix<f64>, arg: &str) -> Array2<f64> {
+    assert!(
+        m.ncols() == 3,
+        "`{arg}` must be an (N, 3) matrix of 3D coordinates, got {} column(s)",
+        m.ncols()
+    );
+    let nr = m.nrows();
+    let d = m.data();
+    Array2::from_shape_fn((nr, 3), |(i, j)| d[j * nr + i])
+}
+
+fn coords_to_rmatrix(arr: &Array2<f64>) -> Robj {
+    RArray::new_matrix(arr.nrows(), arr.ncols(), |r, c| arr[[r, c]]).into()
+}
+
+fn cmtk_mode(transform: &str) -> Mode {
+    match transform {
+        "warp" => Mode::Warp,
+        "affine" => Mode::Affine,
+        other => panic!("`transform` must be \"warp\" or \"affine\", got \"{other}\""),
+    }
+}
+
+/// A loaded CMTK registration, or a chain of them.
+///
+/// Held behind an external pointer so the registration is parsed **once** and then applied
+/// as often as you like — a real registration is ~17k control points read from a 760 KB
+/// file, and `xform_brain`-style code applies it to every neuron in a dataset.
+pub struct CmtkRegistration {
+    chain: Chain,
+    paths: Vec<String>,
+}
+
+#[extendr]
+impl CmtkRegistration {
+    /// Read one or more registrations.
+    ///
+    /// `invert` is 0/1 per path (1 = traverse that registration backwards). It is an integer
+    /// vector rather than a logical one because extendr cannot take a `Vec<bool>` as input;
+    /// the R wrapper takes a proper logical and converts.
+    /// NB: extendr 0.7 cannot turn an `Err` into an R condition -- it unwraps it -- and a
+    /// panic raised from an *associated* function (unlike a method) loses its payload, so R
+    /// would only ever see "User function panicked: load". `cmtk_read()` therefore validates
+    /// the paths before we get here; this panic is the backstop for a corrupt file.
+    fn load(paths: Vec<String>, invert: Vec<i32>) -> Self {
+        let pbs: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
+        let inv: Vec<bool> = invert.iter().map(|&i| i != 0).collect();
+        let chain = Chain::from_paths(&pbs, &inv).unwrap_or_else(|e| panic!("{e}"));
+        CmtkRegistration { chain, paths }
+    }
+
+    fn n_registrations(&self) -> i32 {
+        self.chain.n_registrations() as i32
+    }
+
+    fn paths(&self) -> Vec<String> {
+        self.paths.clone()
+    }
+
+    fn versions(&self) -> Vec<String> {
+        self.chain.regs.iter().map(|r| r.version.clone()).collect()
+    }
+
+    fn has_spline(&self) -> Vec<bool> {
+        self.chain.regs.iter().map(|r| r.spline.is_some()).collect()
+    }
+
+    /// The 4x4 affine of the first registration, or `NULL` if it has none.
+    fn affine(&self) -> Robj {
+        match self.chain.regs[0].affine {
+            Some(a) => coords_to_rmatrix(&a.as_array()),
+            None => NULL.into(),
+        }
+    }
+
+    /// Control-point lattice dimensions of each spline warp, as a `(k, 3)` matrix.
+    fn dims(&self) -> Robj {
+        let rows: Vec<[usize; 3]> = self
+            .chain
+            .regs
+            .iter()
+            .filter_map(|r| r.spline.as_ref().map(|s| s.dims))
+            .collect();
+        if rows.is_empty() {
+            return NULL.into();
+        }
+        RArray::new_matrix(rows.len(), 3, |r, c| rows[r][c] as f64).into()
+    }
+
+    /// Control-point spacing of each spline warp, as a `(k, 3)` matrix.
+    fn spacing(&self) -> Robj {
+        let rows: Vec<[f64; 3]> = self
+            .chain
+            .regs
+            .iter()
+            .filter_map(|r| r.spline.as_ref().map(|s| s.spacing))
+            .collect();
+        if rows.is_empty() {
+            return NULL.into();
+        }
+        RArray::new_matrix(rows.len(), 3, |r, c| rows[r][c]).into()
+    }
+
+    /// The domain box of each spline warp, as a `(k, 3)` matrix. Points outside `[0, domain]`
+    /// cannot be transformed — CMTK reports them as FAILED and we return `NaN`.
+    fn domain(&self) -> Robj {
+        let rows: Vec<[f64; 3]> = self
+            .chain
+            .regs
+            .iter()
+            .filter_map(|r| r.spline.as_ref().map(|s| s.domain))
+            .collect();
+        if rows.is_empty() {
+            return NULL.into();
+        }
+        RArray::new_matrix(rows.len(), 3, |r, c| rows[r][c]).into()
+    }
+
+    fn xform(
+        &self,
+        coords: RMatrix<f64>,
+        transform: &str,
+        allow_extrapolation: bool,
+        fallback_to_affine: bool,
+        n_cores: Option<i32>,
+        progress: bool,
+    ) -> Robj {
+        let pts = rmatrix_to_coords(&coords, "xyz");
+        let opts = XformOpts {
+            mode: cmtk_mode(transform),
+            allow_extrapolation,
+            fallback_to_affine,
+            threads: n_cores.map(|n| n.max(1) as usize),
+            progress,
+            cancel: None,
+        };
+        let out = cmtk::transform_points(&self.chain, pts.view(), opts)
+            .unwrap_or_else(|e| panic!("{e}"));
+        coords_to_rmatrix(&out)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn xform_inv(
+        &self,
+        coords: RMatrix<f64>,
+        transform: &str,
+        initial_guess: Option<Robj>,
+        max_iter: i32,
+        tolerance: f64,
+        accuracy: f64,
+        clamp_to_domain: bool,
+        n_cores: Option<i32>,
+        progress: bool,
+    ) -> Robj {
+        let pts = rmatrix_to_coords(&coords, "xyz");
+        // R's NULL arrives as Some(Robj::null()), not None -- see `robj_to_coords`.
+        let guess: Option<Array2<f64>> = initial_guess
+            .filter(|g| !g.is_null())
+            .map(|g| {
+                let m = <RMatrix<f64>>::try_from(g)
+                    .expect("`initial_guess` must be a numeric (N, 3) matrix");
+                rmatrix_to_coords(&m, "initial_guess")
+            });
+        let opts = InverseOpts {
+            mode: cmtk_mode(transform),
+            max_iter: max_iter.max(1) as usize,
+            tolerance,
+            accuracy,
+            clamp_to_domain,
+            threads: n_cores.map(|n| n.max(1) as usize),
+            progress,
+            cancel: None,
+        };
+        let out = cmtk::inverse_transform_points(
+            &self.chain,
+            pts.view(),
+            guess.as_ref().map(|g| g.view()),
+            opts,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        coords_to_rmatrix(&out)
+    }
+}
+
 // Macro to generate exports.
 // This ensures exported functions are registered with R.
 // See corresponding C code in `entrypoint.c`.
 extendr_module! {
     mod nat_fastcore;
+    impl CmtkRegistration;
     fn all_dists_to_root;
     fn node_indices;
     fn geodesic_distances;

@@ -7,6 +7,9 @@ use nblast::*;
 mod matches;
 use matches::*;
 
+mod cmtk;
+use cmtk::*;
+
 mod dag;
 use dag::*;
 
@@ -120,4 +123,7 @@ mod fastcore {
 
     #[pymodule_export]
     use super::reroot_rewire_py;
+
+    #[pymodule_export]
+    use super::PyCmtkRegistration;
 }

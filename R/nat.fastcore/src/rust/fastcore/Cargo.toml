@@ -34,3 +34,7 @@ half = "2"
 # NBLAST pipeline: shull (3D Delaunay) + aann-graph (neighbourhood-graph NN).
 shull = "0.3.0"
 aann-graph = "0.1.2"
+# CMTK registrations are commonly distributed gzipped (a `registration` file that is
+# actually gzip, hence the magic-byte sniff in cmtk.rs). Default features give the pure-Rust
+# miniz_oxide backend: no C toolchain, no system zlib, so the R tarball still builds anywhere.
+flate2 = "1"
