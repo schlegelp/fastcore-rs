@@ -10,6 +10,8 @@
 #' @useDynLib nat.fastcore, .registration = TRUE
 NULL
 
+probe_invertible_raw <- function(path) .Call(wrap__probe_invertible_raw, path)
+
 #' Compute all distances to root.
 #'
 #' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
@@ -531,7 +533,7 @@ synblast <- function(q_points, q_types, t_points, t_types, smat_values, dist_edg
 
 CmtkRegistration <- new.env(parent = emptyenv())
 
-CmtkRegistration$load <- function(paths, invert) .Call(wrap__CmtkRegistration__load, paths, invert)
+CmtkRegistration$load <- function(paths) .Call(wrap__CmtkRegistration__load, paths)
 
 CmtkRegistration$n_registrations <- function() .Call(wrap__CmtkRegistration__n_registrations, self)
 
@@ -549,9 +551,9 @@ CmtkRegistration$spacing <- function() .Call(wrap__CmtkRegistration__spacing, se
 
 CmtkRegistration$domain <- function() .Call(wrap__CmtkRegistration__domain, self)
 
-CmtkRegistration$xform <- function(coords, transform, allow_extrapolation, fallback_to_affine, n_cores, progress) .Call(wrap__CmtkRegistration__xform, self, coords, transform, allow_extrapolation, fallback_to_affine, n_cores, progress)
+CmtkRegistration$xform <- function(coords, transform, allow_extrapolation, fallback_to_affine, invert, n_cores, progress) .Call(wrap__CmtkRegistration__xform, self, coords, transform, allow_extrapolation, fallback_to_affine, invert, n_cores, progress)
 
-CmtkRegistration$xform_inv <- function(coords, transform, initial_guess, max_iter, tolerance, accuracy, clamp_to_domain, n_cores, progress) .Call(wrap__CmtkRegistration__xform_inv, self, coords, transform, initial_guess, max_iter, tolerance, accuracy, clamp_to_domain, n_cores, progress)
+CmtkRegistration$xform_inv <- function(coords, transform, initial_guess, max_iter, tolerance, accuracy, clamp_to_domain, fallback_to_affine, invert, n_cores, progress) .Call(wrap__CmtkRegistration__xform_inv, self, coords, transform, initial_guess, max_iter, tolerance, accuracy, clamp_to_domain, fallback_to_affine, invert, n_cores, progress)
 
 #' @export
 `$.CmtkRegistration` <- function (self, name) { func <- CmtkRegistration[[name]]; environment(func) <- environment(); func }
@@ -561,7 +563,7 @@ CmtkRegistration$xform_inv <- function(coords, transform, initial_guess, max_ite
 
 ElastixTransformPtr <- new.env(parent = emptyenv())
 
-ElastixTransformPtr$load <- function(paths, invert) .Call(wrap__ElastixTransformPtr__load, paths, invert)
+ElastixTransformPtr$load <- function(paths) .Call(wrap__ElastixTransformPtr__load, paths)
 
 ElastixTransformPtr$n_transforms <- function() .Call(wrap__ElastixTransformPtr__n_transforms, self)
 
@@ -579,9 +581,9 @@ ElastixTransformPtr$grid_spacing <- function() .Call(wrap__ElastixTransformPtr__
 
 ElastixTransformPtr$grid_origin <- function() .Call(wrap__ElastixTransformPtr__grid_origin, self)
 
-ElastixTransformPtr$xform <- function(coords, out_of_bounds, n_cores, progress) .Call(wrap__ElastixTransformPtr__xform, self, coords, out_of_bounds, n_cores, progress)
+ElastixTransformPtr$xform <- function(coords, out_of_bounds, invert, n_cores, progress) .Call(wrap__ElastixTransformPtr__xform, self, coords, out_of_bounds, invert, n_cores, progress)
 
-ElastixTransformPtr$xform_inv <- function(coords, out_of_bounds, initial_guess, max_iter, seed_iter, tolerance, accuracy, lattice_points, n_cores, progress) .Call(wrap__ElastixTransformPtr__xform_inv, self, coords, out_of_bounds, initial_guess, max_iter, seed_iter, tolerance, accuracy, lattice_points, n_cores, progress)
+ElastixTransformPtr$xform_inv <- function(coords, out_of_bounds, initial_guess, max_iter, seed_iter, tolerance, accuracy, lattice_points, invert, n_cores, progress) .Call(wrap__ElastixTransformPtr__xform_inv, self, coords, out_of_bounds, initial_guess, max_iter, seed_iter, tolerance, accuracy, lattice_points, invert, n_cores, progress)
 
 #' @export
 `$.ElastixTransformPtr` <- function (self, name) { func <- ElastixTransformPtr[[name]]; environment(func) <- environment(); func }

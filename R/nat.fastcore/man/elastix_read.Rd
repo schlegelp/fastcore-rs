@@ -4,14 +4,15 @@
 \alias{elastix_read}
 \title{Read an Elastix transform}
 \usage{
-elastix_read(path, invert = FALSE)
+elastix_read(path)
 }
 \arguments{
 \item{path}{Path to a \code{TransformParameters.*.txt} file. Pass several to build a chain, applied
-in order: \code{xyz -> path[1] -> path[2] -> ... -> output}.}
+in order: \code{xyz -> path[1] -> path[2] -> ... -> output}.
 
-\item{invert}{Logical, recycled over \code{path}. \code{TRUE} traverses that transform backwards. Useful
-when routing through a bridging graph, where an edge may be traversed either way.}
+Direction is \strong{not} fixed here. It is chosen per call -- see the \code{invert} argument of
+\code{\link[=elastix_xform]{elastix_xform()}}, and \code{\link[=elastix_xform_inv]{elastix_xform_inv()}} -- so one object serves every direction and the
+file is parsed only once. That is worth caring about: real warps run to tens of megabytes.}
 }
 \value{
 An object of class \code{elastix_transform}.

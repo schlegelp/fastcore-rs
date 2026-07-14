@@ -13,6 +13,8 @@ cmtk_xform_inv(
   tolerance = 1e-09,
   accuracy = 0.001,
   clamp_to_domain = TRUE,
+  fallback_to_affine = FALSE,
+  invert = FALSE,
   n_cores = NULL,
   progress = FALSE
 )
@@ -43,6 +45,13 @@ otherwise the row is \code{NaN}.}
 \strong{This is what makes the result agree with CMTK.} Turning it off finds preimages
 that lie outside the image domain, where \code{streamxform} reports failure -- so you
 will get finite numbers where CMTK gives you none.}
+
+\item{fallback_to_affine}{Replace rows the solver could not land with the \emph{inverse} affine
+result rather than \code{NaN} -- the mirror of the same argument on \code{\link[=cmtk_xform]{cmtk_xform()}}, with the
+same \code{"chain"} (default) and \code{"hop"} semantics.}
+
+\item{invert}{The same per-hop flags as on \code{\link[=cmtk_xform]{cmtk_xform()}}, composed with this whole-chain
+inversion: hop \code{i} runs \emph{forwards} here exactly when \code{invert[i]} is \code{TRUE}.}
 
 \item{n_cores}{Number of threads. \code{NULL} (default) uses all cores.}
 

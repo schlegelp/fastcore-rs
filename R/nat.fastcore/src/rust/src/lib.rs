@@ -2,7 +2,7 @@ use extendr_api::prelude::*;
 use ndarray::{Array1, Array2, ArrayView1};
 use std::collections::HashMap;
 
-use fastcore::cmtk::{self, Chain, InverseOpts, Mode, XformOpts};
+use fastcore::cmtk::{self, Chain, Fallback, InverseOpts, Mode, XformOpts};
 use fastcore::elastix::{self, OutOfBounds};
 use fastcore::nblast::{load_smat, load_smat_alpha, Opts, Smat};
 
@@ -1464,12 +1464,34 @@ fn coords_to_rmatrix(arr: &Array2<f64>) -> Robj {
     RArray::new_matrix(arr.nrows(), arr.ncols(), |r, c| arr[[r, c]]).into()
 }
 
+/// The R wrapper has already turned `FALSE`/`TRUE`/`"chain"`/`"hop"` into one of these.
+fn cmtk_fallback(fallback: &str) -> Fallback {
+    match fallback {
+        "none" => Fallback::None,
+        "chain" => Fallback::Chain,
+        "hop" => Fallback::Hop,
+        other => panic!(
+            "`fallback_to_affine` must be FALSE, TRUE, \"chain\" or \"hop\", got \"{other}\""
+        ),
+    }
+}
+
 fn cmtk_mode(transform: &str) -> Mode {
     match transform {
         "warp" => Mode::Warp,
         "affine" => Mode::Affine,
         other => panic!("`transform` must be \"warp\" or \"affine\", got \"{other}\""),
     }
+}
+
+/// Per-hop direction flags as they cross from R: 0/1 per hop, empty for the all-forward
+/// default. An integer vector rather than a logical one because extendr cannot take a
+/// `Vec<bool>` as *input*; the R wrappers take a proper logical and convert.
+fn invert_flags(invert: Vec<i32>) -> Option<Vec<bool>> {
+    if invert.is_empty() {
+        return None;
+    }
+    Some(invert.iter().map(|&i| i != 0).collect())
 }
 
 /// A loaded CMTK registration, or a chain of them.
@@ -1486,17 +1508,16 @@ pub struct CmtkRegistration {
 impl CmtkRegistration {
     /// Read one or more registrations.
     ///
-    /// `invert` is 0/1 per path (1 = traverse that registration backwards). It is an integer
-    /// vector rather than a logical one because extendr cannot take a `Vec<bool>` as input;
-    /// the R wrapper takes a proper logical and converts.
+    /// The pointer holds only the *parse*; direction is passed per call to `xform`/`xform_inv`,
+    /// so one object serves every direction.
+    ///
     /// NB: extendr 0.7 cannot turn an `Err` into an R condition -- it unwraps it -- and a
     /// panic raised from an *associated* function (unlike a method) loses its payload, so R
     /// would only ever see "User function panicked: load". `cmtk_read()` therefore validates
     /// the paths before we get here; this panic is the backstop for a corrupt file.
-    fn load(paths: Vec<String>, invert: Vec<i32>) -> Self {
+    fn load(paths: Vec<String>) -> Self {
         let pbs: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
-        let inv: Vec<bool> = invert.iter().map(|&i| i != 0).collect();
-        let chain = Chain::from_paths(&pbs, &inv).unwrap_or_else(|e| panic!("{e}"));
+        let chain = Chain::from_paths(&pbs).unwrap_or_else(|e| panic!("{e}"));
         CmtkRegistration { chain, paths }
     }
 
@@ -1567,20 +1588,24 @@ impl CmtkRegistration {
         RArray::new_matrix(rows.len(), 3, |r, c| rows[r][c]).into()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn xform(
         &self,
         coords: RMatrix<f64>,
         transform: &str,
         allow_extrapolation: bool,
-        fallback_to_affine: bool,
+        fallback_to_affine: &str,
+        invert: Vec<i32>,
         n_cores: Option<i32>,
         progress: bool,
     ) -> Robj {
         let pts = rmatrix_to_coords(&coords, "xyz");
+        let flags = invert_flags(invert);
         let opts = XformOpts {
             mode: cmtk_mode(transform),
             allow_extrapolation,
-            fallback_to_affine,
+            fallback: cmtk_fallback(fallback_to_affine),
+            invert: flags.as_deref(),
             threads: n_cores.map(|n| n.max(1) as usize),
             progress,
             cancel: None,
@@ -1600,6 +1625,8 @@ impl CmtkRegistration {
         tolerance: f64,
         accuracy: f64,
         clamp_to_domain: bool,
+        fallback_to_affine: &str,
+        invert: Vec<i32>,
         n_cores: Option<i32>,
         progress: bool,
     ) -> Robj {
@@ -1612,12 +1639,15 @@ impl CmtkRegistration {
                     .expect("`initial_guess` must be a numeric (N, 3) matrix");
                 rmatrix_to_coords(&m, "initial_guess")
             });
+        let flags = invert_flags(invert);
         let opts = InverseOpts {
             mode: cmtk_mode(transform),
             max_iter: max_iter.max(1) as usize,
             tolerance,
             accuracy,
             clamp_to_domain,
+            fallback: cmtk_fallback(fallback_to_affine),
+            invert: flags.as_deref(),
             threads: n_cores.map(|n| n.max(1) as usize),
             progress,
             cancel: None,
@@ -1645,6 +1675,21 @@ fn elastix_oob(out_of_bounds: &str) -> OutOfBounds {
     }
 }
 
+// Whether an Elastix transform can be inverted, without reading its coefficients.
+//
+// A file is not invertible exactly when some step in its chain combines via `Add`. That key sits
+// *after* a coefficient array that can run to 56 MB, so answering it used to cost a full parse.
+// This skips only the numbers: ~20x faster, ~200x on the big ones.
+//
+// Deliberately NOT a `///` doc comment: rextendr turns those into roxygen, which would generate an
+// .Rd for an internal function. The exported `elastix_probe_invertible()` wraps this and validates
+// the path R-side first (extendr cannot carry a panic's message across to R), so the panic here is
+// the backstop for a corrupt file.
+#[extendr]
+fn probe_invertible_raw(path: &str) -> bool {
+    elastix::probe_invertible(std::path::Path::new(path)).unwrap_or_else(|e| panic!("{e}"))
+}
+
 /// A loaded Elastix transform, or a chain of them.
 ///
 /// Held behind an external pointer so the file is parsed **once** and then applied as often as
@@ -1659,18 +1704,17 @@ pub struct ElastixTransformPtr {
 impl ElastixTransformPtr {
     /// Read one or more `TransformParameters` files.
     ///
-    /// `invert` is 0/1 per path (1 = traverse that transform backwards). It is an integer vector
-    /// rather than a logical one because extendr cannot take a `Vec<bool>` as input; the R wrapper
-    /// takes a proper logical and converts.
+    /// The pointer holds only the *parse*; direction is passed per call to `xform`/`xform_inv`,
+    /// so one object serves every direction. That is worth caring about here: BANC's warp is
+    /// 56 MB, and re-reading it just to walk it backwards would be absurd.
     ///
     /// NB: extendr 0.7 cannot turn an `Err` into an R condition -- it unwraps it -- and a panic
     /// raised from an *associated* function (unlike a method) loses its payload, so R would only
     /// ever see "User function panicked: load". `elastix_read()` therefore validates the paths
     /// before we get here; this panic is the backstop for a corrupt file.
-    fn load(paths: Vec<String>, invert: Vec<i32>) -> Self {
+    fn load(paths: Vec<String>) -> Self {
         let pbs: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
-        let inv: Vec<bool> = invert.iter().map(|&i| i != 0).collect();
-        let chain = elastix::Chain::from_paths(&pbs, &inv).unwrap_or_else(|e| panic!("{e}"));
+        let chain = elastix::Chain::from_paths(&pbs).unwrap_or_else(|e| panic!("{e}"));
         ElastixTransformPtr { chain, paths }
     }
 
@@ -1686,7 +1730,7 @@ impl ElastixTransformPtr {
     /// cannot carry a Rust panic's message across to R (it arrives as the useless "User function
     /// panicked: xform_inv"), so the check has to happen on the R side to produce a real error.
     fn invertible(&self) -> bool {
-        self.chain.is_invertible()
+        self.chain.is_invertible(None)
     }
 
     /// The resolved step kinds of each transform, initial first, one string per transform
@@ -1762,12 +1806,15 @@ impl ElastixTransformPtr {
         &self,
         coords: RMatrix<f64>,
         out_of_bounds: &str,
+        invert: Vec<i32>,
         n_cores: Option<i32>,
         progress: bool,
     ) -> Robj {
         let pts = rmatrix_to_coords(&coords, "xyz");
+        let flags = invert_flags(invert);
         let opts = elastix::XformOpts {
             out_of_bounds: elastix_oob(out_of_bounds),
+            invert: flags.as_deref(),
             threads: n_cores.map(|n| n.max(1) as usize),
             progress,
             cancel: None,
@@ -1788,6 +1835,7 @@ impl ElastixTransformPtr {
         tolerance: f64,
         accuracy: f64,
         lattice_points: i32,
+        invert: Vec<i32>,
         n_cores: Option<i32>,
         progress: bool,
     ) -> Robj {
@@ -1798,6 +1846,7 @@ impl ElastixTransformPtr {
                 .expect("`initial_guess` must be a numeric (N, 3) matrix");
             rmatrix_to_coords(&m, "initial_guess")
         });
+        let flags = invert_flags(invert);
         let opts = elastix::InverseOpts {
             out_of_bounds: elastix_oob(out_of_bounds),
             max_iter: max_iter.max(1) as usize,
@@ -1805,6 +1854,7 @@ impl ElastixTransformPtr {
             tolerance,
             accuracy,
             lattice_points: lattice_points.max(0) as usize,
+            invert: flags.as_deref(),
             threads: n_cores.map(|n| n.max(1) as usize),
             progress,
             cancel: None,
@@ -1827,6 +1877,7 @@ extendr_module! {
     mod nat_fastcore;
     impl CmtkRegistration;
     impl ElastixTransformPtr;
+    fn probe_invertible_raw;
     fn all_dists_to_root;
     fn node_indices;
     fn geodesic_distances;

@@ -14,6 +14,7 @@ elastix_xform_inv(
   tolerance = 1e-09,
   accuracy = 0.001,
   lattice_points = 16000L,
+  invert = FALSE,
   n_cores = NULL,
   progress = FALSE
 )
@@ -48,6 +49,9 @@ units. Otherwise the row is \code{NaN}.}
 \item{lattice_points}{Size of the global seed lattice -- the last-resort start for the few
 points the cheap seeds fail on. Built once per call and consulted only by points that have
 already failed. Set to 0 to disable.}
+
+\item{invert}{The same per-hop flags as on \code{\link[=elastix_xform]{elastix_xform()}}, composed with this whole-chain
+inversion: hop \code{i} runs \emph{forwards} here exactly when \code{invert[i]} is \code{TRUE}.}
 
 \item{n_cores}{Cap the thread pool. \code{NULL} uses all cores.}
 

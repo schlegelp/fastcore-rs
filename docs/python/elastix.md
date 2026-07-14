@@ -23,18 +23,44 @@ is followed recursively, resolved relative to *that file's own directory*. BANC'
 (`3_Bspline_fine → 2_Bspline_coarse → 1_affine → 0_manual_affine`) and loads from the outermost
 file alone.
 
+Elastix records that name **as it was on the machine that ran the registration** — routinely an
+absolute path like `/home/someone/scratch/TransformParameters.0.txt`, which of course is not
+there when you receive the files. `transformix` simply fails. If the recorded path does not
+resolve, we look for its **basename in the naming file's own directory** instead, which is what
+`navis`'s `copy_files` achieves by copying everything into one place. A path that *does* resolve
+still wins, so this can only rescue a lookup that would otherwise have failed.
+
 Supported transform types: `AffineTransform`, `TranslationTransform`, `EulerTransform`,
 `SimilarityTransform`, and `BSplineTransform` / `RecursiveBSplineTransform`. Both
 `HowToCombineTransforms` modes (`Compose` and `Add`) work going forwards.
 
-## Chaining
+## Chaining, and direction
 
-Pass a list to compose transforms, applied left to right. `invert` traverses one backwards —
-what you need when routing through a bridging graph, where an edge may be walked either way.
+Pass a list to compose transforms, applied left to right.
+
+**Direction is chosen per call, not per object.** The transform you load holds only the
+*parse*, so one instance serves every direction. That is worth caring about here: BANC's
+`BANC_to_template.txt` is **56 MB**, and re-reading it just to walk it backwards would be
+absurd.
 
 ```python
-chain = fastcore.ElastixTransform(["A_to_B.txt", "B_to_C.txt"])                    # A -> B -> C
-mixed = fastcore.ElastixTransform(["A_to_B.txt", "C_to_B.txt"], invert=[False, True])
+chain = fastcore.ElastixTransform(["A_to_B.txt", "B_to_C.txt"])   # A -> B -> C
+
+chain.xform(points)                            # forwards
+chain.xform_inv(points)                        # the whole composition, backwards
+chain.xform(points, invert=[False, True])      # hop 0 forwards, hop 1 backwards
+```
+
+Those last two are **not** the same knob, and the difference bites on a chain. `xform_inv`
+inverts the whole composition — it reverses the order *and* flips every hop. `invert` flips
+hops in place, keeping the order. For a single transform they agree; for a chain they do not,
+and only `invert` can express a **mixed-direction** traversal — which is exactly what a
+bridging graph hands you, since an edge may be stored in either direction:
+
+```python
+# A -> B -> C, where the second transform happens to be stored as C->B
+chain = fastcore.ElastixTransform(["A_to_B.txt", "C_to_B.txt"])
+chain.xform(points, invert=[False, True])
 ```
 
 ## Outside the grid, points come back *unchanged*
@@ -99,8 +125,32 @@ Measured against `transformix` on the same machine (14 cores), FANC's warp:
 text back — so it also pays a fixed ~0.9 s per call regardless of how few points you give it.
 Parsing the registration costs us 38 ms **once**; every subsequent transform is free of it.
 
+## Asking whether a file inverts, without parsing it
+
+A transform is invertible unless some step in its chain combines via `Add`. That fact lives in
+one short key — but the key sits *after* the coefficient array, which is 56 MB in BANC's warp,
+so reading it honestly used to mean parsing the whole file.
+
+`probe_elastix_invertible` walks the same chain and skips only the numbers:
+
+```python
+fastcore.probe_elastix_invertible("TransformParameters.FixedFANC.txt")   # -> True
+```
+
+| | full parse | probe |
+|---|---|---|
+| All 13 registrations `navis-flybrains` ships | 648 ms | **31 ms** (21×) |
+| BANC's `BANC_to_template.txt` (54 MB) | 409 ms | **19.6 ms** (21×) |
+
+That is the difference between a bridging graph that can afford to label its edges honestly and
+one that has to guess per *backend*. It raises rather than returning `True` for anything that
+would not load at all — missing, not elastix, unsupported kind, binary parameters, circular
+chain — so a `True` is a promise.
+
 ## API
 
 ::: navis_fastcore.ElastixTransform
 
 ::: navis_fastcore.load_elastix_transform
+
+::: navis_fastcore.probe_elastix_invertible

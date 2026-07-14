@@ -8,6 +8,7 @@ elastix_xform(
   xf,
   xyz,
   out_of_bounds = c("identity", "nan"),
+  invert = FALSE,
   n_cores = NULL,
   progress = FALSE
 )
@@ -24,6 +25,14 @@ does. \code{"nan"} returns \code{NaN} instead.
 The default is silent by nature: a neuron straddling the grid edge comes back partly
 transformed and looks perfectly fine. Use \code{"nan"} when you would rather see the boundary
 than trust it.}
+
+\item{invert}{Logical, length 1 or one flag per transform. \code{TRUE} traverses that transform
+backwards -- what you need when routing through a bridging graph, where an edge may be walked
+in either direction.
+
+This is \strong{not} the same as \code{\link[=elastix_xform_inv]{elastix_xform_inv()}}, which inverts the whole composition
+(reversing the order \emph{and} flipping every hop). For a single transform the two agree; for a
+chain they do not, and only \code{invert} can express a mixed-direction traversal.}
 
 \item{n_cores}{Cap the thread pool. \code{NULL} uses all cores.}
 

@@ -125,12 +125,17 @@ surface and how they spell it. `—` means that surface doesn't expose it direct
 | Read an Elastix `TransformParameters` file | `elastix::ElastixTransform::from_path`, `elastix::Chain` | `ElastixTransform`, `load_elastix_transform` | `elastix_read` |
 | Apply it to points (forward / inverse) | `elastix::transform_points`, `elastix::inverse_transform_points` | `ElastixTransform.xform`, `.xform_inv` | `elastix_xform`, `elastix_xform_inv` |
 | Elastix transform properties | fields on `Linear` / `BSpline` | `.affine`, `.kinds`, `.grid_size`, `.grid_spacing`, `.grid_origin` | `elastix_affine`, `elastix_kinds`, `elastix_grid_size`, `elastix_grid_spacing`, `elastix_grid_origin` |
+| Is an Elastix file invertible? (without parsing it) | `elastix::probe_invertible` | `probe_elastix_invertible` | `elastix_probe_invertible` |
 
 Neither CMTK nor Elastix needs to be installed — see [CMTK transforms](python/cmtk.md) and
 [Elastix transforms](python/elastix.md). The two differ in one important respect: outside the
 region it was fitted on, CMTK **fails** a point (we return `NaN`) while Elastix returns it
 **unchanged**. Each binding follows its own tool. Elastix additionally gains an **inverse**,
 which Elastix itself cannot compute.
+
+Both work the same way: a transform object holds only the *parse*, and **direction is chosen
+per call** (`invert=`, or the `_inv` method), so one object serves every direction rather than
+re-reading the file to walk it the other way.
 
 ### Python only
 

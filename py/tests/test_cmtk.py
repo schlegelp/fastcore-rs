@@ -151,6 +151,85 @@ def test_out_of_domain_is_nan_by_default_and_fallback_fills_it(reg):
     np.testing.assert_allclose(filled[1], strict[1])
 
 
+def test_fallback_to_affine_survives_an_inverted_registration(cmtk_dir):
+    """Regression: `fallback_to_affine` used to be a silent no-op when `invert=True`.
+
+    This is the direction navis walks about half of its bridging edges in - it passes
+    `affine_fallback=True` by default through `TransformSequence` - so an inverted edge
+    silently dropped every point the binary path would have rescued.
+    """
+    reg = fastcore.CmtkRegistration(cmtk_dir)
+    pts = np.array([[-5000.0, -5000.0, -5000.0], [100.0, 100.0, 20.0]])
+
+    strict = reg.xform(pts, invert=True)
+    assert np.isnan(strict[0]).all()
+    assert np.isfinite(strict[1]).all()
+
+    filled = reg.xform(pts, invert=True, fallback_to_affine=True)
+    assert np.isfinite(filled).all()
+
+    # ...and it falls back to the *inverse* affine, not the forward one. A wrong-direction
+    # fallback would be worse than a NaN: a plausible number pointing into the wrong space.
+    inv_affine = reg.xform(pts, invert=True, transform="affine")
+    fwd_affine = reg.xform(pts, transform="affine")
+    np.testing.assert_allclose(filled[0], inv_affine[0], atol=1e-12)
+    assert np.abs(inv_affine[0] - fwd_affine[0]).max() > 1.0, "else this proves nothing"
+
+
+def test_fallback_to_affine_survives_xform_inv(reg):
+    """The same hole from the other side: `xform_inv` could not fall back at all."""
+    pts = np.array([[-5000.0, -5000.0, -5000.0], [100.0, 100.0, 20.0]])
+
+    assert np.isnan(reg.xform_inv(pts)[0]).all()
+
+    filled = reg.xform_inv(pts, fallback_to_affine=True)
+    np.testing.assert_allclose(
+        filled[0], reg.xform_inv(pts, transform="affine")[0], atol=1e-12
+    )
+
+
+def test_chain_and_hop_fallbacks_differ_on_a_chain(cmtk_dir):
+    """`fallback_to_affine` falls back over the *whole chain*, as nat/navis do.
+
+    Verified against the binary: `streamxform --affine-only` composes the affine of every
+    registration in the list, and navis re-runs the failed rows through it from the ORIGINAL
+    point. So a point that survives hop 1 and fails hop 2 loses its hop-1 warp.
+
+    `"hop"` keeps that warp and swaps the affine in only where it actually failed. Better,
+    probably - but a silent departure, so it has to be asked for.
+    """
+    chain = fastcore.CmtkRegistration([cmtk_dir, cmtk_dir])
+    pts = np.array([[5.0, 179.0, 38.0]])  # inside the domain for hop 1, outside it for hop 2
+
+    assert np.isnan(chain.xform(pts)).any(), "this point must fail, or the test proves nothing"
+
+    by_chain = chain.xform(pts, fallback_to_affine=True)
+    by_hop = chain.xform(pts, fallback_to_affine="hop")
+    assert np.isfinite(by_chain).all() and np.isfinite(by_hop).all()
+
+    # True == "chain" == the whole chain, affine-only, from the original point
+    np.testing.assert_allclose(by_chain, chain.xform(pts, transform="affine"), atol=1e-12)
+    np.testing.assert_allclose(by_chain, chain.xform(pts, fallback_to_affine="chain"), atol=1e-12)
+
+    # ...and "hop" lands somewhere else entirely, because it kept the hop-1 warp
+    assert np.abs(by_chain - by_hop).max() > 1.0
+
+
+def test_on_a_single_registration_chain_and_hop_agree(reg):
+    """The two only diverge once there is more than one hop to disagree about."""
+    pts = np.array([[-5000.0, -5000.0, -5000.0]])
+    np.testing.assert_allclose(
+        reg.xform(pts, fallback_to_affine="chain"),
+        reg.xform(pts, fallback_to_affine="hop"),
+        atol=1e-12,
+    )
+
+
+def test_bad_fallback_value_raises(reg):
+    with pytest.raises(ValueError, match="chain"):
+        reg.xform(np.zeros((1, 3)), fallback_to_affine="bogus")
+
+
 def test_extrapolation_can_be_opted_into(reg):
     out = reg.xform(np.array([[-5000.0, -5000.0, -5000.0]]), allow_extrapolation=True)
     assert np.isfinite(out).all()
@@ -224,10 +303,31 @@ def test_chain_matches_manual_double_application(reg, cmtk_dir):
     np.testing.assert_allclose(chain.xform(pts), reg.xform(reg.xform(pts)), atol=1e-12)
 
 
-def test_invert_flag_is_the_inverse_transform(reg, cmtk_dir):
-    backwards = fastcore.CmtkRegistration(cmtk_dir, invert=True)
+def test_invert_flag_is_the_inverse_transform(reg):
+    """One parse, both directions: `invert` is a property of the traversal, not the object."""
     pts = np.array([[100.0, 100.0, 20.0], [250.0, 150.0, 60.0]])
-    np.testing.assert_allclose(backwards.xform(reg.xform(pts)), pts, atol=1e-4)
+    np.testing.assert_allclose(reg.xform(reg.xform(pts), invert=True), pts, atol=1e-4)
+
+
+def test_invert_is_not_the_same_knob_as_xform_inv(cmtk_dir, tiny_dir):
+    """`invert` flips each hop in place; `xform_inv` also *reverses* the chain.
+
+    For a single hop they agree. For a chain they must not - and only `invert` can express a
+    mixed-direction traversal, which is exactly what a bridging graph hands you. Affine-only,
+    so no point can fall out of a domain and make the comparison vacuous through NaN.
+    """
+    chain = fastcore.CmtkRegistration([cmtk_dir, tiny_dir])
+    pts = np.array([[100.0, 100.0, 20.0]])
+
+    flipped = chain.xform(pts, transform="affine", invert=True)
+    reversed_ = chain.xform_inv(pts, transform="affine")
+    assert np.isfinite(flipped).all() and np.isfinite(reversed_).all()
+    assert not np.allclose(flipped, reversed_, atol=1e-6)
+
+    # hop 0 forwards, hop 1 backwards - no whole-chain spelling exists for this
+    mixed = chain.xform(pts, transform="affine", invert=[False, True])
+    assert np.isfinite(mixed).all()
+    assert not np.allclose(mixed, flipped, atol=1e-6)
 
 
 def test_chain_inverse_reverses_order(reg, cmtk_dir):
@@ -236,9 +336,9 @@ def test_chain_inverse_reverses_order(reg, cmtk_dir):
     np.testing.assert_allclose(chain.xform_inv(chain.xform(pts)), pts, atol=1e-4)
 
 
-def test_invert_length_mismatch_raises(cmtk_dir):
+def test_invert_length_mismatch_raises(reg):
     with pytest.raises(ValueError, match="one flag per registration"):
-        fastcore.CmtkRegistration([cmtk_dir, cmtk_dir], invert=[True])
+        reg.xform(np.zeros((2, 3)), invert=[True, False])
 
 
 # ---------------------------------------------------------------------------

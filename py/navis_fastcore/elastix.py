@@ -5,9 +5,9 @@ import os
 import numpy as np
 
 from . import _fastcore
-from ._points import _prep_points
+from ._points import _prep_invert, _prep_points
 
-__all__ = ["ElastixTransform", "load_elastix_transform"]
+__all__ = ["ElastixTransform", "load_elastix_transform", "probe_elastix_invertible"]
 
 
 class ElastixTransform:
@@ -31,10 +31,12 @@ class ElastixTransform:
     path :      str | pathlib.Path | list thereof
                 Path to a ``TransformParameters.*.txt`` file. Pass a list to build a chain,
                 applied in order: ``points -> path[0] -> path[1] -> ... -> output``.
-    invert :    bool | list of bool
-                Traverse a transform backwards. A single bool applies to every entry; pass
-                a list to set them per transform. Useful when routing through a bridging
-                graph, where an edge may be traversed in either direction.
+
+    Direction is **not** fixed here. It is chosen per call - see the ``invert`` argument on
+    :meth:`~navis_fastcore.ElastixTransform.xform`, and
+    :meth:`~navis_fastcore.ElastixTransform.xform_inv` - so one instance serves every
+    direction and the files are parsed only once. That is worth caring about: BANC's warp is
+    56 MB.
 
     Attributes
     ----------
@@ -64,7 +66,7 @@ class ElastixTransform:
 
     """
 
-    def __init__(self, path, invert=False):
+    def __init__(self, path):
         if isinstance(path, (str, os.PathLike)):
             paths = [os.fspath(path)]
         else:
@@ -72,21 +74,12 @@ class ElastixTransform:
         if not paths:
             raise ValueError("`path` must name at least one transform")
 
-        if isinstance(invert, bool):
-            inv = [invert] * len(paths)
-        else:
-            inv = [bool(i) for i in invert]
-            if len(inv) != len(paths):
-                raise ValueError(
-                    f"`invert` must have one flag per transform: expected "
-                    f"{len(paths)}, got {len(inv)}"
-                )
-
         self._paths = paths
-        self._invert = inv
-        self._xf = _fastcore.ElastixTransform(paths, inv)
+        self._xf = _fastcore.ElastixTransform(paths)
 
-    def xform(self, points, out_of_bounds="identity", n_cores=None, progress=False):
+    def xform(
+        self, points, out_of_bounds="identity", invert=False, n_cores=None, progress=False
+    ):
         """Transform points forward.
 
         Parameters
@@ -103,6 +96,16 @@ class ElastixTransform:
                             edge comes back partly transformed and looks perfectly fine.
                             Use ``"nan"`` when you would rather see the boundary than trust
                             it.
+        invert :            bool | list of bool
+                            Traverse a transform backwards. A single bool applies to every
+                            hop; pass a list to set them per transform. This is what you need
+                            when routing through a bridging graph, where an edge may be walked
+                            in either direction.
+
+                            Note this is **not** the same as :meth:`xform_inv`, which inverts
+                            the whole composition (reversing the order *and* flipping every
+                            hop). For a single transform the two agree; for a chain they do
+                            not, and only ``invert`` can express a mixed-direction traversal.
         n_cores :           int, optional
                             Cap the thread pool. ``None`` uses all cores.
         progress :          bool
@@ -118,6 +121,7 @@ class ElastixTransform:
         out = self._xf.xform(
             pts,
             str(out_of_bounds),
+            _prep_invert(invert, len(self._paths), "transform"),
             None if n_cores is None else int(n_cores),
             bool(progress),
         )
@@ -133,6 +137,7 @@ class ElastixTransform:
         tolerance=1e-9,
         accuracy=1e-3,
         lattice_points=16_000,
+        invert=False,
         n_cores=None,
         progress=False,
     ):
@@ -172,6 +177,11 @@ class ElastixTransform:
                             few points the cheap seeds fail on. Built once per call, and only
                             consulted by points that have already failed, so it costs almost
                             nothing on a well-behaved registration. Set to 0 to disable.
+        invert :            bool | list of bool
+                            The same per-hop flags as on
+                            :meth:`~navis_fastcore.ElastixTransform.xform`, composed with this
+                            whole-chain inversion: hop ``i`` runs *forwards* here exactly when
+                            ``invert[i]`` is set.
         n_cores :           int, optional
                             Cap the thread pool. ``None`` uses all cores.
         progress :          bool
@@ -201,6 +211,7 @@ class ElastixTransform:
             float(tolerance),
             float(accuracy),
             int(lattice_points),
+            _prep_invert(invert, len(self._paths), "transform"),
             None if n_cores is None else int(n_cores),
             bool(progress),
         )
@@ -247,13 +258,13 @@ class ElastixTransform:
     def __reduce__(self):
         # Re-load from disk in the child rather than pickling the coefficients through every
         # multiprocessing/joblib fan-out. BANC's `BANC_to_template.txt` is 56 MB.
-        return (ElastixTransform, (self._paths, self._invert))
+        return (ElastixTransform, (self._paths,))
 
     def __repr__(self):
         return self._xf.__repr__()
 
 
-def load_elastix_transform(path, invert=False):
+def load_elastix_transform(path):
     """Load one or more Elastix transforms.
 
     A convenience wrapper around :class:`~navis_fastcore.ElastixTransform`.
@@ -262,12 +273,53 @@ def load_elastix_transform(path, invert=False):
     ----------
     path :      str | pathlib.Path | list thereof
                 Path to a ``TransformParameters.*.txt`` file, or several to chain.
-    invert :    bool | list of bool
-                Traverse a transform backwards.
 
     Returns
     -------
     ElastixTransform
 
     """
-    return ElastixTransform(path, invert=invert)
+    return ElastixTransform(path)
+
+
+def probe_elastix_invertible(path):
+    """Can this Elastix transform be inverted? Answered without reading its coefficients.
+
+    A transform is not invertible exactly when some step in its chain combines via ``Add``:
+    ``T(x) = T_initial(x) + T_this(x) - x`` does not decompose into invertible hops. That fact
+    lives in one short key - but the key sits *after* a coefficient array that runs to 56 MB in
+    BANC's warp, so answering it honestly used to mean parsing the whole file.
+
+    This walks the same chain and applies the same validation, skipping only the numbers. Across
+    the registrations ``navis-flybrains`` ships it is **~20x** faster than a full parse (31 ms for
+    all of them, against 648 ms), and ~200x on the largest.
+
+    Use it when you must label *many* files up front and cannot afford to parse them - building a
+    bridging graph, say, where each edge needs to know whether it can be walked backwards.
+
+    Parameters
+    ----------
+    path :  str | pathlib.Path
+            Path to a ``TransformParameters.*.txt`` file. Its initial-transform chain is followed,
+            however deep.
+
+    Returns
+    -------
+    bool
+            Whether :meth:`~navis_fastcore.ElastixTransform.xform_inv` would work on it.
+
+    Raises
+    ------
+    ValueError
+            If the file would not load at all: missing, not an Elastix transform, an unsupported
+            transform kind, binary parameters, or a circular chain. So ``True`` is a promise, not
+            an optimistic guess.
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> fastcore.probe_elastix_invertible("TransformParameters.FixedFANC.txt")  # doctest: +SKIP
+    True
+
+    """
+    return _fastcore.probe_elastix_invertible(os.fspath(path))

@@ -77,9 +77,9 @@ test_that("chains and the invert flag", {
   expect_equal(elastix_xform(two, pts), elastix_xform(one, elastix_xform(one, pts)),
                tolerance = 1e-9)
 
-  bwd <- elastix_read(ex("bspline.txt"), invert = TRUE)
-  expect_equal(elastix_xform(bwd, elastix_xform(bspline, pts)),
-               elastix_xform_inv(bspline, elastix_xform(bspline, pts)))
+  # traversing a transform backwards agrees exactly with inverting it -- from the same parse
+  fwd <- elastix_xform(bspline, pts)
+  expect_equal(elastix_xform(bspline, fwd, invert = TRUE), elastix_xform_inv(bspline, fwd))
 })
 
 test_that("the initial transform resolves from the file's own directory", {
@@ -101,11 +101,49 @@ test_that("n_cores does not change the answer", {
 
 test_that("errors are informative", {
   expect_error(elastix_read("/nonexistent/nope.txt"), "no Elastix transform")
-  expect_error(elastix_read(ex("affine.txt"), invert = c(TRUE, FALSE)), "one flag per transform")
+  expect_error(elastix_xform(bspline, pts, invert = c(TRUE, FALSE)), "one flag per transform")
   expect_error(elastix_xform(bspline, matrix(1, 2, 2)), "\\(N, 3\\)")
   expect_error(elastix_xform(bspline, pts, out_of_bounds = "bogus"))
   expect_error(elastix_xform(42, pts), "elastix_transform")
   expect_error(elastix_xform_inv(bspline, pts, initial_guess = pts[1:2, ]),
                "one point per input point")
   expect_output(print(bspline), "elastix_transform")
+})
+
+test_that("the header-only probe agrees with a full parse", {
+  # That agreement is the probe's whole contract: it reads the same chain and skips only the
+  # coefficients, so it must never give a different answer.
+  for (name in c("affine.txt", "euler.txt", "similarity.txt", "bspline.txt", "add.txt")) {
+    probed <- elastix_probe_invertible(ex(name))
+    parsed <- elastix_read(ex(name))$ptr$invertible()
+    expect_equal(probed, parsed, info = name)
+  }
+
+  expect_true(elastix_probe_invertible(ex("bspline.txt")))
+  expect_false(elastix_probe_invertible(ex("add.txt")))
+  expect_error(elastix_probe_invertible("/nonexistent/nope.txt"), "no Elastix transform")
+})
+
+test_that("a stale absolute initial-transform path falls back to its basename", {
+  # Elastix records the path as it was on the author's machine. `copy_files` in navis is
+  # precisely this workaround, in disguise.
+  d <- tempfile()
+  dir.create(d)
+  on.exit(unlink(d, recursive = TRUE))
+  writeLines(
+    c('(Transform "TranslationTransform")', "(TransformParameters 1 2 3)"),
+    file.path(d, "parent.txt")
+  )
+  writeLines(
+    c(
+      '(Transform "TranslationTransform")', "(TransformParameters 10 20 30)",
+      '(InitialTransformParametersFileName "/nowhere/on/this/machine/parent.txt")'
+    ),
+    file.path(d, "child.txt")
+  )
+
+  xf <- elastix_read(file.path(d, "child.txt"))
+  expect_equal(elastix_kinds(xf), "linear+linear")
+  expect_equal(elastix_xform(xf, rbind(c(0, 0, 0))), rbind(c(11, 22, 33)))
+  expect_true(elastix_probe_invertible(file.path(d, "child.txt")))
 })

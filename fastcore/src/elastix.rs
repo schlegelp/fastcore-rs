@@ -127,6 +127,11 @@ pub enum ElastixError {
         got: usize,
         want: usize,
     },
+    /// `invert` was not one flag per transform in the chain.
+    InvertLen {
+        got: usize,
+        want: usize,
+    },
     Cancelled,
 }
 
@@ -172,6 +177,10 @@ impl fmt::Display for ElastixError {
                 f,
                 "`initial_guess` must hold one point per input point: expected {want}, got {got}"
             ),
+            ElastixError::InvertLen { got, want } => write!(
+                f,
+                "`invert` must hold one flag per transform: expected {want}, got {got}"
+            ),
             ElastixError::Cancelled => write!(f, "interrupted"),
         }
     }
@@ -194,6 +203,21 @@ struct Params {
 impl Params {
     /// Scan `(Key value…)` groups, honouring `//` comments and `"quoted strings"`.
     fn parse(text: &str, path: &str) -> Params {
+        Params::scan(text, path, false)
+    }
+
+    /// As [`Params::parse`], but do not tokenise the coefficient array.
+    ///
+    /// `(TransformParameters …)` is a *single line* holding every coefficient — 5.5 MB of it in
+    /// FANC's warp, 56 MB in BANC's — and tokenising it allocates a `String` per number. Every
+    /// other key, including the two that decide invertibility, is a handful of bytes on the
+    /// lines around it. Skipping just that one line's values is the whole trick behind
+    /// [`probe_invertible`].
+    fn parse_headers(text: &str, path: &str) -> Params {
+        Params::scan(text, path, true)
+    }
+
+    fn scan(text: &str, path: &str, skip_coefficients: bool) -> Params {
         let mut entries: Vec<(String, Vec<String>)> = Vec::new();
 
         for raw in text.lines() {
@@ -206,6 +230,13 @@ impl Params {
                 continue;
             }
             let body = &line[1..line.len() - 1];
+
+            // The one line worth not looking at. Record the key so `parse_headers` still sees a
+            // well-formed file; the values stay unread.
+            if skip_coefficients && body.starts_with("TransformParameters ") {
+                entries.push(("TransformParameters".to_string(), Vec::new()));
+                continue;
+            }
 
             // Split on whitespace, but keep quoted runs together.
             let mut toks: Vec<String> = Vec::new();
@@ -1097,46 +1128,122 @@ pub struct ElastixTransform {
     pub source: PathBuf,
 }
 
+/// Resolve an `InitialTransformParametersFileName` against the file that named it.
+///
+/// Two rules, in order:
+///
+/// 1. **As recorded**, relative to the naming file's own directory. This is what `transformix`
+///    does, and it is why `navis` has to copy files into a temp dir and `chdir` there.
+/// 2. If that does not exist, **its basename, in the naming file's directory.**
+///
+/// Rule 2 is the whole of `navis`'s `copy_files`, done properly. Elastix records the initial
+/// transform's path *as it was on the machine that ran the registration* — routinely an absolute
+/// path like `/home/someone/scratch/TransformParameters.0.txt`, which of course is not there when
+/// you receive the files. `transformix` simply fails; `navis` works around it by copying every
+/// file into one directory and rewriting nothing, which only works because the basename is then
+/// findable. We just look for the basename.
+///
+/// This can only *rescue* a lookup that would otherwise fail — rule 1 still wins whenever it
+/// resolves, so a file that loads today loads identically tomorrow.
+fn resolve_initial(named: &str, from: &Path) -> PathBuf {
+    let dir = from.parent().unwrap_or(Path::new("."));
+    let as_recorded = {
+        let p = PathBuf::from(named);
+        if p.is_absolute() {
+            p
+        } else {
+            dir.join(p)
+        }
+    };
+    if as_recorded.exists() {
+        return as_recorded;
+    }
+    match Path::new(named).file_name() {
+        Some(base) => dir.join(base),
+        None => as_recorded,
+    }
+}
+
+/// Walk a file and the `InitialTransformParametersFileName` chain hanging off it, innermost last.
+///
+/// Shared by [`ElastixTransform::from_path`] and [`probe_invertible`] so the two cannot drift
+/// apart on cycle detection, path resolution, or what counts as a loadable file. `headers_only`
+/// skips tokenising the coefficient array — see [`Params::parse_headers`].
+fn walk_chain(
+    path: &Path,
+    headers_only: bool,
+    visit: &mut dyn FnMut(&Params) -> Result<(), ElastixError>,
+) -> Result<(), ElastixError> {
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut cur = path.to_path_buf();
+
+    loop {
+        let canon = cur.canonicalize().unwrap_or_else(|_| cur.clone());
+        if !seen.insert(canon) {
+            return Err(ElastixError::CircularChain {
+                path: cur.display().to_string(),
+            });
+        }
+
+        let text = std::fs::read_to_string(&cur).map_err(|e| ElastixError::Io {
+            path: cur.display().to_string(),
+            msg: e.to_string(),
+        })?;
+        let name = cur.display().to_string();
+        let p = if headers_only {
+            Params::parse_headers(&text, &name)
+        } else {
+            Params::parse(&text, &name)
+        };
+        visit(&p)?;
+
+        let init = p.str_or("InitialTransformParametersFileName", "NoInitialTransform");
+        if init == "NoInitialTransform" || init.is_empty() {
+            return Ok(());
+        }
+        cur = resolve_initial(&init, &cur);
+    }
+}
+
+/// Whether [`ElastixTransform::from_path`] would yield an invertible transform — **without
+/// reading the coefficients.**
+///
+/// A `TransformParameters` file is not invertible exactly when some step in its chain combines
+/// via `Add`: `T(x) = T_initial(x) + T_this(x) - x` does not decompose into invertible hops.
+/// That fact lives in a six-byte key, but it sits *after* a coefficient array that can run to
+/// 56 MB — so answering it honestly used to mean parsing the whole file.
+///
+/// This reads the same chain, applies the same validation, and skips only the coefficients. It
+/// exists for callers that must decide something about *many* files up front — a bridging graph
+/// with 52 registrations in it cannot afford 52 full parses just to label its edges.
+///
+/// Errors for anything that would not load at all (missing, not elastix, unsupported kind,
+/// binary parameters, circular chain), so `Ok(true)` is a real promise, not an optimistic guess.
+pub fn probe_invertible(path: &Path) -> Result<bool, ElastixError> {
+    let mut combines: Vec<Combine> = Vec::new();
+    walk_chain(path, /* headers_only = */ true, &mut |p| {
+        combines.push(parse_header(p)?.combine);
+        Ok(())
+    })?;
+    combines.reverse(); // initial first, matching `ElastixTransform::steps`
+                        // The first step's `Combine` is meaningless — it has nothing to combine
+                        // *with* — exactly as in `ElastixTransform::has_add`.
+    Ok(!combines.iter().skip(1).any(|c| *c == Combine::Add))
+}
+
 impl ElastixTransform {
     /// Read a file, following `InitialTransformParametersFileName` to the root of the chain.
     pub fn from_path(path: &Path) -> Result<Self, ElastixError> {
         let mut steps: Vec<(Transform, Combine)> = Vec::new();
-        let mut seen: HashSet<PathBuf> = HashSet::new();
-        let source = path.to_path_buf();
-        let mut cur = path.to_path_buf();
-
-        loop {
-            let canon = cur.canonicalize().unwrap_or_else(|_| cur.clone());
-            if !seen.insert(canon) {
-                return Err(ElastixError::CircularChain {
-                    path: cur.display().to_string(),
-                });
-            }
-
-            let text = std::fs::read_to_string(&cur).map_err(|e| ElastixError::Io {
-                path: cur.display().to_string(),
-                msg: e.to_string(),
-            })?;
-            let p = Params::parse(&text, &cur.display().to_string());
-            let (tr, combine) = parse_transform(&p)?;
-            steps.push((tr, combine));
-
-            let init = p.str_or("InitialTransformParametersFileName", "NoInitialTransform");
-            if init == "NoInitialTransform" || init.is_empty() {
-                break;
-            }
-            // Resolved against the transform file's own directory -- which is what transformix
-            // does, and is why `navis` has to copy files into a temp dir and chdir there.
-            let next = PathBuf::from(&init);
-            cur = if next.is_absolute() {
-                next
-            } else {
-                cur.parent().unwrap_or(Path::new(".")).join(next)
-            };
-        }
-
+        walk_chain(path, /* headers_only = */ false, &mut |p| {
+            steps.push(parse_transform(p)?);
+            Ok(())
+        })?;
         steps.reverse(); // initial first
-        Ok(ElastixTransform { steps, source })
+        Ok(ElastixTransform {
+            steps,
+            source: path.to_path_buf(),
+        })
     }
 
     /// `None` only under [`OutOfBounds::Nan`], when a point leaves a B-spline's valid region.
@@ -1211,12 +1318,52 @@ impl ElastixTransform {
     }
 }
 
-fn parse_transform(p: &Params) -> Result<(Transform, Combine), ElastixError> {
-    let kind = p.get("Transform").and_then(|v| v.first()).cloned().ok_or(
+/// The transform kinds we implement. The single source of truth for the `(Transform …)` value —
+/// both the full parse and the header-only probe resolve through here, so they cannot disagree
+/// about what is loadable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Affine,
+    Translation,
+    Euler,
+    Similarity,
+    BSpline,
+}
+
+fn kind_of(s: &str) -> Result<Kind, ElastixError> {
+    Ok(match s {
+        "AffineTransform" | "AdvancedAffineTransform" | "MatrixOffsetTransformBase" => Kind::Affine,
+        "TranslationTransform" | "AdvancedTranslationTransform" => Kind::Translation,
+        "EulerTransform" | "AdvancedEulerTransform" => Kind::Euler,
+        "SimilarityTransform" | "AdvancedSimilarityTransform" => Kind::Similarity,
+        "BSplineTransform" | "RecursiveBSplineTransform" | "AdvancedBSplineTransform" => {
+            Kind::BSpline
+        }
+        other => {
+            return Err(ElastixError::UnsupportedTransform {
+                kind: other.to_string(),
+            })
+        }
+    })
+}
+
+/// Everything about a transform that can be known *without* reading its coefficients.
+///
+/// Every rejection the full parse makes on grounds other than the numbers themselves — not an
+/// elastix file, binary parameters, an unsupported kind, a non-cubic spline — is made here, so a
+/// probe that succeeds is a real promise that the file loads.
+struct Header {
+    kind: Kind,
+    combine: Combine,
+}
+
+fn parse_header(p: &Params) -> Result<Header, ElastixError> {
+    let kind = p.get("Transform").and_then(|v| v.first()).ok_or_else(|| {
         ElastixError::NotElastix {
             path: p.path.clone(),
-        },
-    )?;
+        }
+    })?;
+    let kind = kind_of(kind)?;
 
     if p.bool_or("UseBinaryFormatForTransformationParameters", false) {
         return Err(ElastixError::BinaryParameters {
@@ -1224,95 +1371,99 @@ fn parse_transform(p: &Params) -> Result<(Transform, Combine), ElastixError> {
         });
     }
 
+    let order = p.ints("BSplineTransformSplineOrder").map(|v| v[0]).unwrap_or(3);
+    if kind == Kind::BSpline && order != 3 {
+        return Err(ElastixError::UnsupportedSplineOrder { got: order });
+    }
+
     let combine = match p.str_or("HowToCombineTransforms", "Compose").as_str() {
         "Add" => Combine::Add,
         _ => Combine::Compose,
     };
+    Ok(Header { kind, combine })
+}
+
+fn parse_transform(p: &Params) -> Result<(Transform, Combine), ElastixError> {
+    let Header { kind, combine } = parse_header(p)?;
 
     let par = p.floats("TransformParameters")?;
     let c = p.center();
 
-    let tr = match kind.as_str() {
-        "AffineTransform" | "AdvancedAffineTransform" | "MatrixOffsetTransformBase" => {
-            Transform::Linear(Linear::from_affine(&par, c)?)
-        }
-        "TranslationTransform" | "AdvancedTranslationTransform" => {
-            Transform::Linear(Linear::from_translation(&par)?)
-        }
-        "EulerTransform" | "AdvancedEulerTransform" => Transform::Linear(Linear::from_euler(
+    let tr = match kind {
+        Kind::Affine => Transform::Linear(Linear::from_affine(&par, c)?),
+        Kind::Translation => Transform::Linear(Linear::from_translation(&par)?),
+        Kind::Euler => Transform::Linear(Linear::from_euler(
             &par,
             c,
             p.bool_or("ComputeZYX", false),
         )?),
-        "SimilarityTransform" | "AdvancedSimilarityTransform" => {
-            Transform::Linear(Linear::from_similarity(&par, c)?)
-        }
-        "BSplineTransform" | "RecursiveBSplineTransform" | "AdvancedBSplineTransform" => {
-            Transform::BSpline(BSpline::from_params(p, &par)?)
-        }
-        other => {
-            return Err(ElastixError::UnsupportedTransform {
-                kind: other.to_string(),
-            })
-        }
+        Kind::Similarity => Transform::Linear(Linear::from_similarity(&par, c)?),
+        Kind::BSpline => Transform::BSpline(BSpline::from_params(p, &par)?),
     };
     Ok((tr, combine))
 }
 
-/// One or more [`ElastixTransform`]s applied nose-to-tail, each optionally traversed backwards.
+/// One or more [`ElastixTransform`]s applied nose-to-tail.
+///
+/// A chain holds only the *parse*. Which way each hop is travelled is a property of the
+/// traversal, not of the transform — see [`XformOpts::invert`] — so one `Chain` serves every
+/// direction, and an inverted view costs nothing to obtain. That matters here: BANC's
+/// `BANC_to_template.txt` is 56 MB, and re-reading it just to walk it backwards would be absurd.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Chain {
     pub xforms: Vec<ElastixTransform>,
-    pub invert: Vec<bool>,
 }
 
 impl Chain {
-    pub fn new(xforms: Vec<ElastixTransform>, invert: Vec<bool>) -> Result<Self, ElastixError> {
+    pub fn new(xforms: Vec<ElastixTransform>) -> Result<Self, ElastixError> {
         if xforms.is_empty() {
             return Err(ElastixError::EmptyChain);
         }
-        let invert = if invert.is_empty() {
-            vec![false; xforms.len()]
-        } else {
-            invert
-        };
-        if invert.len() != xforms.len() {
-            return Err(ElastixError::BadValue {
-                key: "invert".into(),
-                msg: format!(
-                    "expected one flag per transform ({}), got {}",
-                    xforms.len(),
-                    invert.len()
-                ),
-            });
-        }
-        Ok(Chain { xforms, invert })
+        Ok(Chain { xforms })
     }
 
-    pub fn from_paths(paths: &[PathBuf], invert: &[bool]) -> Result<Self, ElastixError> {
+    pub fn from_paths(paths: &[PathBuf]) -> Result<Self, ElastixError> {
         let xforms = paths
             .iter()
             .map(|p| ElastixTransform::from_path(p))
             .collect::<Result<Vec<_>, _>>()?;
-        Chain::new(xforms, invert.to_vec())
+        Chain::new(xforms)
     }
 
     pub fn n_transforms(&self) -> usize {
         self.xforms.len()
     }
 
-    /// Whether [`inverse_transform_points`] can run at all — i.e. whether every hop it would have
-    /// to traverse backwards is free of `Add` steps.
+    /// Whether [`inverse_transform_points`] can run — i.e. whether every hop it would have to
+    /// traverse backwards is free of `Add` steps.
+    ///
+    /// `invert` is the same per-hop flag set the traversal will use: a hop already flagged
+    /// `invert` is the one a whole-chain inversion ends up running *forwards*, and forwards,
+    /// `Add` is fine. `None` (all-forward) is the question the bindings actually ask, and the
+    /// one worth reasoning about: "can I invert this parse at all?"
     ///
     /// Exists so the bindings can raise a decent error *before* calling in: extendr cannot carry a
     /// Rust panic's message across to R, so R has to ask first.
-    pub fn is_invertible(&self) -> bool {
+    pub fn is_invertible(&self, invert: Option<&[bool]>) -> bool {
+        let Ok(flags) = self.flags(invert) else {
+            return false;
+        };
         self.xforms
             .iter()
-            .zip(self.invert.iter())
-            // Inverting the chain flips every hop, so a hop already flagged `invert` is the one
-            // that ends up being traversed *forwards* — and forwards, `Add` is fine.
-            .all(|(x, &inv)| inv || !x.has_add())
+            .zip(flags)
+            .all(|(x, inv)| inv || !x.has_add())
+    }
+
+    /// Resolve the per-hop direction flags, defaulting to all-forward.
+    fn flags(&self, invert: Option<&[bool]>) -> Result<Vec<bool>, ElastixError> {
+        match invert {
+            None => Ok(vec![false; self.xforms.len()]),
+            Some(f) if f.len() == self.xforms.len() => Ok(f.to_vec()),
+            Some(f) => Err(ElastixError::InvertLen {
+                got: f.len(),
+                want: self.xforms.len(),
+            }),
+        }
     }
 }
 
@@ -1337,6 +1488,14 @@ pub enum OutOfBounds {
 #[derive(Clone, Copy)]
 pub struct XformOpts<'a> {
     pub out_of_bounds: OutOfBounds,
+    /// Traverse transform `i` backwards. `None` (the default) is all-forward.
+    ///
+    /// This is *per hop*, and it is not the same knob as [`inverse_transform_points`], which
+    /// inverts the whole composition (reversing the order **and** flipping every hop). A
+    /// bridging graph routes through transforms in whichever direction each edge was found, so
+    /// a chain may need some hops forwards and others backwards — which no whole-chain
+    /// inversion can express.
+    pub invert: Option<&'a [bool]>,
     pub threads: Option<usize>,
     pub progress: bool,
     pub cancel: Option<&'a AtomicBool>,
@@ -1346,6 +1505,7 @@ impl Default for XformOpts<'_> {
     fn default() -> Self {
         XformOpts {
             out_of_bounds: OutOfBounds::Identity,
+            invert: None,
             threads: None,
             progress: false,
             cancel: None,
@@ -1368,6 +1528,9 @@ pub struct InverseOpts<'a> {
     /// the cheap seeds fail on. Built once per call. Zero disables it — which costs BANC's warp
     /// four times as many unconverged points. See [`BSpline::seed_lattice`].
     pub lattice_points: usize,
+    /// The same per-hop flags as [`XformOpts::invert`], composed with the whole-chain inversion:
+    /// hop `i` runs forwards here exactly when `invert[i]` is set.
+    pub invert: Option<&'a [bool]>,
     pub threads: Option<usize>,
     pub progress: bool,
     pub cancel: Option<&'a AtomicBool>,
@@ -1382,6 +1545,7 @@ impl Default for InverseOpts<'_> {
             tolerance: 1e-9,
             accuracy: 1e-3,
             lattice_points: 16_000,
+            invert: None,
             threads: None,
             progress: false,
             cancel: None,
@@ -1422,11 +1586,13 @@ enum Hop<'a> {
 /// Resolve `chain` into ordered hops. `reverse` walks it backwards and flips every hop — i.e. it
 /// inverts the whole composition. Linear inverses and seed lattices are computed here, once per
 /// call rather than once per point.
-fn plan_hops(
-    chain: &Chain,
+fn plan_hops<'a>(
+    chain: &'a Chain,
+    invert: Option<&[bool]>,
     reverse: bool,
     lattice_points: usize,
-) -> Result<Vec<Hop<'_>>, ElastixError> {
+) -> Result<Vec<Hop<'a>>, ElastixError> {
+    let flags = chain.flags(invert)?;
     let n = chain.xforms.len();
     let order: Vec<usize> = if reverse {
         (0..n).rev().collect()
@@ -1437,7 +1603,7 @@ fn plan_hops(
     let mut hops = Vec::with_capacity(n);
     for i in order {
         let xf = &chain.xforms[i];
-        let backwards = chain.invert[i] != reverse; // XOR
+        let backwards = flags[i] != reverse; // XOR
 
         if !backwards {
             hops.push(Hop::Forward(xf));
@@ -1580,7 +1746,7 @@ pub fn transform_points(
         out_of_bounds: opts.out_of_bounds,
         ..InverseOpts::default()
     };
-    let hops = plan_hops(chain, false, iopts.lattice_points)?;
+    let hops = plan_hops(chain, opts.invert, false, iopts.lattice_points)?;
     let res = drive(
         &hops,
         &pts,
@@ -1617,7 +1783,7 @@ pub fn inverse_transform_points(
             });
         }
     }
-    let hops = plan_hops(chain, true, opts.lattice_points)?;
+    let hops = plan_hops(chain, opts.invert, true, opts.lattice_points)?;
     let res = drive(
         &hops,
         &pts,
@@ -1652,7 +1818,7 @@ mod tests {
     }
 
     fn chain_of(name: &str) -> Chain {
-        Chain::new(vec![load(name)], vec![false]).unwrap()
+        Chain::new(vec![load(name)]).unwrap()
     }
 
     /// `transformix`'s own output, keyed by case.
@@ -1896,6 +2062,146 @@ mod tests {
         assert!(spread > 1.0, "Add and Compose agree ({spread}) -- test is blind");
     }
 
+    // ---- header-only probe ----
+
+    /// The probe and the full parse must never disagree. They share the scanner, the kind list,
+    /// the validation and the chain walk precisely so that this holds by construction — this
+    /// test is the guard on that.
+    #[test]
+    fn probe_invertible_agrees_with_the_full_parse_on_every_fixture() {
+        for name in [
+            "affine.txt",
+            "translation.txt",
+            "euler.txt",
+            "euler_zyx.txt",
+            "similarity.txt",
+            "bspline.txt",
+            "add.txt",
+        ] {
+            let path = PathBuf::from(format!("{DATA}/{name}"));
+            let probed = probe_invertible(&path).unwrap();
+            let parsed = !load(name).has_add();
+            assert_eq!(probed, parsed, "{name}: probe {probed}, full parse {parsed}");
+        }
+    }
+
+    #[test]
+    fn probe_invertible_spots_an_add_chain_without_reading_the_coefficients() {
+        assert!(probe_invertible(&PathBuf::from(format!("{DATA}/bspline.txt"))).unwrap());
+        assert!(!probe_invertible(&PathBuf::from(format!("{DATA}/add.txt"))).unwrap());
+    }
+
+    /// `Ok(true)` has to be a real promise: everything the full parse would reject on grounds
+    /// other than the numbers themselves is rejected here too.
+    #[test]
+    fn probe_invertible_rejects_what_would_not_load() {
+        let dir = std::env::temp_dir().join("fastcore_elastix_probe_reject");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        std::fs::write(dir.join("not_elastix.txt"), "just some text\n").unwrap();
+        assert!(matches!(
+            probe_invertible(&dir.join("not_elastix.txt")),
+            Err(ElastixError::NotElastix { .. })
+        ));
+
+        std::fs::write(
+            dir.join("unsupported.txt"),
+            "(Transform \"SplineKernelTransform\")\n(TransformParameters 1 2 3)\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            probe_invertible(&dir.join("unsupported.txt")),
+            Err(ElastixError::UnsupportedTransform { .. })
+        ));
+
+        std::fs::write(
+            dir.join("order5.txt"),
+            "(Transform \"BSplineTransform\")\n(BSplineTransformSplineOrder 5)\n\
+             (TransformParameters 1 2 3)\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            probe_invertible(&dir.join("order5.txt")),
+            Err(ElastixError::UnsupportedSplineOrder { got: 5 })
+        ));
+
+        assert!(matches!(
+            probe_invertible(&dir.join("missing.txt")),
+            Err(ElastixError::Io { .. })
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- initial-transform path resolution ----
+
+    /// Elastix records the initial transform's path as it was on the machine that ran the
+    /// registration — routinely an absolute path that does not exist when you receive the files.
+    /// We fall back to its basename in the naming file's own directory, which is exactly what
+    /// `navis`'s `copy_files` achieves by copying everything into one directory.
+    #[test]
+    fn a_stale_absolute_initial_path_falls_back_to_its_basename() {
+        let dir = std::env::temp_dir().join("fastcore_elastix_stale_abs");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("parent.txt"),
+            "(Transform \"TranslationTransform\")\n(TransformParameters 1 2 3)\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("child.txt"),
+            "(Transform \"TranslationTransform\")\n(TransformParameters 10 20 30)\n\
+             (InitialTransformParametersFileName \"/nowhere/on/this/machine/parent.txt\")\n",
+        )
+        .unwrap();
+
+        let xf = ElastixTransform::from_path(&dir.join("child.txt")).unwrap();
+        assert_eq!(xf.steps.len(), 2, "the initial transform must have been found");
+        // initial first: translate by (1,2,3), then by (10,20,30).
+        assert_eq!(xf.apply([0.0, 0.0, 0.0], OutOfBounds::Identity), Some([11.0, 22.0, 33.0]));
+
+        // The probe walks the same chain, so it resolves the same way.
+        assert!(probe_invertible(&dir.join("child.txt")).unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The fallback may only ever *rescue* a lookup that would otherwise fail. A recorded path
+    /// that resolves still wins, so a file that loads today loads identically tomorrow.
+    #[test]
+    fn a_resolvable_recorded_path_still_wins_over_the_basename() {
+        let dir = std::env::temp_dir().join("fastcore_elastix_pref");
+        let real = dir.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+
+        // Two different `parent.txt`: one beside the child, one where the child actually points.
+        std::fs::write(
+            dir.join("parent.txt"),
+            "(Transform \"TranslationTransform\")\n(TransformParameters 1 2 3)\n",
+        )
+        .unwrap();
+        std::fs::write(
+            real.join("parent.txt"),
+            "(Transform \"TranslationTransform\")\n(TransformParameters 100 200 300)\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("child.txt"),
+            format!(
+                "(Transform \"TranslationTransform\")\n(TransformParameters 0 0 0)\n\
+                 (InitialTransformParametersFileName \"{}\")\n",
+                real.join("parent.txt").display()
+            ),
+        )
+        .unwrap();
+
+        let xf = ElastixTransform::from_path(&dir.join("child.txt")).unwrap();
+        assert_eq!(
+            xf.apply([0.0, 0.0, 0.0], OutOfBounds::Identity),
+            Some([100.0, 200.0, 300.0]),
+            "the recorded path resolves, so it must be preferred over the neighbouring basename"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn circular_chain_is_caught() {
         let dir = std::env::temp_dir().join("fastcore_elastix_cycle");
@@ -1924,29 +2230,47 @@ mod tests {
         let once: Vec<[f64; 3]> = once.rows().into_iter().map(|r| [r[0], r[1], r[2]]).collect();
         let twice = xform("affine.txt", &once);
 
-        let chain = Chain::new(vec![load("affine.txt"), load("affine.txt")], vec![]).unwrap();
+        let chain = Chain::new(vec![load("affine.txt"), load("affine.txt")]).unwrap();
         let got = transform_points(&chain, arr(&g["input"]).view(), XformOpts::default()).unwrap();
         let want: Vec<[f64; 3]> = twice.rows().into_iter().map(|r| [r[0], r[1], r[2]]).collect();
         assert_close(&got, &want, 1e-9, "chain of two");
     }
 
     /// A hop marked `invert` is traversed backwards, so it undoes the forward one -- and must
-    /// agree with `inverse_transform_points` exactly.
+    /// agree with `inverse_transform_points` exactly. One parse serves both.
     #[test]
     fn invert_flag_reverses_a_hop() {
         let g = golden();
+        let chain = chain_of("bspline.txt");
         let fwd = xform("bspline.txt", &g["input"]);
 
-        let flagged = Chain::new(vec![load("bspline.txt")], vec![true]).unwrap();
-        let got = transform_points(&flagged, fwd.view(), XformOpts::default()).unwrap();
-        let want = inverse_transform_points(
-            &chain_of("bspline.txt"),
+        let got = transform_points(
+            &chain,
             fwd.view(),
-            None,
-            InverseOpts::default(),
+            XformOpts {
+                invert: Some(&[true]),
+                ..Default::default()
+            },
         )
         .unwrap();
+        let want =
+            inverse_transform_points(&chain, fwd.view(), None, InverseOpts::default()).unwrap();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn invert_must_have_one_flag_per_transform() {
+        let chain = chain_of("affine.txt");
+        let err = transform_points(
+            &chain,
+            arr(&[[0.0, 0.0, 0.0]]).view(),
+            XformOpts {
+                invert: Some(&[true, false]),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, ElastixError::InvertLen { got: 2, want: 1 }));
     }
 
     // ---- linear ----
@@ -2350,16 +2674,20 @@ mod tests {
     #[test]
     fn empty_chain_errors() {
         assert!(matches!(
-            Chain::new(vec![], vec![]),
+            Chain::new(vec![]),
             Err(ElastixError::EmptyChain)
         ));
     }
 
+    /// `is_invertible` is a question about the *parse*, and the bindings ask it with the flags
+    /// they will actually traverse with. All-forward is the question that matters: "can I run
+    /// `xform_inv` on this at all?"
     #[test]
-    fn invert_length_mismatch_errors() {
-        assert!(matches!(
-            Chain::new(vec![load("affine.txt")], vec![true, false]),
-            Err(ElastixError::BadValue { .. })
-        ));
+    fn is_invertible_reports_on_the_hops_it_would_have_to_reverse() {
+        assert!(chain_of("bspline.txt").is_invertible(None));
+        assert!(!chain_of("add.txt").is_invertible(None));
+        // ...but a hop already flagged `invert` is the one a whole-chain inversion runs
+        // *forwards*, and forwards, `Add` is fine.
+        assert!(chain_of("add.txt").is_invertible(Some(&[true])));
     }
 }

@@ -189,18 +189,16 @@ def test_chain_equals_manual_double_application(elastix_dir, elastix_golden):
 
 
 def test_invert_flag_reverses_a_hop(elastix_dir, elastix_golden):
-    """The `invert` flag must agree exactly with `xform_inv`."""
-    path = elastix_dir / "bspline.txt"
-    xf = fastcore.ElastixTransform(path)
+    """The `invert` flag must agree exactly with `xform_inv` - from the same parse."""
+    xf = fastcore.ElastixTransform(elastix_dir / "bspline.txt")
     fwd = xf.xform(elastix_golden["input"])
-    np.testing.assert_array_equal(
-        fastcore.ElastixTransform(path, invert=True).xform(fwd), xf.xform_inv(fwd)
-    )
+    np.testing.assert_array_equal(xf.xform(fwd, invert=True), xf.xform_inv(fwd))
 
 
 def test_invert_length_mismatch_raises(elastix_dir):
+    xf = fastcore.ElastixTransform(elastix_dir / "affine.txt")
     with pytest.raises(ValueError, match="one flag per transform"):
-        fastcore.ElastixTransform([elastix_dir / "affine.txt"], invert=[True, False])
+        xf.xform(np.zeros((2, 3)), invert=[True, False])
 
 
 # --- Input handling --------------------------------------------------------------------
@@ -272,3 +270,53 @@ def test_large_batch_is_finite(bspline):
     rng = np.random.default_rng(0)
     pts = rng.uniform(0, 100, (100_000, 3))
     assert np.isfinite(bspline.xform(pts)).all()
+
+
+# --- Header-only probe -----------------------------------------------------------------
+
+
+def test_probe_invertible_agrees_with_the_full_parse(elastix_dir):
+    """The probe must never disagree with a full parse. That is its whole contract."""
+    for name in ["affine.txt", "euler.txt", "similarity.txt", "bspline.txt", "add.txt"]:
+        path = elastix_dir / name
+        assert fastcore.probe_elastix_invertible(path) == fastcore.ElastixTransform(
+            path
+        ).invertible, name
+
+
+def test_probe_invertible_spots_an_add_chain(elastix_dir):
+    assert fastcore.probe_elastix_invertible(elastix_dir / "bspline.txt") is True
+    assert fastcore.probe_elastix_invertible(elastix_dir / "add.txt") is False
+
+
+def test_probe_invertible_raises_for_files_that_would_not_load(tmp_path):
+    """`True` is a promise, not a guess - so anything unloadable has to raise."""
+    with pytest.raises(ValueError):
+        fastcore.probe_elastix_invertible(tmp_path / "missing.txt")
+
+    not_elastix = tmp_path / "nope.txt"
+    not_elastix.write_text("just some text\n")
+    with pytest.raises(ValueError, match="not an Elastix|Transform"):
+        fastcore.probe_elastix_invertible(not_elastix)
+
+
+# --- Initial-transform path resolution -------------------------------------------------
+
+
+def test_a_stale_absolute_initial_path_falls_back_to_its_basename(tmp_path):
+    """Elastix records the author's absolute path; it is never there when you get the files.
+
+    This is exactly what navis's `copy_files` works around - by copying everything into one
+    directory so the basename becomes findable. We just look for the basename.
+    """
+    (tmp_path / "parent.txt").write_text(
+        '(Transform "TranslationTransform")\n(TransformParameters 1 2 3)\n'
+    )
+    (tmp_path / "child.txt").write_text(
+        '(Transform "TranslationTransform")\n(TransformParameters 10 20 30)\n'
+        '(InitialTransformParametersFileName "/nowhere/on/this/machine/parent.txt")\n'
+    )
+
+    xf = fastcore.ElastixTransform(tmp_path / "child.txt")
+    assert xf.kinds == [["linear", "linear"]], "the initial transform must have been found"
+    np.testing.assert_allclose(xf.xform(np.zeros(3)), [11.0, 22.0, 33.0])

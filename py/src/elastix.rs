@@ -9,12 +9,30 @@ use pyo3::prelude::*;
 
 use crate::nblast::run_interruptible;
 use fastcore::elastix::{
-    inverse_transform_points, transform_points, Chain, ElastixError, ElastixTransform, InverseOpts,
-    OutOfBounds, XformOpts,
+    inverse_transform_points, probe_invertible, transform_points, Chain, ElastixError,
+    ElastixTransform, InverseOpts, OutOfBounds, XformOpts,
 };
 
 fn to_py_err(e: ElastixError) -> PyErr {
     PyValueError::new_err(e.to_string())
+}
+
+/// Whether an Elastix transform can be inverted — **without reading its coefficients.**
+///
+/// A file is not invertible exactly when some step in its chain combines via `Add`. That fact
+/// lives in one short key, but it sits *after* a coefficient array that can run to 56 MB — so
+/// answering it used to cost a full parse. This reads the same chain and skips only the numbers:
+/// about **20x** faster, and 200x on the big ones.
+///
+/// For callers that must label many files up front — a bridging graph with dozens of
+/// registrations cannot afford a full parse per edge just to decide which way each one goes.
+///
+/// Raises `ValueError` for anything that would not load at all (missing, not elastix, unsupported
+/// transform kind, binary parameters, circular chain), so `True` is a promise rather than a guess.
+#[pyfunction]
+#[pyo3(name = "probe_elastix_invertible", signature = (path))]
+pub fn py_probe_elastix_invertible(path: &str) -> PyResult<bool> {
+    probe_invertible(std::path::Path::new(path)).map_err(to_py_err)
 }
 
 fn oob_of(s: &str) -> PyResult<OutOfBounds> {
@@ -52,20 +70,22 @@ impl PyElastixTransform {
     /// recursively, resolved relative to that file's own directory. So there is no need to copy
     /// supplementary files anywhere, which is what `navis` has to do today.
     ///
+    /// The object holds only the *parse*. Direction is chosen per call (`xform`/`xform_inv`, and
+    /// the `invert` argument on each), so one instance serves every direction — worth caring about
+    /// when BANC's warp is 56 MB.
+    ///
     /// Arguments:
     /// - `paths`: one or more `TransformParameters.*.txt` files, applied nose-to-tail.
-    /// - `invert`: per-path direction flags. `True` traverses that transform backwards.
     #[new]
-    #[pyo3(signature = (paths, invert=None))]
-    fn new(paths: Vec<String>, invert: Option<Vec<bool>>) -> PyResult<Self> {
+    #[pyo3(signature = (paths))]
+    fn new(paths: Vec<String>) -> PyResult<Self> {
         let pbs: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
         let xforms = pbs
             .iter()
             .map(|p| ElastixTransform::from_path(p))
             .collect::<Result<Vec<_>, _>>()
             .map_err(to_py_err)?;
-        let invert = invert.unwrap_or_else(|| vec![false; xforms.len()]);
-        let chain = Chain::new(xforms, invert).map_err(to_py_err)?;
+        let chain = Chain::new(xforms).map_err(to_py_err)?;
         Ok(PyElastixTransform {
             inner: Arc::new(chain),
             paths,
@@ -79,16 +99,20 @@ impl PyElastixTransform {
     /// - `out_of_bounds`: what to do with points outside a B-spline's control-point grid.
     ///   `"identity"` (default) returns them unchanged, which is exactly what `transformix`
     ///   does. `"nan"` returns `NaN` instead, so you can see the boundary rather than trust it.
+    /// - `invert`: per-hop direction flags, one per path. `True` traverses that transform
+    ///   backwards. Not the same as `xform_inv`, which reverses the whole composition.
     /// - `n_cores`: cap the thread pool. `None` uses all cores.
     ///
     /// Returns:
     /// An `(N, 3)` array.
-    #[pyo3(signature = (points, out_of_bounds="identity", n_cores=None, progress=false))]
+    #[pyo3(signature = (points, out_of_bounds="identity", invert=None, n_cores=None,
+                        progress=false))]
     fn xform<'py>(
         &self,
         py: Python<'py>,
         points: PyReadonlyArray2<'py, f64>,
         out_of_bounds: &str,
+        invert: Option<Vec<bool>>,
         n_cores: Option<usize>,
         progress: bool,
     ) -> PyResult<Bound<'py, PyArray2<f64>>> {
@@ -101,6 +125,7 @@ impl PyElastixTransform {
         let out: Array2<f64> = run_interruptible(py, &cancel, || {
             let opts = XformOpts {
                 out_of_bounds: oob,
+                invert: invert.as_deref(),
                 threads: n_cores,
                 progress,
                 cancel: Some(&cancel),
@@ -133,13 +158,14 @@ impl PyElastixTransform {
     /// - `accuracy`: accept a solution only if its residual is within this of the target.
     /// - `lattice_points`: size of the global seed lattice, the last-resort start for points the
     ///   cheap seeds fail on. Built once per call; only failed points consult it.
+    /// - `invert`: as for `xform`, composed with the whole-chain inversion.
     /// - `n_cores`: cap the thread pool. `None` uses all cores.
     ///
     /// Returns:
     /// An `(N, 3)` array. Rows with no preimage are `NaN`.
     #[pyo3(signature = (points, out_of_bounds="identity", initial_guess=None, max_iter=50,
                         seed_iter=8, tolerance=1e-9, accuracy=1e-3, lattice_points=16_000,
-                        n_cores=None, progress=false))]
+                        invert=None, n_cores=None, progress=false))]
     #[allow(clippy::too_many_arguments)]
     fn xform_inv<'py>(
         &self,
@@ -152,6 +178,7 @@ impl PyElastixTransform {
         tolerance: f64,
         accuracy: f64,
         lattice_points: usize,
+        invert: Option<Vec<bool>>,
         n_cores: Option<usize>,
         progress: bool,
     ) -> PyResult<Bound<'py, PyArray2<f64>>> {
@@ -169,6 +196,7 @@ impl PyElastixTransform {
                 tolerance,
                 accuracy,
                 lattice_points,
+                invert: invert.as_deref(),
                 threads: n_cores,
                 progress,
                 cancel: Some(&cancel),
@@ -189,7 +217,7 @@ impl PyElastixTransform {
     /// does not decompose into invertible hops.
     #[getter]
     fn invertible(&self) -> bool {
-        self.inner.is_invertible()
+        self.inner.is_invertible(None)
     }
 
     /// The resolved step kinds of each transform in the chain, initial first — e.g.
@@ -201,11 +229,6 @@ impl PyElastixTransform {
             .iter()
             .map(|x| x.steps.iter().map(|(t, _)| t.kind().to_string()).collect())
             .collect()
-    }
-
-    #[getter]
-    fn invert(&self) -> Vec<bool> {
-        self.inner.invert.clone()
     }
 
     /// The control-point grid size of every B-spline in the chain, `(k, 3)`. `None` if there is

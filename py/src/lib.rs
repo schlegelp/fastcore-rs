@@ -132,4 +132,7 @@ mod fastcore {
 
     #[pymodule_export]
     use super::PyElastixTransform;
+
+    #[pymodule_export]
+    use super::py_probe_elastix_invertible;
 }

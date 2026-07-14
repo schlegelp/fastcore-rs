@@ -5,7 +5,7 @@ import os
 import numpy as np
 
 from . import _fastcore
-from ._points import _prep_points
+from ._points import _prep_fallback, _prep_invert, _prep_points
 
 __all__ = ["CmtkRegistration", "load_cmtk_registration"]
 
@@ -28,10 +28,10 @@ class CmtkRegistration:
                 Path to a CMTK ``*.list`` registration directory, or to a ``registration``
                 file itself (plain or gzipped). Pass a list to build a chain, applied in
                 order: ``points -> path[0] -> path[1] -> ... -> output``.
-    invert :    bool | list of bool
-                Traverse a registration backwards. A single bool applies to every entry;
-                pass a list to set them per registration. Useful when routing through a
-                bridging graph, where an edge may be traversed in either direction.
+
+    Direction is **not** fixed here. It is chosen per call - see the ``invert`` argument on
+    :meth:`xform`, and :meth:`xform_inv` - so one instance serves every direction and the
+    files are parsed only once.
 
     Attributes
     ----------
@@ -57,7 +57,7 @@ class CmtkRegistration:
 
     """
 
-    def __init__(self, path, invert=False):
+    def __init__(self, path):
         if isinstance(path, (str, os.PathLike)):
             paths = [os.fspath(path)]
         else:
@@ -65,19 +65,8 @@ class CmtkRegistration:
         if not paths:
             raise ValueError("`path` must name at least one registration")
 
-        if isinstance(invert, bool):
-            inv = [invert] * len(paths)
-        else:
-            inv = [bool(i) for i in invert]
-            if len(inv) != len(paths):
-                raise ValueError(
-                    f"`invert` must have one flag per registration: expected "
-                    f"{len(paths)}, got {len(inv)}"
-                )
-
         self._paths = paths
-        self._invert = inv
-        self._reg = _fastcore.CmtkRegistration(paths, inv)
+        self._reg = _fastcore.CmtkRegistration(paths)
 
     def xform(
         self,
@@ -85,6 +74,7 @@ class CmtkRegistration:
         transform="warp",
         allow_extrapolation=False,
         fallback_to_affine=False,
+        invert=False,
         n_cores=None,
         progress=False,
     ):
@@ -110,10 +100,41 @@ class CmtkRegistration:
                                 gives every point *an* answer, but that answer extrapolates a
                                 warp that was never fitted there, and it will silently
                                 disagree with every other CMTK-based tool.
-        fallback_to_affine :    bool
+        fallback_to_affine :    bool | "chain" | "hop"
                                 Replace failed rows with the affine result rather than
                                 ``NaN``. Only reachable when ``allow_extrapolation=False``,
                                 since extrapolation otherwise never fails.
+
+                                ``True`` (or ``"chain"``) re-runs the **whole chain**
+                                affine-only, starting again from the *original* point. This is
+                                what ``nat``/``navis`` do - they hand the failed rows back to
+                                ``streamxform --affine-only`` over the same registration list -
+                                so it is the default whenever a fallback is asked for.
+
+                                ``"hop"`` instead swaps the affine in for **only the hop that
+                                failed**, keeping the warps of the hops that succeeded.
+                                Arguably the better answer, since discarding a perfectly good
+                                hop-1 warp because hop 2 ran out of domain is crude - but it is
+                                a silent departure from every other CMTK-based tool, so you
+                                have to ask for it. On a single registration the two are
+                                identical; on a chain they differ by a median of ~6 world
+                                units.
+
+                                Works in both directions: a hop travelled backwards falls back
+                                to the *inverse* affine, so the rescued point still lands in
+                                the space you asked for.
+        invert :                bool | list of bool
+                                Traverse a registration backwards. A single bool applies to
+                                every hop; pass a list to set them per registration. This is
+                                what you need when routing through a bridging graph, where an
+                                edge may be walked in either direction - and a chain may need
+                                some hops forwards and others backwards.
+
+                                Note this is **not** the same as :meth:`xform_inv`, which
+                                inverts the whole composition (reversing the order *and*
+                                flipping every hop). For a single registration the two agree;
+                                for a chain they do not, and only ``invert`` can express a
+                                mixed-direction traversal.
         n_cores :               int, optional
                                 Number of threads. ``None`` (default) uses all cores.
         progress :              bool
@@ -131,7 +152,8 @@ class CmtkRegistration:
             pts,
             str(transform),
             bool(allow_extrapolation),
-            bool(fallback_to_affine),
+            _prep_fallback(fallback_to_affine),
+            _prep_invert(invert, len(self._paths)),
             None if n_cores is None else int(n_cores),
             bool(progress),
         )
@@ -146,6 +168,8 @@ class CmtkRegistration:
         tolerance=1e-9,
         accuracy=1e-3,
         clamp_to_domain=True,
+        fallback_to_affine=False,
+        invert=False,
         n_cores=None,
         progress=False,
     ):
@@ -179,6 +203,15 @@ class CmtkRegistration:
                             preimages that lie outside the image domain, where ``streamxform``
                             reports failure - so you will get finite numbers where CMTK gives
                             you none.
+        fallback_to_affine : bool | "chain" | "hop"
+                            Replace rows the solver could not land with the *inverse* affine
+                            result rather than ``NaN`` - the mirror of the same argument on
+                            :meth:`xform`, with the same ``"chain"`` (default) and ``"hop"``
+                            semantics.
+        invert :            bool | list of bool
+                            The same per-hop flags as on :meth:`xform`, composed with this
+                            whole-chain inversion: hop ``i`` runs *forwards* here exactly when
+                            ``invert[i]`` is set.
         n_cores :           int, optional
                             Number of threads. ``None`` (default) uses all cores.
         progress :          bool
@@ -210,6 +243,8 @@ class CmtkRegistration:
             float(tolerance),
             float(accuracy),
             bool(clamp_to_domain),
+            _prep_fallback(fallback_to_affine),
+            _prep_invert(invert, len(self._paths)),
             None if n_cores is None else int(n_cores),
             bool(progress),
         )
@@ -251,13 +286,13 @@ class CmtkRegistration:
     def __reduce__(self):
         # Re-load from disk in the child rather than pickling ~420 KB of coefficients
         # through every multiprocessing/joblib fan-out.
-        return (CmtkRegistration, (self._paths, self._invert))
+        return (CmtkRegistration, (self._paths,))
 
     def __repr__(self):
         return self._reg.__repr__()
 
 
-def load_cmtk_registration(path, invert=False):
+def load_cmtk_registration(path):
     """Load one or more CMTK registrations.
 
     A convenience wrapper around :class:`~navis_fastcore.CmtkRegistration`.
@@ -267,8 +302,6 @@ def load_cmtk_registration(path, invert=False):
     path :      str | pathlib.Path | list thereof
                 Path to a CMTK ``*.list`` directory, or to a ``registration`` file itself
                 (plain or gzipped). A list builds a chain, applied in order.
-    invert :    bool | list of bool
-                Traverse a registration backwards.
 
     Returns
     -------
@@ -280,4 +313,4 @@ def load_cmtk_registration(path, invert=False):
     >>> reg = fastcore.load_cmtk_registration("JFRC2_FCWB.list")   # doctest: +SKIP
 
     """
-    return CmtkRegistration(path, invert=invert)
+    return CmtkRegistration(path)

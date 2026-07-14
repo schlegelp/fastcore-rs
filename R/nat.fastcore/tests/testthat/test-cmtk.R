@@ -67,6 +67,47 @@ test_that("out-of-domain points are NaN by default", {
   expect_equal(filled[1, ], cmtk_xform(reg, far, transform = "affine")[1, ])
 })
 
+test_that("the affine fallback survives a backwards hop", {
+  # Regression: `fallback_to_affine` used to be a silent no-op in the inverse direction,
+  # which is the one navis walks about half of its bridging edges in.
+  far <- rbind(c(-5000, -5000, -5000), c(100, 100, 20))
+
+  expect_true(all(is.nan(cmtk_xform(reg, far, invert = TRUE)[1, ])))
+
+  filled <- cmtk_xform(reg, far, invert = TRUE, fallback_to_affine = TRUE)
+  expect_true(all(is.finite(filled)))
+  # ...and it falls back to the *inverse* affine, not the forward one.
+  expect_equal(filled[1, ], cmtk_xform(reg, far, invert = TRUE, transform = "affine")[1, ])
+  expect_gt(max(abs(filled[1, ] - cmtk_xform(reg, far, transform = "affine")[1, ])), 1)
+
+  # The same hole from the other side: `cmtk_xform_inv` could not fall back at all.
+  expect_true(all(is.nan(cmtk_xform_inv(reg, far)[1, ])))
+  filled_inv <- cmtk_xform_inv(reg, far, fallback_to_affine = TRUE)
+  expect_equal(filled_inv[1, ], cmtk_xform_inv(reg, far, transform = "affine")[1, ])
+})
+
+test_that("the affine fallback covers the whole chain, as nat/navis do", {
+  # `streamxform --affine-only` composes the affine of every registration in the list, and
+  # navis re-runs failed rows through it from the ORIGINAL point -- so a point that survives
+  # hop 1 and fails hop 2 loses its hop-1 warp. "hop" keeps it, but departs from CMTK.
+  chain <- cmtk_read(c(reg_path, reg_path))
+  p <- rbind(c(5, 179, 38)) # inside the domain for hop 1, outside it for hop 2
+  expect_true(any(is.nan(cmtk_xform(chain, p))))
+
+  by_chain <- cmtk_xform(chain, p, fallback_to_affine = TRUE)
+  by_hop <- cmtk_xform(chain, p, fallback_to_affine = "hop")
+  expect_true(all(is.finite(by_chain)))
+  expect_true(all(is.finite(by_hop)))
+
+  # TRUE == "chain" == the whole chain, affine-only, from the original point
+  expect_equal(by_chain, cmtk_xform(chain, p, transform = "affine"))
+  expect_equal(by_chain, cmtk_xform(chain, p, fallback_to_affine = "chain"))
+  # ...and "hop" lands elsewhere, having kept the hop-1 warp
+  expect_gt(max(abs(by_chain - by_hop)), 1)
+
+  expect_error(cmtk_xform(reg, pts, fallback_to_affine = "bogus"), "chain")
+})
+
 test_that("input coercion", {
   # a bare length-3 vector, and a data frame, both work
   expect_equal(cmtk_xform(reg, c(50, 50, 50)), cmtk_xform(reg, rbind(c(50, 50, 50))))
@@ -80,12 +121,17 @@ test_that("chains and the invert flag", {
   p <- pts[2:4, ]
   expect_equal(cmtk_xform(chain, p), cmtk_xform(reg, cmtk_xform(reg, p)))
 
-  # traversing a registration backwards is its inverse
-  bwd <- cmtk_read(reg_path, invert = TRUE)
-  expect_equal(cmtk_xform(bwd, cmtk_xform(reg, p)), p, tolerance = 1e-4)
+  # traversing a registration backwards is its inverse -- from the same parse
+  expect_equal(cmtk_xform(reg, cmtk_xform(reg, p), invert = TRUE), p, tolerance = 1e-4)
 
   # and inverting the whole chain undoes both hops
   expect_equal(cmtk_xform_inv(chain, cmtk_xform(chain, p)), p, tolerance = 1e-4)
+
+  # `invert` is per hop, so a chain can be walked in mixed directions -- which no whole-chain
+  # inversion can express. Affine-only, so nothing falls out of a domain and becomes NaN.
+  mixed <- cmtk_xform(chain, p, transform = "affine", invert = c(FALSE, TRUE))
+  expect_true(all(is.finite(mixed)))
+  expect_equal(mixed, p, tolerance = 1e-4) # A then A-inverse, over the same registration
 })
 
 test_that("n_cores does not change the answer", {
@@ -111,7 +157,7 @@ test_that("properties", {
 test_that("errors are informative", {
   expect_error(cmtk_read("/nonexistent/nope.list"), "no CMTK registration")
   expect_error(cmtk_read(tempdir()), "neither")
-  expect_error(cmtk_read(reg_path, invert = c(TRUE, FALSE)), "one flag per registration")
+  expect_error(cmtk_xform(reg, pts, invert = c(TRUE, FALSE)), "one flag per registration")
   expect_error(cmtk_xform(reg, matrix(1, 2, 2)), "\\(N, 3\\)")
   expect_error(cmtk_xform(reg, pts, transform = "bogus"))
   expect_error(cmtk_xform(42, pts), "cmtk_registration")

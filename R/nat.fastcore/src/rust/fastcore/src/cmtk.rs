@@ -95,6 +95,8 @@ pub enum CmtkError {
     BadShape { got: Vec<usize> },
     /// `initial_guess` was not one point per input point.
     GuessLen { got: usize, want: usize },
+    /// `invert` was not one flag per registration in the chain.
+    InvertLen { got: usize, want: usize },
     Cancelled,
 }
 
@@ -142,6 +144,10 @@ impl fmt::Display for CmtkError {
             CmtkError::GuessLen { got, want } => write!(
                 f,
                 "`initial_guess` must have one point per input point: got {got}, want {want}"
+            ),
+            CmtkError::InvertLen { got, want } => write!(
+                f,
+                "`invert` must have one flag per registration: got {got}, want {want}"
             ),
             CmtkError::Cancelled => write!(f, "interrupted"),
         }
@@ -1061,43 +1067,44 @@ fn resolve_registration_path(path: &Path) -> Result<PathBuf, CmtkError> {
 
 /// One or more registrations applied nose-to-tail.
 ///
-/// `invert[i]` traverses registration `i` backwards. A bridging graph routes through
-/// registrations in whichever direction the edge was found, so this is not a luxury.
+/// A chain holds only the *parse*. Which way each hop is travelled is a property of the
+/// traversal, not of the registration — see [`XformOpts::invert`] — so one `Chain` serves
+/// every direction, and an inverted view costs nothing to obtain.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Chain {
     pub regs: Vec<Registration>,
-    pub invert: Vec<bool>,
 }
 
 impl Chain {
-    pub fn new(regs: Vec<Registration>, invert: Vec<bool>) -> Result<Self, CmtkError> {
+    pub fn new(regs: Vec<Registration>) -> Result<Self, CmtkError> {
         if regs.is_empty() {
             return Err(CmtkError::EmptyChain);
         }
-        let invert = if invert.is_empty() {
-            vec![false; regs.len()]
-        } else {
-            invert
-        };
-        if invert.len() != regs.len() {
-            return Err(CmtkError::BadValue {
-                key: "invert".to_string(),
-                msg: format!("expected {} flags, got {}", regs.len(), invert.len()),
-            });
-        }
-        Ok(Chain { regs, invert })
+        Ok(Chain { regs })
     }
 
-    pub fn from_paths(paths: &[PathBuf], invert: &[bool]) -> Result<Self, CmtkError> {
+    pub fn from_paths(paths: &[PathBuf]) -> Result<Self, CmtkError> {
         let regs = paths
             .iter()
             .map(|p| Registration::from_path(p))
             .collect::<Result<Vec<_>, _>>()?;
-        Chain::new(regs, invert.to_vec())
+        Chain::new(regs)
     }
 
     pub fn n_registrations(&self) -> usize {
         self.regs.len()
+    }
+
+    /// Resolve the per-hop direction flags, defaulting to all-forward.
+    fn flags(&self, invert: Option<&[bool]>) -> Result<Vec<bool>, CmtkError> {
+        match invert {
+            None => Ok(vec![false; self.regs.len()]),
+            Some(f) if f.len() == self.regs.len() => Ok(f.to_vec()),
+            Some(f) => Err(CmtkError::InvertLen {
+                got: f.len(),
+                want: self.regs.len(),
+            }),
+        }
     }
 }
 
@@ -1113,6 +1120,32 @@ pub enum Mode {
     Warp,
 }
 
+/// What to do with a point the warp cannot place.
+///
+/// On a single registration `Chain` and `Hop` are the same thing. They differ only on a
+/// chain, and then they differ a lot — measured at a median of 6.4 and up to 18 world units
+/// on a two-hop JFRC2→FCWB chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Fallback {
+    /// Fail the point: `NaN`. What `streamxform` reports as `FAILED`.
+    #[default]
+    None,
+    /// Re-run the **whole chain** affine-only, starting again from the *original* point.
+    ///
+    /// This is what `nat`/`navis` do — they hand the failed rows back to
+    /// `streamxform --affine-only` over the same registration list — so it is the default
+    /// whenever a fallback is asked for. Verified against the binary: `--affine-only`
+    /// composes the affine of *every* registration in the chain.
+    Chain,
+    /// Substitute the affine for **only the hop that failed**, keeping the warps of the hops
+    /// that succeeded.
+    ///
+    /// Arguably the better answer — discarding a perfectly good hop-1 warp because hop 2 ran
+    /// out of domain is crude — but it is a silent departure from every other CMTK-based
+    /// tool, so you have to ask for it.
+    Hop,
+}
+
 #[derive(Clone, Copy)]
 pub struct XformOpts<'a> {
     pub mode: Mode,
@@ -1126,9 +1159,20 @@ pub struct XformOpts<'a> {
     /// silently disagrees with every other CMTK-based tool. The reference implementation
     /// defaults it on; we do not.
     pub allow_extrapolation: bool,
-    /// Replace failed rows with the affine result rather than `NaN`. Only reachable when
-    /// `allow_extrapolation` is false, since extrapolation otherwise never fails.
-    pub fallback_to_affine: bool,
+    /// Replace failed rows with the affine result rather than `NaN`. See [`Fallback`].
+    ///
+    /// Applies in **both** directions. A hop travelled backwards — either because `invert[i]`
+    /// is set or because we are walking the chain in reverse — falls back to the *inverse*
+    /// affine, so the point still ends up in the right space.
+    pub fallback: Fallback,
+    /// Traverse registration `i` backwards. `None` (the default) is all-forward.
+    ///
+    /// This is *per hop*, and it is not the same knob as [`inverse_transform_points`], which
+    /// inverts the whole composition (reversing the order **and** flipping every hop). A
+    /// bridging graph routes through registrations in whichever direction each edge was
+    /// found, so a chain may need to run some hops forwards and others backwards — which no
+    /// whole-chain inversion can express.
+    pub invert: Option<&'a [bool]>,
     pub threads: Option<usize>,
     pub progress: bool,
     pub cancel: Option<&'a AtomicBool>,
@@ -1139,7 +1183,8 @@ impl Default for XformOpts<'_> {
         XformOpts {
             mode: Mode::Warp,
             allow_extrapolation: false,
-            fallback_to_affine: false,
+            fallback: Fallback::None,
+            invert: None,
             threads: None,
             progress: false,
             cancel: None,
@@ -1163,6 +1208,12 @@ pub struct InverseOpts<'a> {
     /// returning a finite answer where CMTK reports failure. Leave it on unless you know
     /// you want to disagree with CMTK.
     pub clamp_to_domain: bool,
+    /// Replace rows the solver could not land with the (inverse) affine result rather than
+    /// `NaN` — the mirror of [`XformOpts::fallback`].
+    pub fallback: Fallback,
+    /// The same per-hop flags as [`XformOpts::invert`], composed with the whole-chain
+    /// inversion: hop `i` runs forwards here exactly when `invert[i]` is set.
+    pub invert: Option<&'a [bool]>,
     pub threads: Option<usize>,
     pub progress: bool,
     pub cancel: Option<&'a AtomicBool>,
@@ -1176,6 +1227,8 @@ impl Default for InverseOpts<'_> {
             tolerance: 1e-9,
             accuracy: 1e-3,
             clamp_to_domain: true,
+            fallback: Fallback::None,
+            invert: None,
             threads: None,
             progress: false,
             cancel: None,
@@ -1198,7 +1251,12 @@ enum Step<'a> {
         /// The affine to fall back to when the spline yields nothing.
         fallback: Option<Affine>,
     },
-    WarpInverse(&'a SplineWarp),
+    WarpInverse {
+        spline: &'a SplineWarp,
+        /// As `Warp::fallback`, but already inverted — a backwards hop must fall back to the
+        /// *inverse* affine, or it would send the point the wrong way.
+        fallback: Option<Affine>,
+    },
 }
 
 /// Resolve `chain` into the ordered steps for a traversal. `reverse` walks the chain
@@ -1206,9 +1264,11 @@ enum Step<'a> {
 fn plan_steps<'a>(
     chain: &'a Chain,
     mode: Mode,
-    fallback_to_affine: bool,
+    fallback: Fallback,
+    invert: Option<&[bool]>,
     reverse: bool,
 ) -> Result<Vec<Step<'a>>, CmtkError> {
+    let flags = chain.flags(invert)?;
     let n = chain.regs.len();
     let order: Vec<usize> = if reverse {
         (0..n).rev().collect()
@@ -1219,7 +1279,7 @@ fn plan_steps<'a>(
     let mut steps = Vec::with_capacity(n);
     for i in order {
         let reg = &chain.regs[i];
-        let backwards = chain.invert[i] != reverse; // XOR
+        let backwards = flags[i] != reverse; // XOR
 
         let use_affine = mode == Mode::Affine || reg.spline.is_none();
         if use_affine {
@@ -1232,14 +1292,23 @@ fn plan_steps<'a>(
             steps.push(Step::Affine(aff));
         } else {
             let spline = reg.spline.as_ref().unwrap();
-            if backwards {
-                steps.push(Step::WarpInverse(spline));
-            } else {
-                let fallback = if fallback_to_affine {
-                    Some(reg.affine.ok_or(CmtkError::NoAffine)?)
+            // Only `Hop` puts a fallback *inside* a step; `Chain` re-runs the whole thing
+            // affine-only instead, and needs nothing here.
+            //
+            // The fallback must travel the same direction as the hop it rescues.
+            let fallback = if fallback == Fallback::Hop {
+                let aff = reg.affine.ok_or(CmtkError::NoAffine)?;
+                Some(if backwards {
+                    aff.inverse().ok_or(CmtkError::SingularAffine)?
                 } else {
-                    None
-                };
+                    aff
+                })
+            } else {
+                None
+            };
+            if backwards {
+                steps.push(Step::WarpInverse { spline, fallback });
+            } else {
                 steps.push(Step::Warp { spline, fallback });
             }
         }
@@ -1266,13 +1335,35 @@ fn run_steps(
                 Some(v) => v,
                 None => fallback.as_ref()?.apply(cur),
             },
-            Step::WarpInverse(spline) => {
+            Step::WarpInverse { spline, fallback } => {
                 let x0 = guess.take().unwrap_or(cur);
-                spline.solve_inverse(cur, x0, iopts)?
+                match spline.solve_inverse(cur, x0, iopts) {
+                    Some(v) => v,
+                    None => fallback.as_ref()?.apply(cur),
+                }
             }
         };
     }
     Some(cur)
+}
+
+/// `run_steps`, plus the whole-chain affine rescue.
+///
+/// `affine` is the same chain planned in [`Mode::Affine`] — non-`None` only under
+/// [`Fallback::Chain`]. It is re-run from the **original** point, so a hop that succeeded is
+/// discarded along with the one that failed. That is what `nat`/`navis` do: they hand the
+/// failed rows straight back to `streamxform --affine-only`.
+#[inline]
+fn run_point(
+    steps: &[Step],
+    affine: Option<&[Step]>,
+    p: [f64; 3],
+    allow_extrapolation: bool,
+    iopts: &InverseOpts,
+    guess: Option<[f64; 3]>,
+) -> Option<[f64; 3]> {
+    run_steps(steps, p, allow_extrapolation, iopts, guess)
+        .or_else(|| run_steps(affine?, p, allow_extrapolation, iopts, None))
 }
 
 fn points_to_vec(points: ArrayView2<f64>) -> Result<Vec<[f64; 3]>, CmtkError> {
@@ -1297,6 +1388,7 @@ fn finish(res: Vec<[f64; 3]>, cancel: Option<&AtomicBool>) -> Result<Array2<f64>
 #[allow(clippy::too_many_arguments)]
 fn drive(
     steps: &[Step],
+    affine: Option<&[Step]>,
     pts: &[[f64; 3]],
     allow_extrapolation: bool,
     iopts: &InverseOpts,
@@ -1320,7 +1412,8 @@ fn drive(
                 for (k, dst) in out.iter_mut().enumerate() {
                     let i = start + k;
                     let guess = guesses.map(|g| g[i]);
-                    if let Some(v) = run_steps(steps, pts[i], allow_extrapolation, iopts, guess) {
+                    let v = run_point(steps, affine, pts[i], allow_extrapolation, iopts, guess);
+                    if let Some(v) = v {
                         *dst = v;
                     }
                 }
@@ -1336,6 +1429,20 @@ fn drive(
     res
 }
 
+/// The affine-only step list that [`Fallback::Chain`] re-runs failed points through, or `None`
+/// under any other fallback. Same chain, same directions — only the warps are dropped.
+fn plan_affine_rescue<'a>(
+    chain: &'a Chain,
+    fallback: Fallback,
+    invert: Option<&[bool]>,
+    reverse: bool,
+) -> Result<Option<Vec<Step<'a>>>, CmtkError> {
+    if fallback != Fallback::Chain {
+        return Ok(None);
+    }
+    plan_steps(chain, Mode::Affine, Fallback::None, invert, reverse).map(Some)
+}
+
 /// Forward-transform `points` (an `(N, 3)` array) through `chain`.
 ///
 /// Rows that cannot be transformed — outside the lattice with `allow_extrapolation` off and
@@ -1346,12 +1453,14 @@ pub fn transform_points(
     opts: XformOpts,
 ) -> Result<Array2<f64>, CmtkError> {
     let pts = points_to_vec(points)?;
-    let steps = plan_steps(chain, opts.mode, opts.fallback_to_affine, false)?;
+    let steps = plan_steps(chain, opts.mode, opts.fallback, opts.invert, false)?;
+    let affine = plan_affine_rescue(chain, opts.fallback, opts.invert, false)?;
     // Only reachable if the chain traverses a hop backwards; forward chains hold no
     // iterative steps, and the defaults are then never consulted.
     let iopts = InverseOpts::default();
     let res = drive(
         &steps,
+        affine.as_deref(),
         &pts,
         opts.allow_extrapolation,
         &iopts,
@@ -1367,8 +1476,8 @@ pub fn transform_points(
 /// [`transform_points`] would map onto them.
 ///
 /// The affine part is inverted exactly. The spline part has no closed-form inverse and is
-/// solved per point; rows that do not converge come back as `NaN`, which is what CMTK's
-/// `streamxform` reports as `FAILED`.
+/// solved per point; rows that do not converge come back as `NaN` — which is what CMTK's
+/// `streamxform` reports as `FAILED` — or as the inverse affine, under a [`Fallback`].
 ///
 /// `initial_guess` (one point per input point, if given) seeds the first iterative solve.
 pub fn inverse_transform_points(
@@ -1388,9 +1497,11 @@ pub fn inverse_transform_points(
         }
     }
     // `reverse = true`: walk the chain backwards, flipping every hop.
-    let steps = plan_steps(chain, opts.mode, false, true)?;
+    let steps = plan_steps(chain, opts.mode, opts.fallback, opts.invert, true)?;
+    let affine = plan_affine_rescue(chain, opts.fallback, opts.invert, true)?;
     let res = drive(
         &steps,
+        affine.as_deref(),
         &pts,
         /* allow_extrapolation = */ true,
         &opts,
@@ -1422,7 +1533,7 @@ mod tests {
     }
 
     fn chain_of(reg: Registration) -> Chain {
-        Chain::new(vec![reg], vec![false]).unwrap()
+        Chain::new(vec![reg]).unwrap()
     }
 
     /// The `streamxform`-generated golden data, keyed by case.
@@ -1957,7 +2068,7 @@ mod tests {
     #[test]
     fn chain_of_two_equals_manual_double_application() {
         let one = chain_of(jfrc2_fcwb());
-        let two = Chain::new(vec![jfrc2_fcwb(), jfrc2_fcwb()], vec![false, false]).unwrap();
+        let two = Chain::new(vec![jfrc2_fcwb(), jfrc2_fcwb()]).unwrap();
         let pts = [[50.0, 50.0, 50.0], [100.0, 100.0, 20.0]];
         let once = transform_points(&one, arr(&pts).view(), XformOpts::default()).unwrap();
         let manual = transform_points(&one, once.view(), XformOpts::default()).unwrap();
@@ -1972,7 +2083,7 @@ mod tests {
     #[test]
     fn chain_inverse_reverses_order() {
         // A chain of [reg, reg] inverted must undo both hops, back to the input.
-        let two = Chain::new(vec![jfrc2_fcwb(), jfrc2_fcwb()], vec![false, false]).unwrap();
+        let two = Chain::new(vec![jfrc2_fcwb(), jfrc2_fcwb()]).unwrap();
         let pts = [[100.0, 100.0, 20.0], [250.0, 150.0, 60.0]];
         let fwd = transform_points(&two, arr(&pts).view(), XformOpts::default()).unwrap();
         let back = inverse_transform_points(&two, fwd.view(), None, InverseOpts::default()).unwrap();
@@ -1988,19 +2099,100 @@ mod tests {
         }
     }
 
+    /// One parse, both directions — the `invert` flags are a property of the traversal, so
+    /// the same `Chain` serves forwards and backwards without being re-read from disk.
     #[test]
     fn invert_flag_undoes_the_forward_transform() {
-        let fwd = chain_of(jfrc2_fcwb());
-        let bwd = Chain::new(vec![jfrc2_fcwb()], vec![true]).unwrap();
+        let chain = chain_of(jfrc2_fcwb());
         let pts = [[100.0, 100.0, 20.0], [250.0, 150.0, 60.0]];
-        let out = transform_points(&fwd, arr(&pts).view(), XformOpts::default()).unwrap();
+        let out = transform_points(&chain, arr(&pts).view(), XformOpts::default()).unwrap();
         // Traversing the same registration backwards is the inverse transform.
-        let back = transform_points(&bwd, out.view(), XformOpts::default()).unwrap();
+        let back = transform_points(
+            &chain,
+            out.view(),
+            XformOpts {
+                invert: Some(&[true]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         for i in 0..pts.len() {
             for j in 0..3 {
                 assert!((back[[i, j]] - pts[i][j]).abs() < 1e-4);
             }
         }
+    }
+
+    /// For a single hop, `invert` and a whole-chain inversion agree. For more than one hop
+    /// they must not: `invert` keeps the order and flips each hop, while `inverse_transform_points`
+    /// also *reverses* the order. Only `invert` can express a mixed-direction chain — which is
+    /// exactly what a bridging graph hands you.
+    ///
+    /// Affine-only, so that no point can fall out of a spline domain: `NaN != NaN` would make
+    /// the inequality below pass vacuously. The difference under test is purely one of order.
+    #[test]
+    fn invert_is_not_the_same_knob_as_a_whole_chain_inversion() {
+        let two = Chain::new(vec![jfrc2_fcwb(), tiny()]).unwrap();
+        let pts = [[100.0, 100.0, 20.0]];
+
+        // `invert` keeps the order and flips each hop: inv(A0), then inv(A1).
+        let all_flipped = transform_points(
+            &two,
+            arr(&pts).view(),
+            XformOpts {
+                mode: Mode::Affine,
+                invert: Some(&[true, true]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // A whole-chain inversion also reverses it: inv(A1), then inv(A0).
+        let reversed = inverse_transform_points(
+            &two,
+            arr(&pts).view(),
+            None,
+            InverseOpts {
+                mode: Mode::Affine,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!(all_flipped.iter().all(|v| v.is_finite()));
+        assert!(reversed.iter().all(|v| v.is_finite()));
+        assert!(
+            (0..3).any(|j| (all_flipped[[0, j]] - reversed[[0, j]]).abs() > 1e-6),
+            "flipping every hop is not the same as reversing the composition"
+        );
+
+        // A mixed chain — hop 0 forwards, hop 1 backwards — has no whole-chain spelling at all.
+        let mixed = transform_points(
+            &two,
+            arr(&pts).view(),
+            XformOpts {
+                mode: Mode::Affine,
+                invert: Some(&[false, true]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(mixed.iter().all(|v| v.is_finite()));
+        assert!((0..3).any(|j| (mixed[[0, j]] - all_flipped[[0, j]]).abs() > 1e-6));
+    }
+
+    #[test]
+    fn invert_must_have_one_flag_per_registration() {
+        let chain = chain_of(jfrc2_fcwb());
+        let err = transform_points(
+            &chain,
+            arr(&[[0.0, 0.0, 0.0]]).view(),
+            XformOpts {
+                invert: Some(&[false, true]),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, CmtkError::InvertLen { got: 2, want: 1 });
     }
 
     #[test]
@@ -2025,7 +2217,7 @@ mod tests {
             arr(&pts).view(),
             XformOpts {
                 allow_extrapolation: false,
-                fallback_to_affine: true,
+                fallback: Fallback::Chain,
                 ..Default::default()
             },
         )
@@ -2041,6 +2233,153 @@ mod tests {
         .unwrap();
         for j in 0..3 {
             assert!((filled[[0, j]] - aff[[0, j]]).abs() < 1e-12);
+        }
+    }
+
+    /// `Chain` and `Hop` are the same thing on one registration. On a *chain* they are not,
+    /// and the gap is large — median 6.4, up to 18 world units over this very chain.
+    ///
+    /// `Chain` re-runs the whole thing affine-only from the **original** point, throwing away
+    /// the hop-1 warp along with the hop-2 failure. That is what `nat`/`navis` do: they hand
+    /// the failed rows back to `streamxform --affine-only`, which (verified against the
+    /// binary) composes the affine of *every* registration in the list. `Hop` keeps the good
+    /// hop-1 warp and swaps the affine in only where the warp actually ran out of domain.
+    #[test]
+    fn chain_and_hop_fallbacks_differ_on_a_chain() {
+        let chain = Chain::new(vec![jfrc2_fcwb(), jfrc2_fcwb()]).unwrap();
+        // Inside the domain for hop 1, but its image lands outside it for hop 2.
+        let p = [[5.0, 179.0, 38.0]];
+        let opts = |fallback| XformOpts {
+            fallback,
+            ..Default::default()
+        };
+
+        assert!(
+            transform_points(&chain, arr(&p).view(), opts(Fallback::None))
+                .unwrap()[[0, 0]]
+                .is_nan(),
+            "this point must actually fail, or the test proves nothing"
+        );
+
+        let by_chain = transform_points(&chain, arr(&p).view(), opts(Fallback::Chain)).unwrap();
+        let by_hop = transform_points(&chain, arr(&p).view(), opts(Fallback::Hop)).unwrap();
+        assert!(by_chain.iter().all(|v| v.is_finite()));
+        assert!(by_hop.iter().all(|v| v.is_finite()));
+
+        // `Chain` == the whole chain in affine mode, from the original point.
+        let affine = transform_points(
+            &chain,
+            arr(&p).view(),
+            XformOpts {
+                mode: Mode::Affine,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for j in 0..3 {
+            assert!((by_chain[[0, j]] - affine[[0, j]]).abs() < 1e-12);
+        }
+
+        // `Hop` keeps the hop-1 warp, so it lands somewhere else entirely.
+        let gap = (0..3)
+            .map(|j| (by_chain[[0, j]] - by_hop[[0, j]]).abs())
+            .fold(0.0f64, f64::max);
+        assert!(gap > 1.0, "expected a real gap, got {gap}");
+    }
+
+    /// The fallback has to survive a hop travelled *backwards*, and it has to travel
+    /// backwards with it. It used to do neither: `plan_steps` attached the fallback only to
+    /// the forward `Step::Warp`, so a fallback on an inverted registration was a
+    /// silent no-op — the failed rows stayed `NaN`. That is the direction navis walks about
+    /// half of its bridging edges in.
+    #[test]
+    fn fallback_to_affine_survives_an_inverted_registration() {
+        let chain = chain_of(jfrc2_fcwb());
+        let bwd = |extra: XformOpts<'static>| XformOpts {
+            invert: Some(&[true]),
+            ..extra
+        };
+        let pts = [[-5000.0, -5000.0, -5000.0], [100.0, 100.0, 20.0]];
+
+        let strict = transform_points(&chain, arr(&pts).view(), bwd(Default::default())).unwrap();
+        assert!(strict[[0, 0]].is_nan());
+        assert!(!strict[[1, 0]].is_nan());
+
+        let filled = transform_points(
+            &chain,
+            arr(&pts).view(),
+            bwd(XformOpts {
+                fallback: Fallback::Chain,
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        assert!(!filled[[0, 0]].is_nan());
+
+        // The rescued row must be the *inverse* affine — the same direction as the hop it
+        // stands in for. Falling back to the forward affine would be worse than a NaN: it is
+        // a plausible-looking number pointing into the wrong space.
+        let inv_aff = transform_points(
+            &chain,
+            arr(&pts).view(),
+            bwd(XformOpts {
+                mode: Mode::Affine,
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        let fwd_aff = transform_points(
+            &chain,
+            arr(&pts).view(),
+            XformOpts {
+                mode: Mode::Affine,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for j in 0..3 {
+            assert!((filled[[0, j]] - inv_aff[[0, j]]).abs() < 1e-12);
+        }
+        assert!(
+            (0..3).any(|j| (inv_aff[[0, j]] - fwd_aff[[0, j]]).abs() > 1.0),
+            "the two directions must differ, or this test proves nothing"
+        );
+    }
+
+    /// The same hole seen from the other side: `inverse_transform_points` used to hard-code
+    /// `Fallback::None` when planning its steps.
+    #[test]
+    fn fallback_to_affine_survives_xform_inv() {
+        let chain = chain_of(jfrc2_fcwb());
+        let pts = [[-5000.0, -5000.0, -5000.0], [100.0, 100.0, 20.0]];
+
+        let strict =
+            inverse_transform_points(&chain, arr(&pts).view(), None, InverseOpts::default())
+                .unwrap();
+        assert!(strict[[0, 0]].is_nan());
+
+        let filled = inverse_transform_points(
+            &chain,
+            arr(&pts).view(),
+            None,
+            InverseOpts {
+                fallback: Fallback::Chain,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let inv_aff = inverse_transform_points(
+            &chain,
+            arr(&pts).view(),
+            None,
+            InverseOpts {
+                mode: Mode::Affine,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for j in 0..3 {
+            assert!((filled[[0, j]] - inv_aff[[0, j]]).abs() < 1e-12);
         }
     }
 
@@ -2071,6 +2410,6 @@ mod tests {
 
     #[test]
     fn empty_chain_errors() {
-        assert_eq!(Chain::new(vec![], vec![]).unwrap_err(), CmtkError::EmptyChain);
+        assert_eq!(Chain::new(vec![]).unwrap_err(), CmtkError::EmptyChain);
     }
 }

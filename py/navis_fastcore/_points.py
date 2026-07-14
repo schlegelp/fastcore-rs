@@ -19,3 +19,39 @@ def _prep_points(points, name="points"):
             f"{np.shape(points)}"
         )
     return np.ascontiguousarray(pts), was_1d
+
+
+def _prep_fallback(fallback):
+    """Coerce `fallback_to_affine` to "none" | "chain" | "hop".
+
+    `True` means "chain" - the nat/navis semantics - so that the plain boolean spelling stays
+    the faithful one and the departure has to be named.
+    """
+    if fallback is False or fallback is None:
+        return "none"
+    if fallback is True:
+        return "chain"
+    if fallback in ("none", "chain", "hop"):
+        return fallback
+    raise ValueError(
+        "`fallback_to_affine` must be False, True, 'chain' or 'hop', got "
+        f"{fallback!r}"
+    )
+
+
+def _prep_invert(invert, n, what="registration"):
+    """Coerce `invert` to a list of `n` bools, or None for the all-forward default.
+
+    `None` rather than `[False] * n` so the core can skip the per-hop machinery entirely on
+    the common path.
+    """
+    if invert is None or invert is False:
+        return None
+    if isinstance(invert, bool):
+        return [invert] * n
+    flags = [bool(i) for i in invert]
+    if len(flags) != n:
+        raise ValueError(
+            f"`invert` must have one flag per {what}: expected {n}, got {len(flags)}"
+        )
+    return flags if any(flags) else None

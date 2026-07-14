@@ -20,15 +20,32 @@ back = reg.xform_inv(xf)        # and back again
 
 The path may be a `*.list` directory or a `registration` file itself, plain or gzipped.
 
-## Chaining
+## Chaining, and direction
 
-Pass a list to compose registrations, applied left to right. `invert` traverses one
-backwards — which is what you need when routing through a bridging graph, where an edge may
-be walked in either direction.
+Pass a list to compose registrations, applied left to right.
+
+**Direction is chosen per call, not per object.** The registration you load holds only the
+*parse*, so one instance serves every direction — you never pay to read a file twice just to
+walk it the other way.
 
 ```python
 chain = fastcore.CmtkRegistration(["A_B.list", "B_C.list"])   # A -> B -> C
-mixed = fastcore.CmtkRegistration(["A_B.list", "C_B.list"], invert=[False, True])  # A -> B -> C
+
+chain.xform(points)                            # forwards
+chain.xform_inv(points)                        # the whole composition, backwards
+chain.xform(points, invert=[False, True])      # hop 0 forwards, hop 1 backwards
+```
+
+Those last two are **not** the same knob, and the difference bites on a chain. `xform_inv`
+inverts the whole composition — it reverses the order *and* flips every hop. `invert` flips
+hops in place, keeping the order. For a single registration they agree; for a chain they do
+not, and only `invert` can express a **mixed-direction** traversal — which is exactly what a
+bridging graph hands you, since an edge may be stored in either direction:
+
+```python
+# A -> B -> C, where the second registration happens to be stored as C->B
+chain = fastcore.CmtkRegistration(["A_B.list", "C_B.list"])
+chain.xform(points, invert=[False, True])
 ```
 
 ## Failed points are `NaN`, and that is deliberate
@@ -56,8 +73,35 @@ faithful = reg.xform_inv(points)                          # NaN where CMTK says 
 loose    = reg.xform_inv(points, clamp_to_domain=False)   # finds out-of-domain preimages
 ```
 
-`fallback_to_affine=True` is a middle road for the forward direction: out-of-domain points
-fall back to the affine component rather than becoming `NaN`.
+`fallback_to_affine=True` is a middle road: points the warp cannot place fall back to the
+affine component rather than becoming `NaN`. It works in **both** directions, and on either
+method — a hop travelled backwards (`invert=True`, or `xform_inv`) falls back to the
+*inverse* affine, so the rescued point still lands in the space you asked for.
+
+```python
+reg.xform(points, fallback_to_affine=True)                     # out-of-domain -> affine
+reg.xform(points, invert=True, fallback_to_affine=True)        # ...-> inverse affine
+reg.xform_inv(points, fallback_to_affine=True)                 # ...same
+```
+
+### On a chain, *what* falls back matters
+
+Say a point clears hop 1 but its image lands outside hop 2's domain. There are two defensible
+things to do, and they are **not** close together — on a two-hop JFRC2→FCWB chain they differ
+by a median of 6.4 and up to 18 world units:
+
+| | what it does |
+|---|---|
+| `fallback_to_affine=True` (= `"chain"`) | Re-runs the **whole chain** affine-only, from the *original* point. The good hop-1 warp is discarded along with the hop-2 failure. |
+| `fallback_to_affine="hop"` | Keeps the hop-1 warp and swaps the affine in for **only** the hop that failed. |
+
+`"chain"` is the default because it is what `nat` and `navis` do: they hand the failed rows
+straight back to `streamxform --affine-only` over the same registration list, and (verified
+against the binary) `--affine-only` composes the affine of *every* registration in that list.
+
+`"hop"` is arguably the better answer — throwing away a perfectly good hop-1 warp because hop
+2 ran out of domain is crude. But it is a **silent** departure from every other CMTK-based
+tool, so you have to name it. On a single registration the two are identical.
 
 ## Accuracy
 

@@ -12,9 +12,10 @@
 #' @param path Path to a CMTK `.list` registration directory, or to a `registration`
 #'   file itself (plain or gzipped). Pass a character vector of several to build a
 #'   chain, applied in order: `points -> path[1] -> path[2] -> ... -> output`.
-#' @param invert Logical, recycled to the length of `path`. `TRUE` traverses that
-#'   registration backwards -- useful when routing through a bridging graph, where an
-#'   edge may be walked in either direction.
+#'
+#' Direction is **not** fixed here. It is chosen per call -- see the `invert` argument of
+#' [cmtk_xform()], and [cmtk_xform_inv()] -- so one object serves every direction and the
+#' registration is parsed only once.
 #'
 #' @return An object of class `cmtk_registration`.
 #'
@@ -24,24 +25,15 @@
 #' reg
 #'
 #' # a chain: A -> B -> C, where the second registration is stored as C->B
-#' chain <- cmtk_read(c("A_B.list", "C_B.list"), invert = c(FALSE, TRUE))
+#' chain <- cmtk_read(c("A_B.list", "C_B.list"))
+#' cmtk_xform(chain, pts, invert = c(FALSE, TRUE))
 #' }
 #'
 #' @seealso [cmtk_xform()], [cmtk_xform_inv()]
 #' @export
-cmtk_read <- function(path, invert = FALSE) {
+cmtk_read <- function(path) {
   path <- as.character(path)
   if (!length(path)) stop("`path` must name at least one registration")
-
-  invert <- as.logical(invert)
-  if (length(invert) == 1L) invert <- rep(invert, length(path))
-  if (length(invert) != length(path)) {
-    stop(sprintf(
-      "`invert` must be length 1 or one flag per registration (%d), got %d",
-      length(path), length(invert)
-    ))
-  }
-  if (anyNA(invert)) stop("`invert` must not contain NA")
 
   # Resolve the paths here rather than in Rust. extendr cannot raise an R condition from a
   # constructor -- a panic there loses its message and R only sees "User function panicked" --
@@ -59,11 +51,8 @@ cmtk_read <- function(path, invert = FALSE) {
     }
   }
 
-  ptr <- CmtkRegistration$load(path, as.integer(invert))
-  structure(
-    list(ptr = ptr, path = path, invert = invert),
-    class = "cmtk_registration"
-  )
+  ptr <- CmtkRegistration$load(path)
+  structure(list(ptr = ptr, path = path), class = "cmtk_registration")
 }
 
 #' @export
@@ -75,10 +64,7 @@ print.cmtk_registration <- function(x, ...) {
     paste(kind, collapse = " -> ")
   ))
   for (i in seq_along(x$path)) {
-    cat(sprintf(
-      "  [%d] %s%s\n", i, x$path[i],
-      if (isTRUE(x$invert[i])) "  (inverted)" else ""
-    ))
+    cat(sprintf("  [%d] %s\n", i, x$path[i]))
   }
   invisible(x)
 }
@@ -116,8 +102,29 @@ print.cmtk_registration <- function(x, ...) {
 #'   outside the domain as `FAILED`, and we return `NaN`. Setting this to `TRUE` gives
 #'   every point *an* answer, but that answer extrapolates a warp which was never fitted
 #'   there, and it will silently disagree with every other CMTK-based tool.
-#' @param fallback_to_affine Replace failed rows with the affine result rather than
-#'   `NaN`. Only reachable when `allow_extrapolation = FALSE`.
+#' @param fallback_to_affine Replace failed rows with the affine result rather than `NaN`.
+#'   One of `FALSE` (the default), `TRUE`/`"chain"`, or `"hop"`.
+#'
+#'   `TRUE` (or `"chain"`) re-runs the **whole chain** affine-only, starting again from the
+#'   *original* point. This is what `nat`/`navis` do -- they hand the failed rows back to
+#'   `streamxform --affine-only` over the same registration list -- so it is the default
+#'   whenever a fallback is asked for.
+#'
+#'   `"hop"` instead swaps the affine in for **only the hop that failed**, keeping the warps of
+#'   the hops that succeeded. Arguably the better answer, but a silent departure from every
+#'   other CMTK-based tool, so you have to ask for it. On a single registration the two are
+#'   identical; on a chain they differ by a median of ~6 world units.
+#'
+#'   Works in both directions: a hop travelled backwards falls back to the *inverse* affine,
+#'   so the rescued point still lands in the space you asked for.
+#' @param invert Logical, length 1 or one flag per registration. `TRUE` traverses that
+#'   registration backwards -- what you need when routing through a bridging graph, where an
+#'   edge may be walked in either direction, and a chain may need some hops forwards and
+#'   others backwards.
+#'
+#'   This is **not** the same as [cmtk_xform_inv()], which inverts the whole composition
+#'   (reversing the order *and* flipping every hop). For a single registration the two agree;
+#'   for a chain they do not, and only `invert` can express a mixed-direction traversal.
 #' @param n_cores Number of threads. `NULL` (default) uses all cores.
 #' @param progress Show a progress bar.
 #'
@@ -138,11 +145,12 @@ print.cmtk_registration <- function(x, ...) {
 #' @export
 cmtk_xform <- function(reg, xyz, transform = c("warp", "affine"),
                        allow_extrapolation = FALSE, fallback_to_affine = FALSE,
-                       n_cores = NULL, progress = FALSE) {
+                       invert = FALSE, n_cores = NULL, progress = FALSE) {
   transform <- match.arg(transform)
   .cmtk_ptr(reg)$xform(
     .cmtk_xyz(xyz), transform,
-    isTRUE(allow_extrapolation), isTRUE(fallback_to_affine),
+    isTRUE(allow_extrapolation), .fallback_mode(fallback_to_affine),
+    .invert_flags(invert, length(reg$path), "registration"),
     if (is.null(n_cores)) NULL else as.integer(n_cores),
     isTRUE(progress)
   )
@@ -170,6 +178,11 @@ cmtk_xform <- function(reg, xyz, transform = c("warp", "affine"),
 #'   **This is what makes the result agree with CMTK.** Turning it off finds preimages
 #'   that lie outside the image domain, where `streamxform` reports failure -- so you
 #'   will get finite numbers where CMTK gives you none.
+#' @param fallback_to_affine Replace rows the solver could not land with the *inverse* affine
+#'   result rather than `NaN` -- the mirror of the same argument on [cmtk_xform()], with the
+#'   same `"chain"` (default) and `"hop"` semantics.
+#' @param invert The same per-hop flags as on [cmtk_xform()], composed with this whole-chain
+#'   inversion: hop `i` runs *forwards* here exactly when `invert[i]` is `TRUE`.
 #'
 #' @return An `(N, 3)` matrix. Rows that did not converge are `NaN`.
 #'
@@ -186,6 +199,7 @@ cmtk_xform <- function(reg, xyz, transform = c("warp", "affine"),
 cmtk_xform_inv <- function(reg, xyz, transform = c("warp", "affine"),
                            initial_guess = NULL, max_iter = 50L, tolerance = 1e-9,
                            accuracy = 1e-3, clamp_to_domain = TRUE,
+                           fallback_to_affine = FALSE, invert = FALSE,
                            n_cores = NULL, progress = FALSE) {
   transform <- match.arg(transform)
   xyz <- .cmtk_xyz(xyz)
@@ -201,7 +215,8 @@ cmtk_xform_inv <- function(reg, xyz, transform = c("warp", "affine"),
   .cmtk_ptr(reg)$xform_inv(
     xyz, transform, initial_guess,
     as.integer(max_iter), as.double(tolerance), as.double(accuracy),
-    isTRUE(clamp_to_domain),
+    isTRUE(clamp_to_domain), .fallback_mode(fallback_to_affine),
+    .invert_flags(invert, length(reg$path), "registration"),
     if (is.null(n_cores)) NULL else as.integer(n_cores),
     isTRUE(progress)
   )

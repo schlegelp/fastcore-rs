@@ -4,16 +4,16 @@
 \alias{cmtk_read}
 \title{Read a CMTK registration}
 \usage{
-cmtk_read(path, invert = FALSE)
+cmtk_read(path)
 }
 \arguments{
 \item{path}{Path to a CMTK \code{.list} registration directory, or to a \code{registration}
 file itself (plain or gzipped). Pass a character vector of several to build a
-chain, applied in order: \code{points -> path[1] -> path[2] -> ... -> output}.}
+chain, applied in order: \code{points -> path[1] -> path[2] -> ... -> output}.
 
-\item{invert}{Logical, recycled to the length of \code{path}. \code{TRUE} traverses that
-registration backwards -- useful when routing through a bridging graph, where an
-edge may be walked in either direction.}
+Direction is \strong{not} fixed here. It is chosen per call -- see the \code{invert} argument of
+\code{\link[=cmtk_xform]{cmtk_xform()}}, and \code{\link[=cmtk_xform_inv]{cmtk_xform_inv()}} -- so one object serves every direction and the
+registration is parsed only once.}
 }
 \value{
 An object of class \code{cmtk_registration}.
@@ -35,7 +35,8 @@ reg <- cmtk_read("JFRC2_FCWB.list")
 reg
 
 # a chain: A -> B -> C, where the second registration is stored as C->B
-chain <- cmtk_read(c("A_B.list", "C_B.list"), invert = c(FALSE, TRUE))
+chain <- cmtk_read(c("A_B.list", "C_B.list"))
+cmtk_xform(chain, pts, invert = c(FALSE, TRUE))
 }
 
 }

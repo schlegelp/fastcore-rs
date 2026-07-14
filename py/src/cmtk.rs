@@ -9,8 +9,8 @@ use pyo3::prelude::*;
 
 use crate::nblast::run_interruptible;
 use fastcore::cmtk::{
-    inverse_transform_points, transform_points, Chain, CmtkError, InverseOpts, Mode, Registration,
-    XformOpts,
+    inverse_transform_points, transform_points, Chain, CmtkError, Fallback, InverseOpts, Mode,
+    Registration, XformOpts,
 };
 
 fn to_py_err(e: CmtkError) -> PyErr {
@@ -23,6 +23,18 @@ fn mode_of(s: &str) -> PyResult<Mode> {
         "affine" => Ok(Mode::Affine),
         other => Err(PyValueError::new_err(format!(
             "`transform` must be 'warp' or 'affine', got {other:?}"
+        ))),
+    }
+}
+
+/// The Python wrapper has already turned `False`/`True`/`"chain"`/`"hop"` into one of these.
+fn fallback_of(s: &str) -> PyResult<Fallback> {
+    match s {
+        "none" => Ok(Fallback::None),
+        "chain" => Ok(Fallback::Chain),
+        "hop" => Ok(Fallback::Hop),
+        other => Err(PyValueError::new_err(format!(
+            "`fallback_to_affine` must be False, True, 'chain' or 'hop', got {other:?}"
         ))),
     }
 }
@@ -49,21 +61,22 @@ pub struct PyCmtkRegistration {
 impl PyCmtkRegistration {
     /// Load one or more CMTK registrations.
     ///
+    /// The object holds only the *parse*. Direction is chosen per call (`xform`/`xform_inv`, and
+    /// the `invert` argument on each), so one instance serves every direction.
+    ///
     /// Arguments:
     /// - `paths`: one or more `*.list` directories (or `registration` files, plain or
     ///   gzipped), applied nose-to-tail.
-    /// - `invert`: per-path direction flags. `True` traverses that registration backwards.
     #[new]
-    #[pyo3(signature = (paths, invert=None))]
-    fn new(paths: Vec<String>, invert: Option<Vec<bool>>) -> PyResult<Self> {
+    #[pyo3(signature = (paths))]
+    fn new(paths: Vec<String>) -> PyResult<Self> {
         let pbs: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
         let regs = pbs
             .iter()
             .map(|p| Registration::from_path(p))
             .collect::<Result<Vec<_>, _>>()
             .map_err(to_py_err)?;
-        let invert = invert.unwrap_or_else(|| vec![false; regs.len()]);
-        let chain = Chain::new(regs, invert).map_err(to_py_err)?;
+        let chain = Chain::new(regs).map_err(to_py_err)?;
         Ok(PyCmtkRegistration {
             inner: Arc::new(chain),
             paths,
@@ -78,13 +91,17 @@ impl PyCmtkRegistration {
     /// - `allow_extrapolation`: evaluate points outside the domain box by clamping to the
     ///   outermost control points, instead of failing them. Defaults to `False`, which is
     ///   what CMTK does — `streamxform` reports such a point as `FAILED`.
-    /// - `fallback_to_affine`: replace failed rows with the affine result.
+    /// - `fallback_to_affine`: `"none"`, `"chain"` (re-run the whole chain affine-only from the
+    ///   original point, as nat/navis do) or `"hop"` (swap the affine in for only the hop that
+    ///   failed, keeping the warps that succeeded).
+    /// - `invert`: per-hop direction flags, one per path. `True` traverses that registration
+    ///   backwards. Not the same as `xform_inv`, which reverses the whole composition.
     /// - `n_cores`: cap the thread pool. `None` uses all cores.
     ///
     /// Returns:
     /// An `(N, 3)` array. Rows that could not be transformed are `NaN`.
     #[pyo3(signature = (points, transform="warp", allow_extrapolation=false,
-                        fallback_to_affine=false, n_cores=None, progress=false))]
+                        fallback_to_affine="none", invert=None, n_cores=None, progress=false))]
     #[allow(clippy::too_many_arguments)]
     fn xform<'py>(
         &self,
@@ -92,11 +109,13 @@ impl PyCmtkRegistration {
         points: PyReadonlyArray2<'py, f64>,
         transform: &str,
         allow_extrapolation: bool,
-        fallback_to_affine: bool,
+        fallback_to_affine: &str,
+        invert: Option<Vec<bool>>,
         n_cores: Option<usize>,
         progress: bool,
     ) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let mode = mode_of(transform)?;
+        let fallback = fallback_of(fallback_to_affine)?;
         // Materialise before detaching: the borrow cannot outlive the GIL release.
         let pts = points.as_array().to_owned();
         let chain = Arc::clone(&self.inner);
@@ -106,7 +125,8 @@ impl PyCmtkRegistration {
             let opts = XformOpts {
                 mode,
                 allow_extrapolation,
-                fallback_to_affine,
+                fallback,
+                invert: invert.as_deref(),
                 threads: n_cores,
                 progress,
                 cancel: Some(&cancel),
@@ -133,13 +153,15 @@ impl PyCmtkRegistration {
     /// - `clamp_to_domain`: confine the iterate to the spline's domain box. This is what
     ///   makes the result agree with `streamxform`; turning it off finds preimages outside
     ///   the image domain, where CMTK reports failure.
+    /// - `fallback_to_affine`: as for `xform`, in the inverse direction.
+    /// - `invert`: as for `xform`, composed with the whole-chain inversion.
     /// - `n_cores`: cap the thread pool. `None` uses all cores.
     ///
     /// Returns:
     /// An `(N, 3)` array. Rows that did not converge are `NaN`.
     #[pyo3(signature = (points, transform="warp", initial_guess=None, max_iter=50,
                         tolerance=1e-9, accuracy=1e-3, clamp_to_domain=true,
-                        n_cores=None, progress=false))]
+                        fallback_to_affine="none", invert=None, n_cores=None, progress=false))]
     #[allow(clippy::too_many_arguments)]
     fn xform_inv<'py>(
         &self,
@@ -151,10 +173,13 @@ impl PyCmtkRegistration {
         tolerance: f64,
         accuracy: f64,
         clamp_to_domain: bool,
+        fallback_to_affine: &str,
+        invert: Option<Vec<bool>>,
         n_cores: Option<usize>,
         progress: bool,
     ) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let mode = mode_of(transform)?;
+        let fallback = fallback_of(fallback_to_affine)?;
         let pts = points.as_array().to_owned();
         let guess = initial_guess.map(|g| g.as_array().to_owned());
         let chain = Arc::clone(&self.inner);
@@ -167,6 +192,8 @@ impl PyCmtkRegistration {
                 tolerance,
                 accuracy,
                 clamp_to_domain,
+                fallback,
+                invert: invert.as_deref(),
                 threads: n_cores,
                 progress,
                 cancel: Some(&cancel),
@@ -193,11 +220,6 @@ impl PyCmtkRegistration {
     #[getter]
     fn has_spline(&self) -> Vec<bool> {
         self.inner.regs.iter().map(|r| r.spline.is_some()).collect()
-    }
-
-    #[getter]
-    fn invert(&self) -> Vec<bool> {
-        self.inner.invert.clone()
     }
 
     /// The control-point lattice dimensions of each spline warp, `(k, 3)`. `None` if no

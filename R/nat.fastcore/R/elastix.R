@@ -13,8 +13,10 @@
 #'
 #' @param path Path to a `TransformParameters.*.txt` file. Pass several to build a chain, applied
 #'   in order: `xyz -> path[1] -> path[2] -> ... -> output`.
-#' @param invert Logical, recycled over `path`. `TRUE` traverses that transform backwards. Useful
-#'   when routing through a bridging graph, where an edge may be traversed either way.
+#'
+#' Direction is **not** fixed here. It is chosen per call -- see the `invert` argument of
+#' [elastix_xform()], and [elastix_xform_inv()] -- so one object serves every direction and the
+#' file is parsed only once. That is worth caring about: real warps run to tens of megabytes.
 #'
 #' @return An object of class `elastix_transform`.
 #'
@@ -27,18 +29,9 @@
 #' }
 #'
 #' @export
-elastix_read <- function(path, invert = FALSE) {
+elastix_read <- function(path) {
   path <- as.character(path)
   if (!length(path)) stop("`path` must name at least one transform")
-
-  invert <- as.logical(invert)
-  if (length(invert) == 1L) invert <- rep(invert, length(path))
-  if (length(invert) != length(path)) {
-    stop(sprintf(
-      "`invert` must have one flag per transform: expected %d, got %d",
-      length(path), length(invert)
-    ))
-  }
 
   # Validate here rather than in Rust. extendr cannot raise an R condition from a constructor --
   # a panic there loses its message and R only sees "User function panicked" -- so the common
@@ -49,11 +42,8 @@ elastix_read <- function(path, invert = FALSE) {
     }
   }
 
-  ptr <- ElastixTransformPtr$load(path, as.integer(invert))
-  structure(
-    list(ptr = ptr, path = path, invert = invert),
-    class = "elastix_transform"
-  )
+  ptr <- ElastixTransformPtr$load(path)
+  structure(list(ptr = ptr, path = path), class = "elastix_transform")
 }
 
 #' @export
@@ -64,7 +54,7 @@ print.elastix_transform <- function(x, ...) {
     length(kinds), if (length(kinds) == 1L) "" else "s", paste(kinds, collapse = " -> ")
   ))
   for (i in seq_along(x$path)) {
-    cat(sprintf("  %s%s\n", x$path[i], if (x$invert[i]) "  (inverted)" else ""))
+    cat(sprintf("  %s\n", x$path[i]))
   }
   invisible(x)
 }
@@ -98,6 +88,13 @@ print.elastix_transform <- function(x, ...) {
 #'   The default is silent by nature: a neuron straddling the grid edge comes back partly
 #'   transformed and looks perfectly fine. Use `"nan"` when you would rather see the boundary
 #'   than trust it.
+#' @param invert Logical, length 1 or one flag per transform. `TRUE` traverses that transform
+#'   backwards -- what you need when routing through a bridging graph, where an edge may be walked
+#'   in either direction.
+#'
+#'   This is **not** the same as [elastix_xform_inv()], which inverts the whole composition
+#'   (reversing the order *and* flipping every hop). For a single transform the two agree; for a
+#'   chain they do not, and only `invert` can express a mixed-direction traversal.
 #' @param n_cores Cap the thread pool. `NULL` uses all cores.
 #' @param progress Show a progress bar.
 #'
@@ -113,11 +110,12 @@ print.elastix_transform <- function(x, ...) {
 #'
 #' @export
 elastix_xform <- function(xf, xyz, out_of_bounds = c("identity", "nan"),
-                          n_cores = NULL, progress = FALSE) {
+                          invert = FALSE, n_cores = NULL, progress = FALSE) {
   out_of_bounds <- match.arg(out_of_bounds)
   .elastix_ptr(xf)$xform(
     .elastix_xyz(xyz),
     out_of_bounds,
+    .invert_flags(invert, length(xf$path), "transform"),
     if (is.null(n_cores)) NULL else as.integer(n_cores),
     isTRUE(progress)
   )
@@ -150,6 +148,8 @@ elastix_xform <- function(xf, xyz, out_of_bounds = c("identity", "nan"),
 #' @param lattice_points Size of the global seed lattice -- the last-resort start for the few
 #'   points the cheap seeds fail on. Built once per call and consulted only by points that have
 #'   already failed. Set to 0 to disable.
+#' @param invert The same per-hop flags as on [elastix_xform()], composed with this whole-chain
+#'   inversion: hop `i` runs *forwards* here exactly when `invert[i]` is `TRUE`.
 #'
 #' @return An `(N, 3)` matrix of coordinates in the source space. Rows with no preimage are `NaN`.
 #'
@@ -159,7 +159,7 @@ elastix_xform <- function(xf, xyz, out_of_bounds = c("identity", "nan"),
 elastix_xform_inv <- function(xf, xyz, out_of_bounds = c("identity", "nan"),
                               initial_guess = NULL, max_iter = 50L, seed_iter = 8L,
                               tolerance = 1e-9, accuracy = 1e-3, lattice_points = 16000L,
-                              n_cores = NULL, progress = FALSE) {
+                              invert = FALSE, n_cores = NULL, progress = FALSE) {
   out_of_bounds <- match.arg(out_of_bounds)
   xyz <- .elastix_xyz(xyz)
 
@@ -191,6 +191,7 @@ elastix_xform_inv <- function(xf, xyz, out_of_bounds = c("identity", "nan"),
     as.double(tolerance),
     as.double(accuracy),
     as.integer(lattice_points),
+    .invert_flags(invert, length(xf$path), "transform"),
     if (is.null(n_cores)) NULL else as.integer(n_cores),
     isTRUE(progress)
   )
@@ -226,3 +227,45 @@ elastix_grid_spacing <- function(xf) .elastix_ptr(xf)$grid_spacing()
 #' @rdname elastix_properties
 #' @export
 elastix_grid_origin <- function(xf) .elastix_ptr(xf)$grid_origin()
+
+
+#' Can an Elastix transform be inverted?
+#'
+#' Answered **without reading the transform's coefficients**, and so cheaply enough to ask about
+#' many files at once.
+#'
+#' A transform cannot be inverted exactly when some step in its chain combines via `Add`:
+#' `T(x) = T_initial(x) + T_this(x) - x` does not decompose into invertible hops. That fact lives
+#' in one short key -- but the key sits *after* a coefficient array that runs to tens of megabytes,
+#' so answering it honestly used to mean parsing the whole file.
+#'
+#' This walks the same chain and applies the same validation, skipping only the numbers: roughly
+#' **20x** faster than [elastix_read()] across real registrations, and ~200x on the largest.
+#'
+#' Use it when you must label *many* files up front and cannot afford to parse them -- building a
+#' bridging graph, say, where each edge needs to know whether it can be walked backwards.
+#'
+#' @param path Path to a `TransformParameters.*.txt` file. Its initial-transform chain is
+#'   followed, however deep.
+#'
+#' @return `TRUE` if [elastix_xform_inv()] would work on it.
+#'
+#'   Errors if the file would not load at all (missing, not an Elastix transform, an unsupported
+#'   transform kind, binary parameters, a circular chain) -- so `TRUE` is a promise, not a guess.
+#'
+#' @seealso [elastix_read()], [elastix_xform_inv()]
+#'
+#' @examples
+#' \dontrun{
+#' elastix_probe_invertible("TransformParameters.FixedFANC.txt")
+#' }
+#'
+#' @export
+elastix_probe_invertible <- function(path) {
+  path <- as.character(path)
+  if (length(path) != 1L) stop("`path` must name exactly one transform")
+  if (!file.exists(path) || dir.exists(path)) {
+    stop(sprintf("no Elastix transform file at '%s'", path))
+  }
+  probe_invertible_raw(path)
+}

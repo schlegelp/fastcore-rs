@@ -131,11 +131,23 @@ xyzmatrix(n) <- cmtk_xform(reg, xyzmatrix(n))
 # reports them as FAILED
 ```
 
+Direction is chosen per call, so one object serves both ways round and the file is parsed
+once. `invert` is *per hop* — unlike `cmtk_xform_inv`, which reverses the whole chain — so
+it is the only way to express a mixed-direction traversal:
+
+```r
+back  <- cmtk_xform(reg, pts, invert = TRUE)          # same parse, other direction
+chain <- cmtk_read(c("A_B.list", "C_B.list"))         # A -> B -> C, 2nd stored as C->B
+mixed <- cmtk_xform(chain, pts, invert = c(FALSE, TRUE))
+```
+
 **Elastix transforms** — see [Elastix transforms](../python/elastix.md) for the full story
 
 - `elastix_read`: read a `TransformParameters` file (its initial-transform chain is followed
   automatically, however deep)
 - `elastix_xform` / `elastix_xform_inv`: apply it to points, forwards / backwards
+- `elastix_probe_invertible`: can it be inverted? Answered without reading the coefficients —
+  ~20x faster than a full read, for labelling many files at once
 - `elastix_affine`, `elastix_kinds`, `elastix_grid_size`, `elastix_grid_spacing`,
   `elastix_grid_origin`: properties
 
@@ -149,6 +161,9 @@ xyzmatrix(n) <- elastix_xform(xf, xyzmatrix(n))
 # *unchanged*, which is what Elastix does. Pass out_of_bounds = "nan" to see the boundary.
 back <- elastix_xform_inv(xf, xyzmatrix(n))   # Elastix itself cannot invert at all
 ```
+
+As with CMTK, direction is chosen per call — `elastix_xform(xf, pts, invert = TRUE)` — so a
+transform and its inverse share one parse. That matters when the warp is tens of megabytes.
 
 ## Function reference
 

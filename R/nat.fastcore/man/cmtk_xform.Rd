@@ -10,6 +10,7 @@ cmtk_xform(
   transform = c("warp", "affine"),
   allow_extrapolation = FALSE,
   fallback_to_affine = FALSE,
+  invert = FALSE,
   n_cores = NULL,
   progress = FALSE
 )
@@ -32,8 +33,30 @@ outside the domain as \code{FAILED}, and we return \code{NaN}. Setting this to \
 every point \emph{an} answer, but that answer extrapolates a warp which was never fitted
 there, and it will silently disagree with every other CMTK-based tool.}
 
-\item{fallback_to_affine}{Replace failed rows with the affine result rather than
-\code{NaN}. Only reachable when \code{allow_extrapolation = FALSE}.}
+\item{fallback_to_affine}{Replace failed rows with the affine result rather than \code{NaN}.
+One of \code{FALSE} (the default), \code{TRUE}/\code{"chain"}, or \code{"hop"}.
+
+\code{TRUE} (or \code{"chain"}) re-runs the \strong{whole chain} affine-only, starting again from the
+\emph{original} point. This is what \code{nat}/\code{navis} do -- they hand the failed rows back to
+\code{streamxform --affine-only} over the same registration list -- so it is the default
+whenever a fallback is asked for.
+
+\code{"hop"} instead swaps the affine in for \strong{only the hop that failed}, keeping the warps of
+the hops that succeeded. Arguably the better answer, but a silent departure from every
+other CMTK-based tool, so you have to ask for it. On a single registration the two are
+identical; on a chain they differ by a median of ~6 world units.
+
+Works in both directions: a hop travelled backwards falls back to the \emph{inverse} affine,
+so the rescued point still lands in the space you asked for.}
+
+\item{invert}{Logical, length 1 or one flag per registration. \code{TRUE} traverses that
+registration backwards -- what you need when routing through a bridging graph, where an
+edge may be walked in either direction, and a chain may need some hops forwards and
+others backwards.
+
+This is \strong{not} the same as \code{\link[=cmtk_xform_inv]{cmtk_xform_inv()}}, which inverts the whole composition
+(reversing the order \emph{and} flipping every hop). For a single registration the two agree;
+for a chain they do not, and only \code{invert} can express a mixed-direction traversal.}
 
 \item{n_cores}{Number of threads. \code{NULL} (default) uses all cores.}
 
