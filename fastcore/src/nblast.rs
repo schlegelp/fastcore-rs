@@ -22,7 +22,7 @@
 //!   * `precision` — the output matrix element type (`f32` / `f64`), chosen by
 //!     the [`ScoreOut`] type parameter; the scoring math always runs in `f64`.
 
-use aann::{graph_from_simplices, PreparedF64};
+use aann::{graph_from_simplices, GroupedQueriesF64, PreparedF64};
 use console::Term;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use ndarray_017::{Array1, Array2};
@@ -33,6 +33,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 // ---------------------------------------------------------------------------
 // Output element type (precision)
 // ---------------------------------------------------------------------------
+
+/// Morton block size for `aann`'s grouped blocked descent. 32 is the measured
+/// sweet spot for neuron-scale clouds (thousands of points): the descent's
+/// gather-reuse gain plateaus at ~2x around 32-64, so 32 keeps the per-block
+/// scratch small while capturing it. See the profiler's block sweep.
+const GROUP_BLOCK: usize = 32;
 
 /// Element type of the returned score matrix. The scoring accumulates in `f64`;
 /// this only controls the width the final score is stored at (navis' `precision`
@@ -529,51 +535,80 @@ pub fn nblast_allbyall<T: ScoreOut>(
             })
             .collect();
 
-        let mut scores: Vec<T> = vec![T::from_f64(0.0); n * n];
+        // Prepare the grouped query set ONCE (a target-independent concatenation +
+        // Morton sort of every neuron's points). `aann` reuses it for every target,
+        // turning the per-pair descent into a single per-target blocked descent that
+        // shares each target-vertex gather across spatially-adjacent query points
+        // (~2x on the descent). `offsets[i]..offsets[i+1]` slices query i's result —
+        // finalised back to original point order — out of each target's column.
+        let query_refs: Vec<&PreparedF64> = indices.iter().collect();
+        let no_perms: Vec<Option<&[i64]>> = vec![None; n];
+        let gq = GroupedQueriesF64::prepare(&query_refs, &no_perms);
+        let offsets = gq.offsets();
 
-        // Per-cell scoring, shared by the silent and progress paths so the default
-        // (progress = false) path keeps its original zero-overhead loop rather than
-        // paying a contended per-cell atomic increment on a shared progress counter.
-        let compute = |(k, out): (usize, &mut T)| {
-            let i = k / n; // query neuron
-            let j = k % n; // target neuron
-            let s = if i == j {
-                // Self-match: normalized -> 1.0; raw -> the self-hit score.
-                if normalize {
-                    1.0
+        // Target-major scoring. Each target `j` owns a contiguous column of the
+        // column-major buffer `cm` (`cm[j * n + i]` = score of query i vs target j),
+        // so the parallel writes are disjoint; we transpose to the row-major result
+        // once at the end (cheap next to the descent).
+        let mut cm: Vec<T> = vec![T::from_f64(0.0); n * n];
+        let score_bar = progress.then(|| scoring_bar(n as u64));
+        cm.par_chunks_mut(n).enumerate().for_each(|(j, col)| {
+            if is_cancelled(cancel) {
+                return; // interrupted; the partial result is discarded by the caller
+            }
+            // `limit_dist` is the descent's distance upper bound: `aann` prunes and
+            // returns the miss marker (inf, |target|) for over-bound points, which
+            // `score_pair` caps at the far corner. `finalize = true` returns results
+            // in concatenated per-cloud original order, ready to slice per query.
+            let (d, ix) = indices[j].query_grouped(&gq, None, GROUP_BLOCK, limit_dist, true);
+            let d = d.as_slice().unwrap();
+            let ix = ix.as_slice().unwrap();
+            for i in 0..n {
+                let s = if i == j {
+                    // Self-match: normalized -> 1.0; raw -> the self-hit score.
+                    if normalize {
+                        1.0
+                    } else {
+                        self_hits[i]
+                    }
                 } else {
-                    self_hits[i]
-                }
-            } else {
-                // Pass `limit_dist` as the query's distance upper bound: `aann`
-                // prunes descents that provably can't beat it and returns the miss
-                // marker (inf, |target|) for query points with no neighbour within
-                // the bound, which `score_pair` caps at the far corner.
-                let (d, ix) = indices[j].query_prepared(&indices[i], limit_dist);
-                let (qa, ta) = match &alphas {
-                    Some(a) => (Some(a[i].as_slice()), Some(a[j].as_slice())),
-                    None => (None, None),
+                    let (a, b) = (offsets[i], offsets[i + 1]);
+                    let (qa, ta) = match &alphas {
+                        Some(al) => (Some(al[i].as_slice()), Some(al[j].as_slice())),
+                        None => (None, None),
+                    };
+                    let raw = score_pair(
+                        &d[a..b], &ix[a..b], &vects[i], &vects[j], qa, ta, limit_dist, smat,
+                    );
+                    if normalize {
+                        raw / self_hits[i]
+                    } else {
+                        raw
+                    }
                 };
-                let raw = score_pair(
-                    d.as_slice().unwrap(),
-                    ix.as_slice().unwrap(),
-                    &vects[i],
-                    &vects[j],
-                    qa,
-                    ta,
-                    limit_dist,
-                    smat,
-                );
-                if normalize {
-                    raw / self_hits[i]
-                } else {
-                    raw
-                }
-            };
-            *out = T::from_f64(s);
-        };
+                col[i] = T::from_f64(s);
+            }
+            if let Some(bar) = &score_bar {
+                bar.inc(1);
+            }
+        });
+        match score_bar {
+            Some(bar) if !is_cancelled(cancel) => bar.finish(),
+            Some(bar) => bar.abandon(),
+            None => {}
+        }
+        if is_cancelled(cancel) {
+            return Vec::new(); // interrupted mid-scoring; caller discards
+        }
 
-        run_scoring(&mut scores, (n * n) as u64, progress, cancel, compute);
+        // Transpose the column-major buffer into the row-major result.
+        let mut scores: Vec<T> = vec![T::from_f64(0.0); n * n];
+        for j in 0..n {
+            let col = &cm[j * n..(j + 1) * n];
+            for i in 0..n {
+                scores[i * n + j] = col[i];
+            }
+        }
         scores
     })
 }
@@ -625,36 +660,59 @@ pub fn nblast_query_target<T: ScoreOut>(
             })
             .collect();
 
-        let n_cells = nq * nt;
-        let mut scores: Vec<T> = vec![T::from_f64(0.0); n_cells];
+        // Prepare the grouped query set ONCE and descend each target against it (see
+        // `nblast_allbyall`). Column `tj` of the column-major buffer holds every
+        // query's score against target `tj`; `offsets` slices each query out.
+        let query_refs: Vec<&PreparedF64> = q_idx.iter().collect();
+        let no_perms: Vec<Option<&[i64]>> = vec![None; nq];
+        let gq = GroupedQueriesF64::prepare(&query_refs, &no_perms);
+        let offsets = gq.offsets();
 
-        // Shared per-cell body; see `nblast_allbyall` for why the paths are split.
-        let compute = |(k, out): (usize, &mut T)| {
-            let qi = k / nt;
-            let tj = k % nt;
-            let (d, ix) = t_idx[tj].query_prepared(&q_idx[qi], limit_dist);
-            let (qa, ta) = match (&q_alphas, &t_alphas) {
-                (Some(qa), Some(ta)) => (Some(qa[qi].as_slice()), Some(ta[tj].as_slice())),
-                _ => (None, None),
-            };
-            let raw = score_pair(
-                d.as_slice().unwrap(),
-                ix.as_slice().unwrap(),
-                &q_vects[qi],
-                &t_vects[tj],
-                qa,
-                ta,
-                limit_dist,
-                smat,
-            );
-            *out = T::from_f64(if normalize {
-                raw / self_hits[qi]
-            } else {
-                raw
-            });
-        };
+        let mut cm: Vec<T> = vec![T::from_f64(0.0); nq * nt];
+        let score_bar = progress.then(|| scoring_bar(nt as u64));
+        cm.par_chunks_mut(nq).enumerate().for_each(|(tj, col)| {
+            if is_cancelled(cancel) {
+                return;
+            }
+            let (d, ix) = t_idx[tj].query_grouped(&gq, None, GROUP_BLOCK, limit_dist, true);
+            let d = d.as_slice().unwrap();
+            let ix = ix.as_slice().unwrap();
+            for qi in 0..nq {
+                let (a, b) = (offsets[qi], offsets[qi + 1]);
+                let (qa, ta) = match (&q_alphas, &t_alphas) {
+                    (Some(qa), Some(ta)) => (Some(qa[qi].as_slice()), Some(ta[tj].as_slice())),
+                    _ => (None, None),
+                };
+                let raw = score_pair(
+                    &d[a..b], &ix[a..b], &q_vects[qi], &t_vects[tj], qa, ta, limit_dist, smat,
+                );
+                col[qi] = T::from_f64(if normalize {
+                    raw / self_hits[qi]
+                } else {
+                    raw
+                });
+            }
+            if let Some(bar) = &score_bar {
+                bar.inc(1);
+            }
+        });
+        match score_bar {
+            Some(bar) if !is_cancelled(cancel) => bar.finish(),
+            Some(bar) => bar.abandon(),
+            None => {}
+        }
+        if is_cancelled(cancel) {
+            return Vec::new();
+        }
 
-        run_scoring(&mut scores, n_cells as u64, progress, cancel, compute);
+        // Transpose column-major (nt columns of nq) into the row-major result.
+        let mut scores: Vec<T> = vec![T::from_f64(0.0); nq * nt];
+        for tj in 0..nt {
+            let col = &cm[tj * nq..(tj + 1) * nq];
+            for qi in 0..nq {
+                scores[qi * nt + tj] = col[qi];
+            }
+        }
         scores
     })
 }
@@ -669,9 +727,10 @@ pub fn nblast_query_target<T: ScoreOut>(
 /// "smart" NBLAST uses for its full-resolution second pass over a sparse candidate
 /// set of pairs.
 ///
-/// The dense entry points are deliberately left untouched; this function keeps its
-/// own (small) scoring loop so the hot `nblast_query_target` / `nblast_allbyall`
-/// paths retain their original zero-overhead form.
+/// Like the dense paths, this groups the requested pairs by target and runs one
+/// grouped blocked descent per target, so it uses the *same* nearest-neighbour
+/// descent (and equidistant tie-breaking) as `nblast_query_target`: a target whose
+/// full query set is selected reproduces that target's dense column exactly.
 #[allow(clippy::too_many_arguments)]
 pub fn nblast_pairs<T: ScoreOut>(
     q_points: Vec<Vec<[f64; 3]>>,
@@ -711,35 +770,75 @@ pub fn nblast_pairs<T: ScoreOut>(
             })
             .collect();
 
+        // Group the requested pairs by target so each target is descended once, via
+        // the same grouped blocked descent as the dense paths. `by_target[tj]` lists
+        // `(pair index, query index)` for every requested pair against target `tj`.
+        let nt = t_points.len();
+        let mut by_target: Vec<Vec<(usize, usize)>> = vec![Vec::new(); nt];
+        for (k, &(qi, tj)) in pairs.iter().enumerate() {
+            by_target[tj].push((k, qi));
+        }
+
+        // Per target: prepare its query subset, descend once, score its pairs. When
+        // every query is selected for a target the subset is the full query set, so
+        // the Morton order (hence NN tie-breaking) matches the dense path exactly.
+        let bar = progress.then(|| scoring_bar(pairs.len() as u64));
+        let per_target: Vec<Vec<(usize, T)>> = (0..nt)
+            .into_par_iter()
+            .map(|tj| {
+                let group = &by_target[tj];
+                if group.is_empty() || is_cancelled(cancel) {
+                    return Vec::new();
+                }
+                let subset: Vec<&PreparedF64> =
+                    group.iter().map(|&(_, qi)| &q_idx[qi]).collect();
+                let no_perms: Vec<Option<&[i64]>> = vec![None; subset.len()];
+                let gq = GroupedQueriesF64::prepare(&subset, &no_perms);
+                let offsets = gq.offsets();
+                let (d, ix) = t_idx[tj].query_grouped(&gq, None, GROUP_BLOCK, limit_dist, true);
+                let d = d.as_slice().unwrap();
+                let ix = ix.as_slice().unwrap();
+                let out: Vec<(usize, T)> = group
+                    .iter()
+                    .enumerate()
+                    .map(|(c, &(k, qi))| {
+                        let (a, b) = (offsets[c], offsets[c + 1]);
+                        let (qa, ta) = match (&q_alphas, &t_alphas) {
+                            (Some(qa2), Some(ta2)) => {
+                                (Some(qa2[qi].as_slice()), Some(ta2[tj].as_slice()))
+                            }
+                            _ => (None, None),
+                        };
+                        let raw = score_pair(
+                            &d[a..b], &ix[a..b], &q_vects[qi], &t_vects[tj], qa, ta, limit_dist,
+                            smat,
+                        );
+                        let s = if normalize { raw / self_hits[qi] } else { raw };
+                        (k, T::from_f64(s))
+                    })
+                    .collect();
+                if let Some(b) = &bar {
+                    b.inc(group.len() as u64);
+                }
+                out
+            })
+            .collect();
+        match bar {
+            Some(b) if !is_cancelled(cancel) => b.finish(),
+            Some(b) => b.abandon(),
+            None => {}
+        }
+        if is_cancelled(cancel) {
+            return Vec::new();
+        }
+
+        // Scatter each target's pair scores back into `pairs` order (disjoint `k`).
         let mut scores: Vec<T> = vec![T::from_f64(0.0); pairs.len()];
-
-        // One entry per requested pair; mirrors `nblast_query_target`'s per-cell body
-        // but indexes into `pairs` rather than walking the full grid.
-        let compute = |(k, out): (usize, &mut T)| {
-            let (qi, tj) = pairs[k];
-            let (d, ix) = t_idx[tj].query_prepared(&q_idx[qi], limit_dist);
-            let (qa, ta) = match (&q_alphas, &t_alphas) {
-                (Some(qa), Some(ta)) => (Some(qa[qi].as_slice()), Some(ta[tj].as_slice())),
-                _ => (None, None),
-            };
-            let raw = score_pair(
-                d.as_slice().unwrap(),
-                ix.as_slice().unwrap(),
-                &q_vects[qi],
-                &t_vects[tj],
-                qa,
-                ta,
-                limit_dist,
-                smat,
-            );
-            *out = T::from_f64(if normalize {
-                raw / self_hits[qi]
-            } else {
-                raw
-            });
-        };
-
-        run_scoring(&mut scores, pairs.len() as u64, progress, cancel, compute);
+        for group in &per_target {
+            for &(k, s) in group {
+                scores[k] = s;
+            }
+        }
         scores
     })
 }

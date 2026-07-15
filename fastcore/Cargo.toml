@@ -32,8 +32,9 @@ ndarray_017 = { package = "ndarray", version = "0.17" }
 # module exists for. `num::Float` is not implemented for f16, hence the direct dep.
 half = "2"
 # NBLAST pipeline: shull (3D Delaunay) + aann-graph (neighbourhood-graph NN).
+# The all-by-all uses aann's grouped split API (GroupedQueriesF64 / query_grouped).
 shull = "0.3.0"
-aann-graph = "0.1.2"
+aann-graph = "0.2.0"
 # CMTK registrations are commonly distributed gzipped (a `registration` file that is
 # actually gzip, hence the magic-byte sniff in cmtk.rs). Default features give the pure-Rust
 # miniz_oxide backend: no C toolchain, no system zlib, so the R tarball still builds anywhere.
