@@ -12,7 +12,7 @@ resolver = "2"
 # `version.workspace = true`. To bump: edit here, then run
 # `python scripts/sync-versions.py` (updates R/nat.fastcore/DESCRIPTION).
 [workspace.package]
-version = "0.6.1"
+version = "0.7.0"
 
 [workspace.dependencies]
 fastcore = { path = "fastcore" }
