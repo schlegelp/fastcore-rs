@@ -448,3 +448,120 @@ def test_matches_scipy_on_a_real_mesh():
     ref = scipy_oracle(faces, verts, n, sources=sources)
 
     np.testing.assert_allclose(as_inf(ours), ref, rtol=1e-5)
+
+
+# -----------------------------------------------------------------------------
+# unique_edges
+# -----------------------------------------------------------------------------
+
+
+def unique_edges_oracle(faces):
+    """Reference implementation: trimesh's exact pipeline, in numpy.
+
+    Expand each face to its three edges, row-sort, pack into the same u64 key
+    trimesh's `hashable_rows` bit-bangs, then let `np.unique` do the work.
+    """
+    e = faces[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2).astype(np.int64)
+    e.sort(axis=1)
+    keys = (e[:, 1].astype(np.uint64) << np.uint64(32)) | e[:, 0].astype(np.uint64)
+    _, idx, inv = np.unique(keys, return_index=True, return_inverse=True)
+    return e[idx], idx.astype(np.int64), inv.astype(np.int64)
+
+
+def test_unique_edges_matches_numpy_oracle():
+    faces, _ = grid_mesh(n=10)
+    exp_edges, exp_idx, exp_inv = unique_edges_oracle(faces)
+
+    edges, idx, inv = fastcore.unique_edges(faces, return_index=True, return_inverse=True)
+    assert edges.dtype == np.int64
+    np.testing.assert_array_equal(edges, exp_edges)
+    np.testing.assert_array_equal(idx, exp_idx)
+    np.testing.assert_array_equal(inv, exp_inv)
+
+    # Bare call returns just the edges, identical to the full path.
+    np.testing.assert_array_equal(fastcore.unique_edges(faces), exp_edges)
+
+
+def test_unique_edges_random_meshes():
+    rng = np.random.default_rng(42)
+    for n_faces in (1, 7, 1000):
+        faces = rng.integers(0, 200, size=(n_faces, 3)).astype(np.uint32)
+        exp_edges, exp_idx, exp_inv = unique_edges_oracle(faces)
+        edges, idx, inv = fastcore.unique_edges(
+            faces, return_index=True, return_inverse=True
+        )
+        np.testing.assert_array_equal(edges, exp_edges)
+        np.testing.assert_array_equal(idx, exp_idx)
+        np.testing.assert_array_equal(inv, exp_inv)
+
+
+def test_unique_edges_keeps_degenerate_self_loops():
+    # trimesh does NOT drop self-loop edges from degenerate faces.
+    faces = np.array([[0, 0, 1], [1, 2, 3]], dtype=np.uint32)
+    edges = fastcore.unique_edges(faces)
+    assert [0, 0] in edges.tolist()
+    np.testing.assert_array_equal(edges, unique_edges_oracle(faces)[0])
+
+
+def test_unique_edges_lengths():
+    faces, verts = grid_mesh(n=10, spacing=0.7)
+    exp_edges, _, _ = unique_edges_oracle(faces)
+    exp_len = np.linalg.norm(verts[exp_edges[:, 0]] - verts[exp_edges[:, 1]], axis=1)
+
+    edges, lengths = fastcore.unique_edges(faces, verts)
+    assert lengths.dtype == np.float64
+    np.testing.assert_array_equal(edges, exp_edges)
+    np.testing.assert_allclose(lengths, exp_len, rtol=1e-14)
+
+    # Lengths always come last, whatever else is requested.
+    edges, idx, inv, lengths2 = fastcore.unique_edges(
+        faces, verts, return_index=True, return_inverse=True
+    )
+    np.testing.assert_array_equal(lengths2, lengths)
+
+    # Out-of-bounds vertex indices are caught up front.
+    with pytest.raises(ValueError, match="references vertex"):
+        fastcore.unique_edges(faces, verts[:-5])
+
+
+def test_unique_edges_empty():
+    faces = np.zeros((0, 3), dtype=np.uint32)
+    edges, idx, inv = fastcore.unique_edges(faces, return_index=True, return_inverse=True)
+    assert edges.shape == (0, 2)
+    assert edges.dtype == np.int64
+    assert len(idx) == 0 and len(inv) == 0
+
+    _, lengths = fastcore.unique_edges(faces, np.zeros((0, 3)))
+    assert len(lengths) == 0
+
+
+def test_unique_edges_threads_do_not_change_the_result():
+    faces, _ = grid_mesh(n=20)
+    np.testing.assert_array_equal(
+        fastcore.unique_edges(faces, threads=1), fastcore.unique_edges(faces)
+    )
+
+
+def test_unique_edges_validation():
+    with pytest.raises(ValueError, match="must be a 2-D array"):
+        fastcore.unique_edges(np.zeros((4, 2), dtype=np.uint32))
+
+
+def test_unique_edges_matches_trimesh():
+    trimesh = pytest.importorskip("trimesh")
+
+    m = trimesh.creation.icosphere(subdivisions=3)
+    faces = np.asarray(m.faces, dtype=np.uint32)
+
+    edges, idx, inv, lengths = fastcore.unique_edges(
+        faces, m.vertices, return_index=True, return_inverse=True
+    )
+
+    np.testing.assert_array_equal(edges, m.edges_unique)
+    # `edges_unique_idx` is not a public property, only a cache entry populated
+    # as a side effect of `edges_unique` (accessed above).
+    np.testing.assert_array_equal(idx, m._cache["edges_unique_idx"])
+    np.testing.assert_array_equal(inv, m.edges_unique_inverse)
+    np.testing.assert_array_equal(inv.reshape(-1, 3), m.faces_unique_edges)
+    # trimesh computes the norm through a BLAS dot, so allow float noise.
+    np.testing.assert_allclose(lengths, m.edges_unique_length, rtol=1e-14)

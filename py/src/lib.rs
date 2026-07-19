@@ -122,6 +122,9 @@ mod fastcore {
     use super::geodesic_farthest_mesh_py;
 
     #[pymodule_export]
+    use super::unique_edges_py;
+
+    #[pymodule_export]
     use super::stitch_fragments_py;
 
     #[pymodule_export]

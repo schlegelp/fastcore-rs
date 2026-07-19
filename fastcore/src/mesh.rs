@@ -79,6 +79,167 @@ pub fn mesh_connected_components(faces: ArrayView2<u32>, n_vertices: usize) -> V
 }
 
 // ---------------------------------------------------------------------------
+// Unique edges
+// ---------------------------------------------------------------------------
+
+/// Pack an undirected edge into one sortable integer: larger vertex index in the
+/// high 32 bits, smaller in the low 32. Ascending key order is therefore
+/// (max, min) — the exact order trimesh's `edges_unique` produces, since its
+/// row hash `((b + 2^31) << 32) | (a + 2^31)` only differs by a monotone offset.
+#[inline]
+fn edge_key(u: u32, v: u32) -> u64 {
+    let (lo, hi) = if u <= v { (u, v) } else { (v, u) };
+    ((hi as u64) << 32) | (lo as u64)
+}
+
+/// Unique undirected edges of a triangle mesh — a drop-in for trimesh's
+/// `edges_unique` (plus `edges_unique_idx`, `edges_unique_inverse` and
+/// `edges_unique_length`).
+///
+/// Each face `(a, b, c)` contributes the edges `(a, b), (b, c), (c, a)`, in that
+/// order, giving a conceptual `3F`-long edge list. Edges are undirected, so each
+/// pair is normalised to `[min, max]` before dedup. Self-loops from degenerate
+/// faces are kept, as trimesh does.
+///
+/// Arguments
+/// ---------
+/// - `faces`:          (F, 3) array of triangular faces given as vertex indices.
+/// - `coords`:         (V, 3) vertex positions; when given, also return the
+///   euclidean length of each unique edge (trimesh's `edges_unique_length`).
+/// - `return_index`:   Also return, per unique edge, the index of its first
+///   occurrence in the `3F` edge list.
+/// - `return_inverse`: Also return, per edge in the `3F` list, the row of its
+///   unique edge (reshape to `(F, 3)` for per-face edge ids).
+/// - `threads`:        Size of the thread pool, or `None` for all cores.
+///
+/// Returns
+/// -------
+/// `(edges, index, inverse, lengths)` where `edges` is a `(n_unique, 2)` i64
+/// array with rows `[min, max]` sorted ascending by `(max, min)` — byte-for-byte
+/// the order, dtype and first-occurrence semantics of trimesh / `np.unique`.
+#[allow(clippy::type_complexity)]
+pub fn unique_edges(
+    faces: ArrayView2<u32>,
+    coords: Option<ArrayView2<f64>>,
+    return_index: bool,
+    return_inverse: bool,
+    threads: Option<usize>,
+) -> (
+    Array2<i64>,
+    Option<Array1<i64>>,
+    Option<Array1<i64>>,
+    Option<Array1<f64>>,
+) {
+    let n_edges = faces.nrows() * 3;
+
+    // The Python wrapper always hands us C-order (borrowed as-is); a strided
+    // view from a Rust caller gets copied into standard layout.
+    let storage = faces.as_standard_layout();
+    let s: &[u32] = storage.as_slice().expect("standard layout is contiguous");
+
+    with_pool(threads, || {
+        let (edges, index, inverse) = if !return_index && !return_inverse {
+            // Fast path: sort bare keys, dedup in one scan.
+            let mut keys = vec![0u64; n_edges];
+            keys.par_chunks_exact_mut(3)
+                .zip(s.par_chunks_exact(3))
+                .for_each(|(out, f)| {
+                    out[0] = edge_key(f[0], f[1]);
+                    out[1] = edge_key(f[1], f[2]);
+                    out[2] = edge_key(f[2], f[0]);
+                });
+            keys.par_sort_unstable();
+
+            let n_unique =
+                keys.windows(2).filter(|w| w[0] != w[1]).count() + usize::from(!keys.is_empty());
+            let mut edges: Vec<i64> = Vec::with_capacity(n_unique * 2);
+            let mut prev = None;
+            for &k in &keys {
+                if prev != Some(k) {
+                    edges.push((k & 0xFFFF_FFFF) as i64);
+                    edges.push((k >> 32) as i64);
+                    prev = Some(k);
+                }
+            }
+            (edges, None, None)
+        } else {
+            // Full path: fold each edge's position in the 3F list into the low 64
+            // bits so one *unstable* integer sort still lands ties in original
+            // order — which is exactly np.unique's stable-argsort "first
+            // occurrence" semantics.
+            let mut packed = vec![0u128; n_edges];
+            packed
+                .par_chunks_exact_mut(3)
+                .zip(s.par_chunks_exact(3))
+                .enumerate()
+                .for_each(|(i, (out, f))| {
+                    let e = (3 * i) as u128;
+                    out[0] = ((edge_key(f[0], f[1]) as u128) << 64) | e;
+                    out[1] = ((edge_key(f[1], f[2]) as u128) << 64) | (e + 1);
+                    out[2] = ((edge_key(f[2], f[0]) as u128) << 64) | (e + 2);
+                });
+            packed.par_sort_unstable();
+
+            let mut edges: Vec<i64> = Vec::new();
+            let mut index: Vec<i64> = Vec::new();
+            let mut inverse: Vec<i64> = if return_inverse { vec![0; n_edges] } else { Vec::new() };
+            let mut prev: Option<u64> = None;
+            let mut slot: i64 = -1;
+            for &p in &packed {
+                let key = (p >> 64) as u64;
+                let orig = p as u64;
+                if prev != Some(key) {
+                    slot += 1;
+                    edges.push((key & 0xFFFF_FFFF) as i64);
+                    edges.push((key >> 32) as i64);
+                    if return_index {
+                        index.push(orig as i64);
+                    }
+                    prev = Some(key);
+                }
+                if return_inverse {
+                    inverse[orig as usize] = slot;
+                }
+            }
+            (
+                edges,
+                return_index.then_some(index),
+                return_inverse.then_some(inverse),
+            )
+        };
+
+        let lengths = coords.map(|c| edge_lengths(&edges, c));
+        let n = edges.len() / 2;
+        (
+            Array2::from_shape_vec((n, 2), edges).unwrap(),
+            index.map(Array1::from_vec),
+            inverse.map(Array1::from_vec),
+            lengths,
+        )
+    })
+}
+
+/// Euclidean length of each `[a, b]` edge in a flat pair list.
+///
+/// Runs on the ambient rayon pool — callers wrap it in `with_pool`.
+fn edge_lengths(edges: &[i64], coords: ArrayView2<f64>) -> Array1<f64> {
+    let storage = coords.as_standard_layout();
+    let c: &[f64] = storage.as_slice().expect("standard layout is contiguous");
+    let mut out = vec![0f64; edges.len() / 2];
+    out.par_iter_mut()
+        .zip(edges.par_chunks_exact(2))
+        .for_each(|(o, e)| {
+            let a = &c[3 * e[0] as usize..3 * e[0] as usize + 3];
+            let b = &c[3 * e[1] as usize..3 * e[1] as usize + 3];
+            let dx = a[0] - b[0];
+            let dy = a[1] - b[1];
+            let dz = a[2] - b[2];
+            *o = (dx * dx + dy * dy + dz * dz).sqrt();
+        });
+    Array1::from_vec(out)
+}
+
+// ---------------------------------------------------------------------------
 // Adjacency
 // ---------------------------------------------------------------------------
 
@@ -1355,5 +1516,82 @@ mod tests {
             geodesic_nearest_mesh(faces.view(), 6, None, Some(&[0, 1]), Some(&[4]), None, None);
         assert_eq!(d.to_vec(), vec![-1.0, -1.0]);
         assert_eq!(n.to_vec(), vec![-1, -1]);
+    }
+
+    #[test]
+    fn unique_edges_matches_trimesh_convention() {
+        // Two triangles sharing edge 1-2. The 3F edge list is
+        //   face 0: (0,1) (1,2) (2,0)   -> indices 0, 1, 2
+        //   face 1: (1,2) (2,3) (3,1)   -> indices 3, 4, 5
+        let faces = array![[0u32, 1, 2], [1, 2, 3]];
+        let (edges, index, inverse, lengths) = unique_edges(faces.view(), None, true, true, None);
+
+        // Rows [min, max], ascending by (max, min) — trimesh's exact order.
+        assert_eq!(edges, array![[0i64, 1], [0, 2], [1, 2], [1, 3], [2, 3]]);
+        // First occurrence of each unique edge in the 3F list.
+        assert_eq!(index.unwrap().to_vec(), vec![0i64, 2, 1, 5, 4]);
+        // Slot of every 3F edge in the unique list; reshape (F, 3) gives
+        // trimesh's faces_unique_edges.
+        assert_eq!(inverse.unwrap().to_vec(), vec![0i64, 2, 1, 2, 4, 3]);
+        assert!(lengths.is_none());
+
+        // Fast path must agree with the full path on the edges themselves.
+        let (fast, i, v, l) = unique_edges(faces.view(), None, false, false, None);
+        assert_eq!(fast, edges);
+        assert!(i.is_none() && v.is_none() && l.is_none());
+    }
+
+    #[test]
+    fn unique_edges_lengths() {
+        // Unit square split along the (1)-(2) diagonal.
+        let faces = array![[0u32, 1, 2], [1, 2, 3]];
+        let coords = array![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+        ];
+
+        // Both paths must produce lengths, parallel to the unique edge rows
+        // [0,1], [0,2], [1,2], [1,3], [2,3].
+        let expect = [1.0, 1.0, 2f64.sqrt(), 1.0, 1.0];
+        for (ri, rv) in [(false, false), (true, true)] {
+            let (_, _, _, lengths) = unique_edges(faces.view(), Some(coords.view()), ri, rv, None);
+            let lengths = lengths.unwrap();
+            assert_eq!(lengths.len(), 5);
+            for (got, want) in lengths.iter().zip(expect) {
+                assert!((got - want).abs() < 1e-12, "{got} vs {want}");
+            }
+        }
+    }
+
+    #[test]
+    fn unique_edges_keeps_degenerate_self_loops() {
+        // trimesh does NOT filter self-loops from degenerate faces.
+        let faces = array![[0u32, 0, 1]];
+        let (edges, _, _, _) = unique_edges(faces.view(), None, false, false, None);
+        assert_eq!(edges, array![[0i64, 0], [0, 1]]);
+    }
+
+    #[test]
+    fn unique_edges_empty_input() {
+        let faces = Array2::<u32>::zeros((0, 3));
+        let coords = Array2::<f64>::zeros((0, 3));
+        let (edges, index, inverse, lengths) =
+            unique_edges(faces.view(), Some(coords.view()), true, true, None);
+        assert_eq!(edges.shape(), &[0, 2]);
+        assert_eq!(index.unwrap().len(), 0);
+        assert_eq!(inverse.unwrap().len(), 0);
+        assert_eq!(lengths.unwrap().len(), 0);
+    }
+
+    #[test]
+    fn unique_edges_handles_strided_views() {
+        // A reversed-row view is not contiguous — exercises the copy fallback.
+        let faces = array![[0u32, 1, 2], [1, 2, 3]];
+        let flipped = faces.slice(ndarray::s![..;-1, ..]);
+        let (edges, _, _, _) = unique_edges(flipped, None, false, false, None);
+        let (expect, _, _, _) = unique_edges(faces.view(), None, false, false, None);
+        assert_eq!(edges, expect);
     }
 }

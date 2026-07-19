@@ -4,7 +4,7 @@ use pyo3::prelude::*;
 
 use fastcore::mesh::{
     geodesic_farthest_mesh, geodesic_matrix_graph, geodesic_matrix_mesh, geodesic_nearest_mesh,
-    mesh_connected_components,
+    mesh_connected_components, unique_edges,
 };
 
 /// Borrow an index array as a contiguous slice.
@@ -36,6 +36,59 @@ pub fn mesh_connected_components_py<'py>(
 ) -> Bound<'py, PyArray1<u32>> {
     let result = mesh_connected_components(faces.as_array(), n_vertices);
     result.into_pyarray(py)
+}
+
+/// Unique undirected edges of a triangle mesh (trimesh `edges_unique` equivalent).
+///
+/// Arguments
+/// ---------
+/// - `faces`:          (F, 3) uint32 array of triangular faces (vertex indices).
+/// - `coords`:         (V, 3) float64 vertex positions; when given, also return
+///   each unique edge's euclidean length (trimesh's `edges_unique_length`).
+/// - `return_index`:   Also return each unique edge's first occurrence in the
+///   per-face edge list (trimesh's `edges_unique_idx`).
+/// - `return_inverse`: Also return, for each of the 3F per-face edges, the row of
+///   its unique edge (trimesh's `edges_unique_inverse`; reshape to (F, 3) for
+///   `faces_unique_edges`).
+/// - `threads`:        Size of the thread pool, or `None` for all cores.
+///
+/// Returns
+/// -------
+/// A 4-tuple `(edges, index, inverse, lengths)`: `edges` is (n_unique, 2) int64
+/// with rows `[min, max]` ordered ascending by (max, min) — identical to trimesh;
+/// the other three are parallel arrays or `None` when not requested.
+#[pyfunction]
+#[pyo3(
+    name = "unique_edges",
+    signature = (faces, coords=None, return_index=false, return_inverse=false, threads=None)
+)]
+#[allow(clippy::type_complexity)]
+pub fn unique_edges_py<'py>(
+    py: Python<'py>,
+    faces: PyReadonlyArray2<u32>,
+    coords: Option<PyReadonlyArray2<f64>>,
+    return_index: bool,
+    return_inverse: bool,
+    threads: Option<usize>,
+) -> (
+    Bound<'py, PyArray2<i64>>,
+    Option<Bound<'py, PyArray1<i64>>>,
+    Option<Bound<'py, PyArray1<i64>>>,
+    Option<Bound<'py, PyArray1<f64>>>,
+) {
+    let (edges, index, inverse, lengths) = unique_edges(
+        faces.as_array(),
+        coords.as_ref().map(|c| c.as_array()),
+        return_index,
+        return_inverse,
+        threads,
+    );
+    (
+        edges.into_pyarray(py),
+        index.map(|a| a.into_pyarray(py)),
+        inverse.map(|a| a.into_pyarray(py)),
+        lengths.map(|a| a.into_pyarray(py)),
+    )
 }
 
 /// Pairwise geodesic ("along-the-mesh-edge") distances on a triangle mesh.

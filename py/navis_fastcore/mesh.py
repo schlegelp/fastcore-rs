@@ -4,6 +4,7 @@ from . import _fastcore
 
 __all__ = [
     "mesh_connected_components",
+    "unique_edges",
     "geodesic_matrix_mesh",
     "geodesic_matrix_graph",
     "geodesic_nearest_mesh",
@@ -58,6 +59,117 @@ def mesh_connected_components(faces, n_vertices):
         )
 
     return _fastcore.mesh_connected_components(faces, int(n_vertices))
+
+
+def unique_edges(
+    faces, vertices=None, return_index=False, return_inverse=False, threads=None
+):
+    """Unique undirected edges of a triangle mesh.
+
+    A fast, multi-threaded equivalent of ``trimesh.Trimesh.edges_unique``:
+    output order, dtype and first-occurrence semantics are identical, so the
+    results can be used interchangeably. Each face ``(a, b, c)`` contributes
+    the edges ``(a, b), (b, c), (c, a)`` to a conceptual ``3 * F`` edge list;
+    edges are normalised to ``[min, max]`` and deduplicated. Self-loop edges
+    from degenerate faces are kept, as in trimesh.
+
+    Parameters
+    ----------
+    faces :          (F, 3) array
+                     Triangular faces given as rows of three vertex indices.
+                     Must be convertible to ``uint32``.
+    vertices :       (V, 3) array, optional
+                     Vertex positions. If provided, also return the euclidean
+                     length of each unique edge (trimesh's
+                     ``edges_unique_length``).
+    return_index :   bool
+                     Also return, per unique edge, the index of its first
+                     occurrence in the ``3 * F`` edge list (trimesh's
+                     ``edges_unique_idx``).
+    return_inverse : bool
+                     Also return, per edge in the ``3 * F`` list, the row of
+                     its unique edge (trimesh's ``edges_unique_inverse``;
+                     reshape to ``(F, 3)`` for ``faces_unique_edges``).
+    threads :        int, optional
+                     Size of the thread pool. Defaults to all available cores.
+
+    Returns
+    -------
+    edges :   (n_unique, 2) int64 array
+              Unique edges as ``[min, max]`` rows, sorted ascending with the
+              *larger* vertex index as the primary key — the same (not
+              lexicographic!) order trimesh produces.
+    index :   (n_unique, ) int64 array
+              Only if ``return_index=True``.
+    inverse : (3 * F, ) int64 array
+              Only if ``return_inverse=True``.
+    lengths : (n_unique, ) float64 array
+              Only if ``vertices`` were provided. Always last in the tuple.
+
+    Examples
+    --------
+    Two triangles sharing the edge ``(1, 2)`` — five unique edges:
+
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> faces = np.array([[0, 1, 2], [1, 2, 3]], dtype=np.uint32)
+    >>> fastcore.unique_edges(faces)
+    array([[0, 1],
+           [0, 2],
+           [1, 2],
+           [1, 3],
+           [2, 3]])
+    >>> edges, inv = fastcore.unique_edges(faces, return_inverse=True)
+    >>> inv.reshape(-1, 3)  # per-face edge ids (faces_unique_edges)
+    array([[0, 2, 1],
+           [2, 4, 3]])
+
+    With vertex positions, edge lengths come along for the ride — here the
+    unit square split along its diagonal:
+
+    >>> vertices = np.array(
+    ...     [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=np.float64
+    ... )
+    >>> edges, lengths = fastcore.unique_edges(faces, vertices)
+    >>> lengths.round(3)
+    array([1.   , 1.   , 1.414, 1.   , 1.   ])
+
+    """
+    faces = np.asarray(faces, dtype=np.uint32, order="C")
+    if faces.ndim != 2 or faces.shape[1] != 3:
+        raise ValueError(
+            f"`faces` must be a 2-D array of shape (F, 3), got {faces.shape}"
+        )
+
+    if vertices is not None:
+        vertices = np.asarray(vertices, dtype=np.float64, order="C")
+        if vertices.ndim != 2 or vertices.shape[1] != 3:
+            raise ValueError(
+                f"`vertices` must be a 2-D array of shape (V, 3), got {vertices.shape}"
+            )
+        if len(faces) and faces.max() >= len(vertices):
+            raise ValueError(
+                f"`faces` references vertex {faces.max()} but there are only "
+                f"{len(vertices)} vertices"
+            )
+
+    edges, index, inverse, lengths = _fastcore.unique_edges(
+        faces,
+        vertices,
+        bool(return_index),
+        bool(return_inverse),
+        threads if threads is None else int(threads),
+    )
+    if vertices is None and not return_index and not return_inverse:
+        return edges
+    out = (edges,)
+    if return_index:
+        out += (index,)
+    if return_inverse:
+        out += (inverse,)
+    if vertices is not None:
+        out += (lengths,)
+    return out
 
 
 def _prep_mesh(faces, vertices, n_vertices):
