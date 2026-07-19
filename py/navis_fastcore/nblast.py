@@ -131,18 +131,61 @@ def _resolve_precision(precision):
     return bits, (64 if bits == 64 else 32)
 
 
+#: `symmetry` values that select a combine, mapped to the kernel's name for it.
+#: ``True`` is a legacy spelling of ``"mean"``.
+_SYMMETRY = {"mean": "mean", True: "mean", "min": "min", "max": "max"}
+
+
+def _symmetry_name(symmetry):
+    """Map a user-facing `symmetry` onto the kernel's name, or raise."""
+    try:
+        return _SYMMETRY[symmetry]
+    except (KeyError, TypeError):
+        raise ValueError(
+            f"Unknown symmetry {symmetry!r}; expected 'forward', 'mean', 'min', "
+            "'max' or None."
+        ) from None
+
+
+def _symmetrize(m, symmetry, n_cores=None):
+    """Symmetrise a square score matrix against its own transpose, **in place**.
+
+    Split out from `_combine` because this is the case numpy cannot do cheaply:
+    `(M + M.T) / 2` builds two full ``n x n`` temporaries, and even
+    `np.add(M, M.T, out=M)` still builds one, because numpy sees the output
+    overlapping `M.T` and defensively copies the input first. The Rust kernel writes
+    both triangles as it walks the upper one, so it allocates nothing at all — at
+    100k neurons that is 80 GB of peak that simply stops existing.
+
+    `m` must be the freshly-created score matrix (float32/float64, C-contiguous);
+    it is modified and returned.
+    """
+    _fastcore.symmetrize(m, symmetry=_symmetry_name(symmetry), n_cores=n_cores)
+    return m
+
+
 def _combine(a, b, symmetry):
-    """Combine two equally-shaped score matrices element-wise."""
-    if symmetry in ("mean", True):
-        return (a + b) / 2
-    if symmetry == "min":
-        return np.minimum(a, b)
-    if symmetry == "max":
-        return np.maximum(a, b)
-    raise ValueError(
-        f"Unknown symmetry {symmetry!r}; expected 'forward', 'mean', 'min', "
-        "'max' or None."
-    )
+    """Combine two equally-shaped score matrices element-wise, **consuming `a`**.
+
+    `a` is written to in place and returned. Every caller creates it immediately
+    beforehand and drops its own reference, so nothing else can observe the
+    mutation — and writing in place is what makes this free, where `(a + b) / 2`
+    would build two full temporaries.
+
+    `b` is a *different* array (typically a transposed view of the reverse-direction
+    scores). Passing a view of `a` is not wrong — numpy falls back to buffering the
+    overlap — but it silently costs a temporary, which is what `_symmetrize` exists
+    to avoid.
+    """
+    name = _symmetry_name(symmetry)
+    if name == "mean":
+        np.add(a, b, out=a)
+        a *= 0.5  # exact for binary floats, and unlike `/= 2` needs no temporary
+    elif name == "min":
+        np.minimum(a, b, out=a)
+    else:
+        np.maximum(a, b, out=a)
+    return a
 
 
 def nblast_allbyall(
@@ -216,7 +259,7 @@ def nblast_allbyall(
     )
 
     if symmetry is not None and symmetry != "forward":
-        M = _combine(M, M.T, symmetry)
+        M = _symmetrize(M, symmetry, n_cores)
     if user_bits == 16:
         M = M.astype(np.float16)
     return M
@@ -649,7 +692,7 @@ def synblast(
 
     if symmetry is not None and symmetry != "forward":
         if aba:
-            M = _combine(M, M.T, symmetry)
+            M = _symmetrize(M, symmetry, n_cores)
         else:
             # Reverse syNBLAST (target-as-query); its transpose aligns with M.
             R = np.asarray(

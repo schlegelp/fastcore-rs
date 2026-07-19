@@ -1,9 +1,13 @@
 use extendr_api::prelude::*;
-use ndarray::{Array1, Array2, ArrayView1};
+use ndarray::{Array1, Array2, ArrayView1, ArrayView2, ShapeBuilder};
 use std::collections::HashMap;
 
 use fastcore::cmtk::{self, Chain, Fallback, InverseOpts, Mode, XformOpts};
 use fastcore::elastix::{self, OutOfBounds};
+use fastcore::linkage::{
+    condense, leaf_order, linkage as core_linkage, linkage_from_scores,
+    observations_from_condensed, Method as LinkageMethod, Symmetry, Transform,
+};
 use fastcore::nblast::{load_smat, load_smat_alpha, Opts, Smat};
 
 /// For each node ID in `parents` find its index in `nodes`.
@@ -1870,6 +1874,213 @@ impl ElastixTransformPtr {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Hierarchical clustering
+// ---------------------------------------------------------------------------
+
+fn linkage_method(name: &str) -> LinkageMethod {
+    LinkageMethod::from_name(name).unwrap_or_else(|| {
+        panic!(
+            "unknown `method` '{name}'; expected one of single, complete, average, \
+             weighted, ward, centroid, median"
+        )
+    })
+}
+
+fn linkage_symmetry(name: &str) -> Symmetry {
+    Symmetry::from_name(name).unwrap_or_else(|| {
+        panic!("unknown `symmetry` '{name}'; expected one of none, mean, min, max")
+    })
+}
+
+fn linkage_transform(name: &str) -> Transform {
+    Transform::from_name(name).unwrap_or_else(|| {
+        panic!("unknown `transform` '{name}'; expected one of one_minus, none")
+    })
+}
+
+/// Borrow an R matrix as an `ndarray` view, without copying.
+///
+/// R matrices are column-major, so this is an F-order view. The clustering kernels
+/// take that in their stride: they transpose the view rather than copy it, and
+/// symmetrising is invariant under the transpose (`Symmetry::None` compensates by
+/// swapping which of the two cells it reads). A 100k score matrix therefore reaches
+/// the kernel without being materialised a second time.
+fn rmatrix_to_view(m: &RMatrix<f64>) -> ArrayView2<'_, f64> {
+    let (nr, nc) = (m.nrows(), m.ncols());
+    ArrayView2::from_shape((nr, nc).f(), m.data())
+        .unwrap_or_else(|e| panic!("could not view `scores` as a matrix: {e}"))
+}
+
+/// Validate an optional `labels` argument against the observation count.
+fn check_labels(labels: Robj, n: usize) -> Robj {
+    if labels.is_null() {
+        return labels;
+    }
+    let len = labels
+        .as_string_vector()
+        .unwrap_or_else(|| panic!("`labels` must be a character vector or NULL"))
+        .len();
+    if len != n {
+        panic!("`labels` must have one entry per observation: got {len}, want {n}");
+    }
+    labels
+}
+
+/// Turn a SciPy-style linkage matrix into an R `hclust` object.
+///
+/// The two labelling schemes differ: SciPy numbers singletons `0..n` and the
+/// cluster formed at step `i` as `n + i`, whereas R writes `-j` for observation `j`
+/// (1-based) and `+k` for the cluster formed at the earlier step `k` (1-based).
+/// Because `kodama` already emits the smaller id first, and singleton ids are all
+/// below the merged ones, the negatives land first in each row exactly as R's own
+/// `hclust` writes them.
+fn hclust_from_z(z: &Array2<f64>, n: usize, method: &str, labels: Robj) -> Robj {
+    let k = n - 1;
+    let to_r = |c: f64| {
+        let c = c as usize;
+        if c < n {
+            -((c + 1) as i32)
+        } else {
+            (c - n + 1) as i32
+        }
+    };
+
+    let merge = RArray::new_matrix(k, 2, |r, c| to_r(z[[r, c]]));
+    let height: Vec<f64> = (0..k).map(|r| z[[r, 2]]).collect();
+    // `order` must use the same child ordering as `merge`, or the dendrogram draws
+    // with crossing branches; both read the one `z`.
+    let order: Vec<i32> = leaf_order(z, n)
+        .into_iter()
+        .map(|i| (i + 1) as i32)
+        .collect();
+
+    let mut out: Robj = List::from_names_and_values(
+        ["merge", "height", "order", "labels", "method", "dist.method"],
+        [
+            merge.into_robj(),
+            height.into_robj(),
+            order.into_robj(),
+            labels,
+            method.into_robj(),
+            r!(NULL),
+        ],
+    )
+    .unwrap_or_else(|e| panic!("could not build hclust object: {e}"))
+    .into();
+    out.set_class(["hclust"])
+        .unwrap_or_else(|e| panic!("could not set class: {e}"));
+    out
+}
+
+// Hierarchical clustering of a square score matrix, fusing symmetrise + transform +
+// condense into one pass and then clustering that buffer in place.
+//
+// Argument coercion, defaults and the user-facing documentation live in
+// R/clustering.R; this is the raw entry point, as with `probe_invertible_raw`.
+#[extendr]
+fn nblast_hclust_raw(
+    scores: RMatrix<f64>,
+    method: &str,
+    symmetry: &str,
+    transform: &str,
+    labels: Robj,
+    n_cores: Option<i32>,
+) -> Robj {
+    let view = rmatrix_to_view(&scores);
+    let n = view.nrows();
+    let labels = check_labels(labels, n);
+
+    let z = linkage_from_scores(
+        view,
+        linkage_method(method),
+        linkage_symmetry(symmetry),
+        linkage_transform(transform),
+        to_threads(n_cores),
+        None,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+
+    hclust_from_z(&z, n, method, labels)
+}
+
+// Condensed distances from a square score matrix, as an R `dist` object.
+//
+// R stores a `dist` as the lower triangle by column, which for a symmetric matrix is
+// element-for-element the same sequence as the upper triangle by row that the kernel
+// writes — so the fused output needs no rearranging, only its attributes.
+//
+// Documented R-side in R/clustering.R.
+#[extendr]
+fn nblast_dist_raw(
+    scores: RMatrix<f64>,
+    symmetry: &str,
+    transform: &str,
+    labels: Robj,
+    n_cores: Option<i32>,
+) -> Robj {
+    let view = rmatrix_to_view(&scores);
+    let n = view.nrows();
+    let labels = check_labels(labels, n);
+
+    let cond = condense(
+        view,
+        linkage_symmetry(symmetry),
+        linkage_transform(transform),
+        to_threads(n_cores),
+        None,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+
+    let mut out: Robj = cond.into_robj();
+    out.set_attrib("Size", (n as i32).into_robj()).unwrap();
+    out.set_attrib("Diag", false.into_robj()).unwrap();
+    out.set_attrib("Upper", false.into_robj()).unwrap();
+    out.set_attrib("Labels", labels).unwrap();
+    out.set_class(["dist"]).unwrap();
+    out
+}
+
+// Hierarchical clustering of an existing condensed distance vector.
+//
+// Clustering consumes its input as scratch and R's value semantics forbid writing to
+// the caller's vector, so `d` is copied once here. Documented R-side in
+// R/clustering.R.
+#[extendr]
+fn fast_hclust_raw(d: Robj, method: &str, labels: Robj) -> Robj {
+    let slice = d
+        .as_real_slice()
+        .unwrap_or_else(|| panic!("`d` must be a `dist` object or a numeric vector"));
+
+    // Prefer the declared Size; fall back to solving n(n-1)/2 = length(d).
+    let n = match d.get_attrib("Size").and_then(|s| s.as_integer()) {
+        Some(size) if size >= 2 => size as usize,
+        _ => observations_from_condensed(slice.len())
+            .unwrap_or_else(|| panic!("length {} is not n(n-1)/2 for any n", slice.len())),
+    };
+    if slice.len() != n * (n - 1) / 2 {
+        panic!(
+            "`d` has {} entries, but Size = {n} implies {}",
+            slice.len(),
+            n * (n - 1) / 2
+        );
+    }
+
+    let labels = if labels.is_null() {
+        d.get_attrib("Labels").unwrap_or_else(|| r!(NULL))
+    } else {
+        labels
+    };
+    let labels = check_labels(labels, n);
+
+    // The one copy R's semantics force on us; see the note above.
+    let mut buf = slice.to_vec();
+    let z = core_linkage(&mut buf, n, linkage_method(method))
+        .unwrap_or_else(|e| panic!("{e}"));
+
+    hclust_from_z(&z, n, method, labels)
+}
+
 // Macro to generate exports.
 // This ensures exported functions are registered with R.
 // See corresponding C code in `entrypoint.c`.
@@ -1909,4 +2120,7 @@ extendr_module! {
     fn nblast_pairs;
     fn synblast_allbyall;
     fn synblast;
+    fn nblast_hclust_raw;
+    fn nblast_dist_raw;
+    fn fast_hclust_raw;
 }

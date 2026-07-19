@@ -18,6 +18,9 @@
 //! - [`matches`] — pulling the top matches back out of a score matrix (top-N, an
 //!   absolute threshold, or a percentage band around each group's best), without
 //!   copying or transposing a matrix that may be tens of GB.
+//! - [`linkage`] — hierarchical clustering of a score matrix, fusing symmetrisation,
+//!   the similarity→distance transform and condensing into one pass so no `n x n`
+//!   temporary is ever materialised, then clustering that buffer in place.
 //! - [`cmtk`] — CMTK spatial transforms: read a `*.list` registration (affine +
 //!   cubic B-spline warp) and apply it to points, forward or inverse, without
 //!   shelling out to CMTK's `streamxform`.
@@ -37,6 +40,8 @@ pub mod nblast;
 pub mod synblast;
 
 pub mod matches;
+
+pub mod linkage;
 
 pub mod cmtk;
 

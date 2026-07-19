@@ -531,6 +531,12 @@ synblast_allbyall <- function(points, types, smat_values, dist_edges, dot_edges,
 #' @export
 synblast <- function(q_points, q_types, t_points, t_types, smat_values, dist_edges, dot_edges, normalize, n_cores, precision, progress) .Call(wrap__synblast, q_points, q_types, t_points, t_types, smat_values, dist_edges, dot_edges, normalize, n_cores, precision, progress)
 
+nblast_hclust_raw <- function(scores, method, symmetry, transform, labels, n_cores) .Call(wrap__nblast_hclust_raw, scores, method, symmetry, transform, labels, n_cores)
+
+nblast_dist_raw <- function(scores, symmetry, transform, labels, n_cores) .Call(wrap__nblast_dist_raw, scores, symmetry, transform, labels, n_cores)
+
+fast_hclust_raw <- function(d, method, labels) .Call(wrap__fast_hclust_raw, d, method, labels)
+
 CmtkRegistration <- new.env(parent = emptyenv())
 
 CmtkRegistration$load <- function(paths) .Call(wrap__CmtkRegistration__load, paths)

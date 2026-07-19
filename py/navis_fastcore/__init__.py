@@ -4,6 +4,7 @@ from navis_fastcore import _fastcore
 from .dag import *
 from .nblast import *
 from .matches import *
+from .linkage import *
 from .mesh import *
 from .topo import *
 from .cmtk import *

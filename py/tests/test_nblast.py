@@ -8,7 +8,16 @@ import pytest
 from scipy.spatial import cKDTree
 
 import navis_fastcore as fastcore
-from navis_fastcore.nblast import Dotprop, Synapses, _tangents_and_alpha
+
+# `navis_fastcore.nblast` resolves to the re-exported *function*, not the module,
+# so the private helpers are imported by name.
+from navis_fastcore.nblast import (
+    Dotprop,
+    Synapses,
+    _combine,
+    _symmetrize,
+    _tangents_and_alpha,
+)
 
 DATA = Path(__file__).parent
 SMAT_DIR = DATA.parent.parent / "fastcore" / "fastcore.data"
@@ -124,6 +133,87 @@ def test_symmetry_forward_is_noop(dotprops):
     M = np.asarray(fastcore.nblast_allbyall(dotprops))
     M_fwd = np.asarray(fastcore.nblast_allbyall(dotprops, symmetry="forward"))
     assert np.array_equal(M, M_fwd)
+
+
+@pytest.mark.parametrize("symmetry", ["min", "max"])
+def test_symmetry_minmax_allbyall(dotprops, symmetry):
+    """All-by-all min/max, which the mean-only test above leaves uncovered."""
+    M = np.asarray(fastcore.nblast_allbyall(dotprops))
+    got = np.asarray(fastcore.nblast_allbyall(dotprops, symmetry=symmetry))
+    want = (np.minimum if symmetry == "min" else np.maximum)(M, M.T)
+    assert np.allclose(got, want, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# _symmetrize / _combine
+#
+# Both were rewritten to stop allocating n x n temporaries. The contract is that
+# they produce *exactly* what the expressions they replaced produced, so these pin
+# them bit-for-bit rather than approximately.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize(
+    "symmetry, naive",
+    [
+        ("mean", lambda a, b: (a + b) / 2),
+        (True, lambda a, b: (a + b) / 2),
+        ("min", np.minimum),
+        ("max", np.maximum),
+    ],
+)
+def test_symmetrize_matches_naive_expression(symmetry, naive, dtype):
+    rng = np.random.default_rng(0)
+    M = np.ascontiguousarray(rng.random((37, 37)), dtype=dtype)
+    want = naive(M, M.T)
+
+    got = _symmetrize(M, symmetry)
+
+    np.testing.assert_array_equal(got, want)
+    assert got is M, "_symmetrize must work in place"
+    np.testing.assert_array_equal(got, got.T, err_msg="result must be symmetric")
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize(
+    "symmetry, naive",
+    [
+        ("mean", lambda a, b: (a + b) / 2),
+        (True, lambda a, b: (a + b) / 2),
+        ("min", np.minimum),
+        ("max", np.maximum),
+    ],
+)
+def test_combine_matches_naive_expression(symmetry, naive, dtype):
+    rng = np.random.default_rng(1)
+    A = np.ascontiguousarray(rng.random((11, 23)), dtype=dtype)
+    B = np.ascontiguousarray(rng.random((23, 11)), dtype=dtype)
+    want = naive(A, B.T)
+
+    got = _combine(A, B.T, symmetry)
+
+    np.testing.assert_array_equal(got, want)
+    assert got is A, "_combine must consume its first argument in place"
+
+
+def test_symmetrize_leaves_diagonal_alone():
+    """NBLAST puts self-scores on the diagonal; symmetrising must not touch them."""
+    rng = np.random.default_rng(2)
+    M = np.ascontiguousarray(rng.random((16, 16)), dtype=np.float32)
+    diag = np.diag(M).copy()
+    _symmetrize(M, "mean")
+    np.testing.assert_array_equal(np.diag(M), diag)
+
+
+@pytest.mark.parametrize("bad", ["nonesuch", 0.5, "Mean"])
+def test_unknown_symmetry_raises(bad):
+    rng = np.random.default_rng(3)
+    M = np.ascontiguousarray(rng.random((8, 8)), dtype=np.float32)
+    with pytest.raises(ValueError, match="Unknown symmetry"):
+        _symmetrize(M, bad)
+    with pytest.raises(ValueError, match="Unknown symmetry"):
+        _combine(M, M.copy(), bad)
 
 
 def test_nblast_symmetry_rectangular(dotprops):

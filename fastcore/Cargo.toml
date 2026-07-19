@@ -31,6 +31,11 @@ ndarray_017 = { package = "ndarray", version = "0.17" }
 # `nblast(precision=16)` emits, and it halves the footprint of the very matrices that
 # module exists for. `num::Float` is not implemented for f16, hence the direct dep.
 half = "2"
+# Agglomerative clustering for `linkage`: a Rust port of Müllner's fastcluster
+# algorithms (nn-chain / MST / generic), generic over f32 and f64. The f32 support is
+# the point — scipy up-casts to f64 unconditionally, which doubles the largest
+# allocation in the pipeline exactly when it hurts most. MIT licensed, no C toolchain.
+kodama = "0.3.0"
 # NBLAST pipeline: shull (3D Delaunay) + aann-graph (neighbourhood-graph NN).
 # The all-by-all uses aann's grouped split API (GroupedQueriesF64 / query_grouped).
 shull = "0.3.0"

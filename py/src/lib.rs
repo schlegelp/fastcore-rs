@@ -7,6 +7,9 @@ use nblast::*;
 mod matches;
 use matches::*;
 
+mod linkage;
+use linkage::*;
+
 mod cmtk;
 use cmtk::*;
 
@@ -78,6 +81,18 @@ mod fastcore {
 
     #[pymodule_export]
     use super::count_matches_py;
+
+    #[pymodule_export]
+    use super::symmetrize_py;
+
+    #[pymodule_export]
+    use super::condensed_distances_py;
+
+    #[pymodule_export]
+    use super::linkage_from_scores_py;
+
+    #[pymodule_export]
+    use super::linkage_condensed_py;
 
     #[pymodule_export]
     use super::synblast_allbyall_py;

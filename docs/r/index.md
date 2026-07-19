@@ -113,6 +113,37 @@ healed = heal_skeleton(parents, s$d$X, s$d$Y, s$d$Z, method="ALL",
 - `synblast` / `synblast_allbyall`: synapse-based NBLAST
 - `smat_auto_limit`: the `limit_dist="auto"` value for a scoring matrix
 
+**Clustering**
+
+- `nblast_hclust`: cluster a score matrix, returning an `hclust`
+- `nblast_dist`: condensed distances from a score matrix, as a `dist`
+- `fast_hclust`: cluster an existing `dist`, without the 65536 limit
+
+```r
+scores <- nblast_allbyall(points, vects, ...)   # (n, n) score matrix
+
+# Symmetrise, 1 - score, condense and cluster - in one fused pass.
+h <- nblast_hclust(scores, method = "ward")
+
+# A standard hclust object, so the rest of R just works.
+groups <- cutree(h, k = 10)
+plot(h)
+```
+
+Two things this buys you over the idiomatic spelling:
+
+- **No size ceiling.** `stats::hclust` refuses more than 65536 observations —
+  a hard blocker at whole-brain scale, where 100k–200k neurons is routine.
+  `nblast_hclust` and `fast_hclust` are bounded only by memory.
+- **No `n × n` temporaries.** `hclust(as.dist(1 - (m + t(m)) / 2))` materialises
+  three more full matrices before clustering starts. Here symmetrising, the
+  distance transform and condensing are fused into a single pass, and the
+  condensed buffer is then clustered in place.
+
+Method names follow SciPy, so `"ward"` is R's `"ward.D2"` and `"weighted"` is
+R's `"mcquitty"`. Note `"centroid"` and `"median"` take **plain** distances here,
+whereas `stats::hclust` expects squared ones for those two.
+
 **CMTK transforms** — see [CMTK transforms](../python/cmtk.md) for the full story
 
 - `cmtk_read`: read a CMTK `.list` registration (or a chain of them)
