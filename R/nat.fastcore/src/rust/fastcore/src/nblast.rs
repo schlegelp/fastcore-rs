@@ -187,6 +187,22 @@ impl Smat {
     ) -> Smat {
         let values = Array2::from_shape_vec((nrows, ncols), values)
             .expect("smat values length must equal nrows * ncols");
+        // `digitize` clamps to `edges.len() - 1`, so edges longer than their axis
+        // index `values` out of bounds — deep in a worker thread, as an opaque
+        // panic. Fail here instead, where the message can name the culprit. The
+        // usual mistake is passing `n + 1` bin *boundaries* as the `n` left edges.
+        assert_eq!(
+            dist_edges.len(),
+            nrows,
+            "smat dist_edges must have one left edge per row ({nrows}), got {}",
+            dist_edges.len()
+        );
+        assert_eq!(
+            dot_edges.len(),
+            ncols,
+            "smat dot_edges must have one left edge per column ({ncols}), got {}",
+            dot_edges.len()
+        );
         Smat {
             values,
             dist_edges,

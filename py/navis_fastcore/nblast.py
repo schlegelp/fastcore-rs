@@ -10,6 +10,7 @@ __all__ = [
     "nblast_knn",
     "nblast_smart",
     "synblast",
+    "Dotprop",
     "Synapses",
 ]
 
@@ -95,11 +96,29 @@ def _smat_args(smat):
         return (values, np.ascontiguousarray(dist_edges), np.ascontiguousarray(dot_edges))
 
     values, dist_edges, dot_edges = smat
-    return (
-        np.ascontiguousarray(values, dtype=np.float64),
-        np.ascontiguousarray(dist_edges, dtype=np.float64),
-        np.ascontiguousarray(dot_edges, dtype=np.float64),
-    )
+    values = np.ascontiguousarray(values, dtype=np.float64)
+    dist_edges = np.ascontiguousarray(dist_edges, dtype=np.float64)
+    dot_edges = np.ascontiguousarray(dot_edges, dtype=np.float64)
+
+    # Catch shape mismatches here: Rust indexes `values` with the bin returned by
+    # the edges, so an over-long edge array only fails deep inside a worker
+    # thread, as an opaque panic. The natural mistake is passing the `n + 1`
+    # boundaries (as a `Lookup2d` carries) where `n` left edges are wanted.
+    if values.ndim != 2:
+        raise ValueError(f"`smat` values must be 2-dimensional, got {values.ndim}D.")
+    for name, edges, n in (
+        ("dist_edges", dist_edges, values.shape[0]),
+        ("dot_edges", dot_edges, values.shape[1]),
+    ):
+        if edges.ndim != 1 or len(edges) != n:
+            raise ValueError(
+                f"`smat` {name} must be a 1-D array of {n} left bin edges to match "
+                f"the {values.shape[0]}x{values.shape[1]} scoring matrix, got "
+                f"{len(edges)}. If these are `n + 1` bin *boundaries*, drop the "
+                "last one."
+            )
+
+    return (values, dist_edges, dot_edges)
 
 
 def _resolve_limit(limit_dist, smat_args, use_alpha):
@@ -405,6 +424,19 @@ def nblast_knn(
 
     Measured on 163,976 zebrafish neurons: recall@20 = 0.990 at the default
     ``n_candidates=200``, scoring 0.16% of pairs.
+
+    .. note::
+
+        Scores agree with :func:`~navis_fastcore.nblast` but are not guaranteed
+        bit-identical to it. Where a query point is *exactly* equidistant from two
+        target points the nearest neighbour is ambiguous, and the two functions
+        can pick different (equally valid) tied tangents, shifting the score in
+        its last digits. ``aann-graph >= 0.2.1`` resolves such ties to the lowest
+        vertex index, which makes the two agree in all but a rare case where the
+        tied points are not adjacent in the neighbourhood graph. Ties are common
+        on real neurons, whose coordinates sit on a quantised grid, and
+        essentially absent on continuous synthetic data. Compare the two with a
+        small tolerance rather than for exact equality.
 
     A long run can be interrupted with Ctrl-C / the Jupyter interrupt button.
 

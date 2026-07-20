@@ -692,6 +692,43 @@ def test_knn_scores_are_exact_even_when_approximate(knn_dotprops):
                 assert abs(sc[i, c] - S[i, idx[i, c]]) < 1e-12
 
 
+@pytest.mark.parametrize("seed", range(8))
+def test_knn_matches_nblast_on_tied_neighbours(seed):
+    """Grid-quantised clouds: `nblast_knn` and `nblast` must resolve NN ties alike.
+
+    The two paths hand different query sets to the aann index (`nblast` all clouds
+    at once, `nblast_knn` one candidate subset per target), which yields a
+    different Morton order and so a different descent seed. While aann broke ties
+    by keeping the incumbent, that made the winner among *exactly* equidistant
+    target points path-dependent, and the two disagreed by ~1e-3 here. aann 0.2.1
+    resolves ties to the lowest vertex index instead.
+
+    Continuous coordinates essentially never tie, so this needs the grid snapping
+    below - it is what makes real (resampled/voxelised) neurons tie readily.
+    """
+    rng = np.random.default_rng(seed)
+
+    def cloud(n=400, step=2.0):
+        p = np.round(np.cumsum(rng.normal(size=(n, 3)), axis=0) * 2.0 / step) * step
+        p = np.unique(p, axis=0)  # dedupe: coincident points make NN indices moot
+        v = rng.normal(size=(len(p), 3))
+        v /= np.linalg.norm(v, axis=1, keepdims=True)
+        return Dotprop(np.ascontiguousarray(p), np.ascontiguousarray(v))
+
+    dps = [cloud(), cloud()]
+    D = np.linalg.norm(
+        dps[0].points[:, None, :] - dps[1].points[None, :, :], axis=-1
+    )
+    n_ties = sum((D[i] == D[i].min()).sum() > 1 for i in range(len(D)))
+    assert n_ties, "no tied nearest neighbours - this seed does not test anything"
+
+    want = fastcore.nblast(dps, dps, precision=64)[0, 1]
+    got = fastcore.nblast_knn(
+        dps, k=1, n_candidates=10, symmetry=None, precision=64
+    )[1][0, 0]
+    assert got == pytest.approx(want, abs=1e-12)
+
+
 def test_knn_shapes_rows_sorted_and_exclude_self(knn_dotprops):
     n, k = len(knn_dotprops), 5
     idx, sc = fastcore.nblast_knn(knn_dotprops, k=k, n_candidates=n - 1)

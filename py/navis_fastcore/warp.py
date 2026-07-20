@@ -319,7 +319,7 @@ class MlsTransform:
         self._reverse = direction == "inverse"
         self._tr = _fastcore.MlsTransform(src, trg)
 
-    def xform(self, points, n_cores=None):
+    def xform(self, points, n_cores=None, reverse=None):
         """Transform points.
 
         Parameters
@@ -329,6 +329,12 @@ class MlsTransform:
                     returns a ``(3,)`` point; a ``DataFrame`` with x/y/z columns also works.
         n_cores :   int, optional
                     Number of threads. ``None`` (default) uses all cores.
+        reverse :   bool, optional
+                    Override this transform's ``direction`` for this call only:
+                    ``False`` maps source -> target, ``True`` target -> source.
+                    ``None`` (default) uses ``direction``. The underlying fit is
+                    direction-agnostic, so this saves rebuilding the object just
+                    to run it the other way.
 
         Returns
         -------
@@ -337,9 +343,8 @@ class MlsTransform:
 
         """
         pts, was_1d = _prep_xyz(points)
-        out = self._tr.xform(
-            pts, self._reverse, None if n_cores is None else int(n_cores)
-        )
+        rev = self._reverse if reverse is None else bool(reverse)
+        out = self._tr.xform(pts, rev, None if n_cores is None else int(n_cores))
         return out[0] if was_1d else out
 
     @property
