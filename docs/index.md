@@ -103,6 +103,7 @@ surface and how they spell it. `—` means that surface doesn't expose it direct
 | NBLAST, query vs target | `nblast::nblast_query_target` | `nblast` | `nblast` |
 | NBLAST, all-by-all | `nblast::nblast_allbyall` | `nblast_allbyall` | `nblast_allbyall` |
 | NBLAST for explicit index pairs | `nblast::nblast_pairs` | — | `nblast_pairs` |
+| k nearest neighbours, no score matrix | `nblast_knn::nblast_knn`, `nblast_knn::nblast_knn_query_target` | `nblast_knn` | `nblast_knn` |
 | Two-pass approximate NBLAST | — | `nblast_smart` | — |
 | synNBLAST (synapse-based) | `synblast::synblast_query_target`, `synblast::synblast_allbyall` | `synblast` | `synblast`, `synblast_allbyall` |
 | `limit_dist` heuristic for a scoring matrix | `nblast::Smat` | — (via `limit_dist="auto"`) | `smat_auto_limit` |

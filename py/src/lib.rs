@@ -74,6 +74,9 @@ mod fastcore {
     use super::nblast_pairs_py;
 
     #[pymodule_export]
+    use super::nblast_knn_py;
+
+    #[pymodule_export]
     use super::top_matches_py;
 
     #[pymodule_export]

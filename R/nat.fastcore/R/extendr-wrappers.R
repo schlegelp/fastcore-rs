@@ -488,6 +488,45 @@ nblast <- function(q_points, q_vects, t_points, t_vects, q_alphas, t_alphas, sma
 #' @export
 nblast_pairs <- function(q_points, q_vects, t_points, t_vects, q_idx, t_idx, q_alphas, t_alphas, smat_values, dist_edges, dot_edges, normalize, limit_dist, n_cores, precision, progress) .Call(wrap__nblast_pairs, q_points, q_vects, t_points, t_vects, q_idx, t_idx, q_alphas, t_alphas, smat_values, dist_edges, dot_edges, normalize, limit_dist, n_cores, precision, progress)
 
+#' k nearest neighbours under NBLAST, without building the score matrix.
+#'
+#' With `t_points`/`t_vects` supplied this is the query -> target form and the
+#' returned indices address the *target* list; otherwise it is the all-by-all
+#' form over `points`, with self-matches excluded. Only which neurons make the
+#' shortlist is approximate — every returned score is an exact NBLAST value.
+#'
+#' @param points List of `(N, 3)` numeric matrices of query point coordinates.
+#' @param vects List of `(N, 3)` numeric matrices of unit tangent vectors, one
+#'   per neuron and aligned with `points`.
+#' @param alphas Optional list of per-point alpha (anisotropy) vectors; `NULL`
+#'   disables alpha weighting.
+#' @param t_points Optional list of `(N, 3)` target point matrices; `NULL` runs
+#'   the all-by-all form.
+#' @param t_vects Optional list of `(N, 3)` target tangent matrices; must be
+#'   given together with `t_points`.
+#' @param t_alphas Optional list of per-point alpha vectors for the targets.
+#' @param k Integer; neighbours to return per neuron.
+#' @param n_candidates Integer; shortlist size per neuron (the recall/cost knob).
+#' @param symmetry One of `"mean"`, `"forward"`, `"min"`, `"max"`; how the two
+#'   directions of a pair are combined *before* the top-`k` cut.
+#' @param voxel Numeric; signature voxel edge in the units of `points`.
+#' @param n_dirs Integer; tangent-direction bins for the signature (1 disables).
+#' @param splat Logical; trilinearly splat each point over its 8 nearest voxels.
+#' @param smat_values Numeric scoring matrix, or `NULL` for the built-in FCWB
+#'   matrix.
+#' @param dist_edges Numeric vector of distance bin edges for `smat_values`.
+#' @param dot_edges Numeric vector of dot-product bin edges for `smat_values`.
+#' @param normalize Logical; normalise each score by the query self-match score.
+#' @param limit_dist Optional numeric distance cut-off; `NULL` disables it.
+#' @param n_cores Optional integer thread count; `NULL` or `<= 0` uses all cores.
+#' @param precision Integer; compute in 32- or 64-bit floats.
+#' @param progress Logical; display a progress bar.
+#' @return A list with `idx`, an integer `(n_query, k)` matrix of **1-based**
+#'   neighbour indices, and `scores`, the matching numeric matrix. Rows with
+#'   fewer than `k` candidates are padded with `NA` in both.
+#' @noRd
+nblast_knn_raw <- function(points, vects, alphas, t_points, t_vects, t_alphas, k, n_candidates, symmetry, voxel, n_dirs, splat, smat_values, dist_edges, dot_edges, normalize, limit_dist, n_cores, precision, progress) .Call(wrap__nblast_knn_raw, points, vects, alphas, t_points, t_vects, t_alphas, k, n_candidates, symmetry, voxel, n_dirs, splat, smat_values, dist_edges, dot_edges, normalize, limit_dist, n_cores, precision, progress)
+
 #' All-by-all forward syNBLAST over synapse clouds.
 #'
 #' `points` are lists of (N, 3) connector coordinate matrices and `types` the

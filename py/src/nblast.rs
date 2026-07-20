@@ -9,6 +9,7 @@ use std::time::Duration;
 use fastcore::nblast::{
     load_smat, load_smat_alpha, nblast_allbyall, nblast_pairs, nblast_query_target, Opts, Smat,
 };
+use fastcore::nblast_knn::{nblast_knn, nblast_knn_query_target, KnnOpts, Symmetry};
 use fastcore::synblast::{synblast_allbyall, synblast_query_target};
 
 /// Run a GIL-releasing NBLAST `compute` so a `KeyboardInterrupt` (Ctrl-C, or the
@@ -475,4 +476,159 @@ pub fn nblast_py<'py>(
         }
     };
     Ok(out)
+}
+
+/// Map the Python `symmetry` spelling onto the core's [`Symmetry`].
+fn parse_symmetry(name: &str) -> PyResult<Symmetry> {
+    match name {
+        "forward" => Ok(Symmetry::Forward),
+        "mean" => Ok(Symmetry::Mean),
+        "min" => Ok(Symmetry::Min),
+        "max" => Ok(Symmetry::Max),
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown symmetry {other:?}; expected 'forward', 'mean', 'min' or 'max'"
+        ))),
+    }
+}
+
+/// k nearest neighbours under NBLAST, without building the score matrix.
+///
+/// With `t_points` / `t_vects` supplied this is the rectangular query -> target
+/// form and `idx` indexes the *target* list; without them it is the all-by-all
+/// form over `points` and self-matches are excluded. Returns `(idx, scores)`,
+/// both `(n_query, k)`, rows in descending score order and padded with `-1` /
+/// `-inf` when fewer than `k` candidates exist. Scores are exact NBLAST values
+/// combined per `symmetry`; only which neurons make the shortlist is approximate.
+#[pyfunction]
+#[pyo3(
+    signature = (
+        points, vects, alphas=None, t_points=None, t_vects=None, t_alphas=None,
+        k=20, n_candidates=200, symmetry="mean",
+        voxel=20.0, n_dirs=3, splat=true,
+        smat_values=None, dist_edges=None, dot_edges=None,
+        normalize=true, limit_dist=None, n_cores=None, precision=32, progress=false
+    ),
+    name = "nblast_knn"
+)]
+#[allow(clippy::too_many_arguments)]
+pub fn nblast_knn_py<'py>(
+    py: Python<'py>,
+    points: Vec<PyReadonlyArray2<f64>>,
+    vects: Vec<PyReadonlyArray2<f64>>,
+    alphas: Option<Vec<PyReadonlyArray1<f64>>>,
+    t_points: Option<Vec<PyReadonlyArray2<f64>>>,
+    t_vects: Option<Vec<PyReadonlyArray2<f64>>>,
+    t_alphas: Option<Vec<PyReadonlyArray1<f64>>>,
+    k: usize,
+    n_candidates: usize,
+    symmetry: &str,
+    voxel: f64,
+    n_dirs: usize,
+    splat: bool,
+    smat_values: Option<PyReadonlyArray2<f64>>,
+    dist_edges: Option<PyReadonlyArray1<f64>>,
+    dot_edges: Option<PyReadonlyArray1<f64>>,
+    normalize: bool,
+    limit_dist: Option<f64>,
+    n_cores: Option<usize>,
+    precision: u8,
+    progress: bool,
+) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+    if k < 1 {
+        return Err(pyo3::exceptions::PyValueError::new_err("k must be >= 1"));
+    }
+    if voxel <= 0.0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "voxel must be positive",
+        ));
+    }
+    if points.len() != vects.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "points and vects must have the same length",
+        ));
+    }
+    if t_points.is_some() != t_vects.is_some() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "t_points and t_vects must be given together",
+        ));
+    }
+    if let (Some(tp), Some(tv)) = (&t_points, &t_vects) {
+        if tp.len() != tv.len() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "t_points and t_vects must have the same length",
+            ));
+        }
+    }
+    let sym = parse_symmetry(symmetry)?;
+    let clouds = to_clouds(&points);
+    let vecs = to_clouds(&vects);
+    let alpha_vecs = to_alphas(alphas);
+    let targets = t_points
+        .as_ref()
+        .map(|tp| (to_clouds(tp), to_clouds(t_vects.as_ref().unwrap()), to_alphas(t_alphas)));
+    let smat = build_smat(smat_values, dist_edges, dot_edges, alpha_vecs.is_some());
+    let nq = clouds.len();
+    let cancel = AtomicBool::new(false);
+    let opts = KnnOpts {
+        nblast: Opts {
+            smat: &smat,
+            normalize,
+            limit_dist,
+            threads: n_cores,
+            progress,
+            cancel: Some(&cancel),
+        },
+        k,
+        n_candidates,
+        voxel,
+        n_dirs,
+        splat,
+        symmetry: sym,
+    };
+
+    // One closure per precision, dispatching square vs rectangular inside, so the
+    // GIL-releasing call happens exactly once either way.
+    macro_rules! run {
+        ($ty:ty) => {{
+            let (i, s): (Vec<i64>, Vec<$ty>) = run_interruptible(py, &cancel, move || {
+                match targets {
+                    Some((tp, tv, ta)) => {
+                        nblast_knn_query_target(clouds, vecs, alpha_vecs, tp, tv, ta, opts)
+                    }
+                    None => nblast_knn(clouds, vecs, alpha_vecs, opts),
+                }
+            })?;
+            (i, s)
+        }};
+    }
+
+    let shape_err = |e: ndarray::ShapeError| pyo3::exceptions::PyValueError::new_err(e.to_string());
+    let (idx, scores) = match precision {
+        32 => {
+            let (i, s) = run!(f32);
+            (
+                Array2::from_shape_vec((nq, k), i).map_err(shape_err)?,
+                Array2::from_shape_vec((nq, k), s)
+                    .map_err(shape_err)?
+                    .into_pyarray(py)
+                    .into_any(),
+            )
+        }
+        64 => {
+            let (i, s) = run!(f64);
+            (
+                Array2::from_shape_vec((nq, k), i).map_err(shape_err)?,
+                Array2::from_shape_vec((nq, k), s)
+                    .map_err(shape_err)?
+                    .into_pyarray(py)
+                    .into_any(),
+            )
+        }
+        _ => {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "precision must be 32 or 64",
+            ))
+        }
+    };
+    Ok((idx.into_pyarray(py).into_any(), scores))
 }

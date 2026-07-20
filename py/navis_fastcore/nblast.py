@@ -4,7 +4,14 @@ from collections import namedtuple
 
 from . import _fastcore
 
-__all__ = ["nblast_allbyall", "nblast", "nblast_smart", "synblast", "Synapses"]
+__all__ = [
+    "nblast_allbyall",
+    "nblast",
+    "nblast_knn",
+    "nblast_smart",
+    "synblast",
+    "Synapses",
+]
 
 #: Minimal dotprop container: `points` (N, 3), unit tangent `vect` (N, 3) and an
 #: optional per-point `alpha` (N,) used only when ``use_alpha=True``.
@@ -347,6 +354,177 @@ def nblast(
     if user_bits == 16:
         M = M.astype(np.float16)
     return M
+
+
+#: `symmetry` values accepted by `nblast_knn`, mapped to the kernel's name.
+_KNN_SYMMETRY = {
+    None: "forward",
+    "forward": "forward",
+    "mean": "mean",
+    True: "mean",
+    "min": "min",
+    "max": "max",
+}
+
+
+def nblast_knn(
+    dotprops,
+    target=None,
+    k=20,
+    symmetry="mean",
+    n_candidates=200,
+    voxel=20.0,
+    n_dirs=3,
+    splat=True,
+    smat=None,
+    normalize=True,
+    use_alpha=False,
+    limit_dist=None,
+    n_cores=None,
+    precision=32,
+    progress=False,
+):
+    """The `k` nearest neighbours of every neuron, without the ``n x n`` matrix.
+
+    An all-by-all is the wrong shape for a k-NN question at scale: 164k neurons is
+    2.7e10 pairs and a 107 GB matrix, when the answer wanted from it is a 26 MB
+    k-NN graph (typically to feed a UMAP embedding). This computes that graph
+    directly, in three stages:
+
+    1. each neuron becomes a coarse voxel-occupancy signature;
+    2. the ``n_candidates`` most similar neurons per row are shortlisted from
+       those signatures;
+    3. the **exact** NBLAST score is computed for the shortlisted pairs only.
+
+    The pre-filter is sound because the FCWB scoring matrix has finite support —
+    beyond its last distance bin (40 um) every cell is ~ -10, so neurons that do
+    not overlap in space score at that floor regardless of shape. Only *which*
+    neurons make the shortlist is approximate; every returned score is an exact
+    NBLAST value, because a neuron that belongs in the true top-`k` outranks the
+    global k-th and so cannot be dropped by the rerank once shortlisted.
+
+    Measured on 163,976 zebrafish neurons: recall@20 = 0.990 at the default
+    ``n_candidates=200``, scoring 0.16% of pairs.
+
+    A long run can be interrupted with Ctrl-C / the Jupyter interrupt button.
+
+    Parameters
+    ----------
+    dotprops :     iterable of dotprop-likes
+                   The queries. Each must expose `points` (N, 3) and unit tangent
+                   `vect` (N, 3); also `alpha` (N,) when ``use_alpha`` is set.
+    target :       iterable of dotprop-likes | None
+                   If given, neighbours are searched among these instead of among
+                   `dotprops`, and the returned `idx` indexes **`target`** — the
+                   k-NN counterpart of ``nblast(query, target)``. Two things
+                   differ from the ``None`` (all-by-all) case: nothing is excluded
+                   from a row, so a neuron appearing in both sets matches itself
+                   at 1.0; and the candidate shortlist is not symmetrically closed
+                   (there is no "target proposes the query" side to close over),
+                   which makes a given `n_candidates` slightly less generous than
+                   in the all-by-all case — raise it by ~40% to match.
+    k :            int
+                   Neighbours to return per neuron.
+    symmetry :     'mean' | 'forward' | 'min' | 'max' | None
+                   How the two directions of a pair are combined **before** the
+                   top-`k` cut. This matters more here than for a full matrix:
+                   with a matrix you can symmetrise afterwards against the
+                   transpose, but once only `k` neighbours per row are kept the
+                   transpose is gone. The asymmetry is real — a small neuron
+                   contained in a large one scores high one way and low the other
+                   — so ``'mean'`` is the default. ``None`` / ``'forward'`` keeps
+                   each row's own forward score.
+    n_candidates : int
+                   Shortlist size per neuron; the one recall/cost knob. Measured
+                   recall@20 on 163,976 real neurons: 0.911 at 50, 0.969 at 100,
+                   0.990 at 200, 0.996 at 400. The budget needed for a given
+                   recall grows only about logarithmically with the number of
+                   neurons.
+    voxel :        float
+                   Signature voxel edge, in the units of `points` (um for the
+                   FCWB matrix). 10-20 measured equivalently.
+    n_dirs :       int
+                   Tangent-direction bins for the signature; 1 disables them.
+    splat :        bool
+                   Trilinearly spread each point over its 8 surrounding voxels
+                   (worth ~0.05 recall@20).
+    smat, normalize, use_alpha, limit_dist, n_cores, precision, progress :
+                   As in `nblast` / `nblast_allbyall`.
+
+    Returns
+    -------
+    idx :          np.ndarray
+                   (n_query, k) int64 neighbour indices, descending by score —
+                   into `target` if given, else into `dotprops`. Rows with fewer
+                   than `k` candidates are padded with ``-1``.
+    scores :       np.ndarray
+                   (n_query, k) NBLAST similarities aligned to `idx`; padding is
+                   ``-inf``. For UMAP's ``precomputed_knn`` pass ``1.0 - scores``
+                   as the distances.
+
+    Examples
+    --------
+    >>> idx, scores = nblast_knn(dotprops, k=20)                 # doctest: +SKIP
+    >>> reducer = umap.UMAP(precomputed_knn=(idx, 1.0 - scores)) # doctest: +SKIP
+
+    Search a small query set against a large reference set:
+
+    >>> idx, scores = nblast_knn(queries, target=library, k=5)   # doctest: +SKIP
+
+    """
+    try:
+        sym = _KNN_SYMMETRY[symmetry]
+    except (KeyError, TypeError):
+        raise ValueError(
+            f"Unknown symmetry {symmetry!r}; expected 'mean', 'forward', 'min', "
+            "'max' or None."
+        ) from None
+
+    points, vects, alphas = _as_clouds(dotprops, want_alpha=use_alpha)
+    if k < 1:
+        raise ValueError(f"k must be >= 1, got {k}.")
+
+    t_points = t_vects = t_alphas = None
+    if target is not None:
+        t_points, t_vects, t_alphas = _as_clouds(target, want_alpha=use_alpha)
+
+    if len(points) == 0:
+        return (
+            np.zeros((0, k), dtype=np.int64),
+            np.zeros((0, k), dtype=np.float32 if precision != 64 else np.float64),
+        )
+
+    sv, de, ve = _smat_args(smat)
+    limit = _resolve_limit(limit_dist, (sv, de, ve), use_alpha)
+    user_bits, rust_bits = _resolve_precision(precision)
+
+    idx, scores = _fastcore.nblast_knn(
+        points,
+        vects,
+        alphas=alphas,
+        t_points=t_points,
+        t_vects=t_vects,
+        t_alphas=t_alphas,
+        k=k,
+        n_candidates=n_candidates,
+        symmetry=sym,
+        voxel=float(voxel),
+        n_dirs=n_dirs,
+        splat=splat,
+        smat_values=sv,
+        dist_edges=de,
+        dot_edges=ve,
+        normalize=normalize,
+        limit_dist=limit,
+        n_cores=n_cores,
+        precision=rust_bits,
+        progress=progress,
+    )
+    idx = np.asarray(idx)
+    scores = np.asarray(scores)
+    if user_bits == 16:
+        scores = scores.astype(np.float16)
+    return idx, scores
 
 
 def _clouds_to_dotprops(points, vects, alphas):

@@ -37,6 +37,8 @@
 
 pub mod nblast;
 
+pub mod nblast_knn;
+
 pub mod synblast;
 
 pub mod matches;

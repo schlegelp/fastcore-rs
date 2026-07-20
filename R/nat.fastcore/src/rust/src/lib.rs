@@ -9,6 +9,7 @@ use fastcore::linkage::{
     observations_from_condensed, Method as LinkageMethod, Symmetry, Transform,
 };
 use fastcore::nblast::{load_smat, load_smat_alpha, Opts, Smat};
+use fastcore::nblast_knn::{KnnOpts, Symmetry as KnnSymmetry};
 
 /// For each node ID in `parents` find its index in `nodes`.
 ///
@@ -1331,6 +1332,168 @@ pub fn nblast_pairs(
     }
 }
 
+/// Map an R `symmetry` string onto the core's [`Symmetry`].
+fn to_symmetry(name: &str) -> KnnSymmetry {
+    match name {
+        "forward" => KnnSymmetry::Forward,
+        "mean" => KnnSymmetry::Mean,
+        "min" => KnnSymmetry::Min,
+        "max" => KnnSymmetry::Max,
+        other => panic!("unknown `symmetry` {other:?}; expected 'forward', 'mean', 'min' or 'max'"),
+    }
+}
+
+/// Pack a flat row-major k-NN result into R matrices.
+///
+/// Two translations to R conventions happen here: neighbour indices become
+/// **1-based**, and the `-1` / `-Inf` padding the core emits for rows with fewer
+/// than `k` candidates becomes `NA` in both matrices, which is what R code will
+/// expect to test for.
+fn knn_to_r(idx: &[i64], scores: &[f64], nrows: usize, k: usize) -> Robj {
+    let idx_m = RArray::new_matrix(nrows, k, |r, c| {
+        let v = idx[r * k + c];
+        if v < 0 {
+            Rint::na()
+        } else {
+            Rint::from((v + 1) as i32)
+        }
+    });
+    let sc_m = RArray::new_matrix(nrows, k, |r, c| {
+        let v = scores[r * k + c];
+        if idx[r * k + c] < 0 || !v.is_finite() {
+            Rfloat::na()
+        } else {
+            Rfloat::from(v)
+        }
+    });
+    list!(idx = idx_m, scores = sc_m).into()
+}
+
+/// k nearest neighbours under NBLAST, without building the score matrix.
+///
+/// With `t_points`/`t_vects` supplied this is the query -> target form and the
+/// returned indices address the *target* list; otherwise it is the all-by-all
+/// form over `points`, with self-matches excluded. Only which neurons make the
+/// shortlist is approximate — every returned score is an exact NBLAST value.
+///
+/// @param points List of `(N, 3)` numeric matrices of query point coordinates.
+/// @param vects List of `(N, 3)` numeric matrices of unit tangent vectors, one
+///   per neuron and aligned with `points`.
+/// @param alphas Optional list of per-point alpha (anisotropy) vectors; `NULL`
+///   disables alpha weighting.
+/// @param t_points Optional list of `(N, 3)` target point matrices; `NULL` runs
+///   the all-by-all form.
+/// @param t_vects Optional list of `(N, 3)` target tangent matrices; must be
+///   given together with `t_points`.
+/// @param t_alphas Optional list of per-point alpha vectors for the targets.
+/// @param k Integer; neighbours to return per neuron.
+/// @param n_candidates Integer; shortlist size per neuron (the recall/cost knob).
+/// @param symmetry One of `"mean"`, `"forward"`, `"min"`, `"max"`; how the two
+///   directions of a pair are combined *before* the top-`k` cut.
+/// @param voxel Numeric; signature voxel edge in the units of `points`.
+/// @param n_dirs Integer; tangent-direction bins for the signature (1 disables).
+/// @param splat Logical; trilinearly splat each point over its 8 nearest voxels.
+/// @param smat_values Numeric scoring matrix, or `NULL` for the built-in FCWB
+///   matrix.
+/// @param dist_edges Numeric vector of distance bin edges for `smat_values`.
+/// @param dot_edges Numeric vector of dot-product bin edges for `smat_values`.
+/// @param normalize Logical; normalise each score by the query self-match score.
+/// @param limit_dist Optional numeric distance cut-off; `NULL` disables it.
+/// @param n_cores Optional integer thread count; `NULL` or `<= 0` uses all cores.
+/// @param precision Integer; compute in 32- or 64-bit floats.
+/// @param progress Logical; display a progress bar.
+/// @return A list with `idx`, an integer `(n_query, k)` matrix of **1-based**
+///   neighbour indices, and `scores`, the matching numeric matrix. Rows with
+///   fewer than `k` candidates are padded with `NA` in both.
+/// @noRd
+#[extendr]
+#[allow(clippy::too_many_arguments)]
+pub fn nblast_knn_raw(
+    points: List,
+    vects: List,
+    alphas: Robj,
+    t_points: Robj,
+    t_vects: Robj,
+    t_alphas: Robj,
+    k: i32,
+    n_candidates: i32,
+    symmetry: &str,
+    voxel: f64,
+    n_dirs: i32,
+    splat: bool,
+    smat_values: Robj,
+    dist_edges: Option<Vec<f64>>,
+    dot_edges: Option<Vec<f64>>,
+    normalize: bool,
+    limit_dist: Option<f64>,
+    n_cores: Option<i32>,
+    precision: i32,
+    progress: bool,
+) -> Robj {
+    if k < 1 {
+        panic!("`k` must be >= 1");
+    }
+    if voxel <= 0.0 {
+        panic!("`voxel` must be positive");
+    }
+    if t_points.is_null() != t_vects.is_null() {
+        panic!("`t_points` and `t_vects` must be given together");
+    }
+    let k = k as usize;
+    let clouds = to_clouds(&points);
+    let vecs = to_clouds(&vects);
+    let alpha_vecs = to_alphas(alphas);
+    let smat = build_smat(smat_values, dist_edges, dot_edges, alpha_vecs.is_some());
+    let nq = clouds.len();
+    let opts = KnnOpts {
+        nblast: Opts {
+            smat: &smat,
+            normalize,
+            limit_dist,
+            threads: to_threads(n_cores),
+            progress,
+            cancel: None,
+        },
+        k,
+        n_candidates: n_candidates.max(0) as usize,
+        voxel,
+        n_dirs: n_dirs.max(1) as usize,
+        splat,
+        symmetry: to_symmetry(symmetry),
+    };
+
+    let targets = if t_points.is_null() {
+        None
+    } else {
+        let tp = <List>::try_from(t_points).expect("`t_points` must be a list of matrices");
+        let tv = <List>::try_from(t_vects).expect("`t_vects` must be a list of matrices");
+        if tp.len() != tv.len() {
+            panic!("`t_points` and `t_vects` must have the same length");
+        }
+        Some((to_clouds(&tp), to_clouds(&tv), to_alphas(t_alphas)))
+    };
+
+    let (idx, scores): (Vec<i64>, Vec<f64>) = match (precision, targets) {
+        (32, Some((tp, tv, ta))) => {
+            let (i, s) = fastcore::nblast_knn::nblast_knn_query_target::<f32>(
+                clouds, vecs, alpha_vecs, tp, tv, ta, opts,
+            );
+            (i, s.into_iter().map(|x| x as f64).collect())
+        }
+        (64, Some((tp, tv, ta))) => fastcore::nblast_knn::nblast_knn_query_target::<f64>(
+            clouds, vecs, alpha_vecs, tp, tv, ta, opts,
+        ),
+        (32, None) => {
+            let (i, s) =
+                fastcore::nblast_knn::nblast_knn::<f32>(clouds, vecs, alpha_vecs, opts);
+            (i, s.into_iter().map(|x| x as f64).collect())
+        }
+        (64, None) => fastcore::nblast_knn::nblast_knn::<f64>(clouds, vecs, alpha_vecs, opts),
+        _ => panic!("`precision` must be 32 or 64"),
+    };
+    knn_to_r(&idx, &scores, nq, k)
+}
+
 /// All-by-all forward syNBLAST over synapse clouds.
 ///
 /// `points` are lists of (N, 3) connector coordinate matrices and `types` the
@@ -2118,6 +2281,7 @@ extendr_module! {
     fn nblast_allbyall;
     fn nblast;
     fn nblast_pairs;
+    fn nblast_knn_raw;
     fn synblast_allbyall;
     fn synblast;
     fn nblast_hclust_raw;

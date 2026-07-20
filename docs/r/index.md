@@ -109,9 +109,29 @@ healed = heal_skeleton(parents, s$d$X, s$d$Y, s$d$Z, method="ALL",
 **Neuron similarity (NBLAST / synNBLAST)** — see [Concepts › NBLAST](../concepts/nblast.md)
 
 - `nblast` / `nblast_allbyall`: forward NBLAST (query-vs-target / all-by-all)
+- `nblast_knn`: each neuron's `k` nearest neighbours, without the score matrix
 - `nblast_pairs`: forward NBLAST for a set of `(query, target)` index pairs
 - `synblast` / `synblast_allbyall`: synapse-based NBLAST
 - `smat_auto_limit`: the `limit_dist="auto"` value for a scoring matrix
+
+```r
+# The 20 nearest neighbours of every neuron, never materialising the n x n matrix.
+nn <- nblast_knn(points, vects, k = 20)
+nn$idx[1, ]      # 1-based neighbour indices, best first (NA-padded if short)
+nn$scores[1, ]   # their exact NBLAST scores
+
+# Query vs target: `idx` then indexes the targets.
+nn <- nblast_knn(q_points, q_vects, target = t_points, target_vects = t_vects, k = 5)
+```
+
+Only *which* neurons make the shortlist is approximate; every returned score is an
+exact NBLAST value. `symmetry` defaults to `"mean"` here (unlike the matrix
+functions) because the combine has to happen **before** the top-`k` cut — once
+only `k` neighbours per row survive there is no transpose left to symmetrise
+against. `n_candidates` (default `200`) trades recall against cost: on 163,976
+real neurons recall@20 was 0.91 at 50, 0.97 at 100 and 0.99 at 200. Unlike the
+Python bindings, `idx` is **1-based** and short rows are padded with `NA` rather
+than `-1` / `-Inf`.
 
 **Clustering**
 

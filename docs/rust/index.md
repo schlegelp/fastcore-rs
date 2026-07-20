@@ -12,6 +12,7 @@ translate each language's idioms into the core's index-based API.
 | `topo` | Repairing fragmented skeletons: `stitch_fragments` finds the minimal-length edges that reconnect the pieces (optionally preferring fragments of similar calibre), `reroot_rewire` re-derives the parent vector afterwards. |
 | `mesh` | Triangle meshes as vertex graphs: `mesh_connected_components`, plus a parallel Dijkstra/BFS behind `geodesic_matrix_mesh`, `geodesic_nearest_mesh`, `geodesic_farthest_mesh` and — for arbitrary (cyclic) graphs given as an edge list — `geodesic_matrix_graph`. |
 | `nblast` | The NBLAST pipeline — `build_index`, `score_pair`, `nblast_query_target`, `nblast_allbyall`, `nblast_pairs`, plus the `Smat` scoring matrix and `Opts`. |
+| `nblast_knn` | Each neuron's `k` nearest neighbours without the `n x n` matrix — `nblast_knn`, `nblast_knn_query_target`, plus `build_signatures` / `candidate_pairs` and the `Symmetry` combine. |
 | `synblast` | Synapse-based NBLAST: `synblast_query_target`, `synblast_allbyall`. |
 | `matches` | Pulling the top matches back out of a score matrix — `top_matches` (top-N), `matches_above` (absolute threshold or a percentage band around each group's best), `count_matches` — without copying or transposing a matrix that may be tens of GB. |
 | `cmtk` | CMTK spatial transforms: `Registration::from_path` reads a `*.list` registration (12-DOF affine + cubic B-spline warp), `transform_points` / `inverse_transform_points` apply it. Matches CMTK's `streamxform` to ~4e-7 without needing CMTK installed. |

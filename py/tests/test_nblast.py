@@ -625,3 +625,202 @@ def test_synblast_parity_vs_navis(synapses):
     M_fast = np.asarray(fastcore.synblast(synapses, by_type=True, precision=64))
     off = ~np.eye(len(synapses), dtype=bool)
     assert np.abs(M_fast - M_navis)[off].max() < 2e-3, np.abs(M_fast - M_navis)[off].max()
+
+
+# ---------------------------------------------------------------------------
+# nblast_knn
+# ---------------------------------------------------------------------------
+
+#: A coarse-enough signature grid that every neuron shares the single feature, so
+#: the candidate stage is exhaustive and `nblast_knn` must reproduce the dense
+#: top-k exactly. This is the correctness anchor for the approximate pipeline.
+EXHAUSTIVE = dict(voxel=1e6, n_dirs=1, splat=False)
+
+
+@pytest.fixture(scope="module")
+def knn_dotprops(dotprops):
+    """A population with genuine near-neighbours: jittered copies of the real pair."""
+    rng = np.random.default_rng(0)
+    out = []
+    for d in dotprops:
+        out.append(d)
+        for _ in range(4):
+            pts = d.points + rng.normal(scale=0.5, size=d.points.shape)
+            out.append(Dotprop(np.ascontiguousarray(pts), d.vect, d.alpha))
+    return out
+
+
+def dense_topk(M, k, symmetry="mean"):
+    """Top-k of a dense score matrix under `symmetry`, as (idx, scores)."""
+    if symmetry == "mean":
+        S = (M + M.T) / 2
+    elif symmetry == "min":
+        S = np.minimum(M, M.T)
+    elif symmetry == "max":
+        S = np.maximum(M, M.T)
+    else:
+        S = M.copy()
+    np.fill_diagonal(S, -np.inf)
+    idx = np.argsort(-S, axis=1)[:, :k]
+    return idx, np.take_along_axis(S, idx, axis=1)
+
+
+@pytest.mark.parametrize("symmetry", ["mean", "forward", "min", "max"])
+def test_knn_exhaustive_matches_allbyall(knn_dotprops, symmetry):
+    n, k = len(knn_dotprops), 4
+    M = fastcore.nblast_allbyall(knn_dotprops, precision=64)
+    want_idx, want_sc = dense_topk(M, k, symmetry)
+    idx, sc = fastcore.nblast_knn(
+        knn_dotprops, k=k, n_candidates=n - 1, symmetry=symmetry,
+        precision=64, **EXHAUSTIVE,
+    )
+    assert np.allclose(sc, want_sc, atol=1e-12)
+    # Indices may legitimately swap on an exact tie; scores may not.
+    distinct = np.diff(want_sc, axis=1, prepend=np.inf) != 0
+    assert np.array_equal(idx[distinct], want_idx[distinct])
+
+
+def test_knn_scores_are_exact_even_when_approximate(knn_dotprops):
+    """Whatever survives shortlisting is scored by the same kernel as the dense path."""
+    k = 3
+    M = fastcore.nblast_allbyall(knn_dotprops, precision=64)
+    S = (M + M.T) / 2
+    idx, sc = fastcore.nblast_knn(knn_dotprops, k=k, n_candidates=2, precision=64)
+    for i in range(len(knn_dotprops)):
+        for c in range(k):
+            if idx[i, c] >= 0:
+                assert abs(sc[i, c] - S[i, idx[i, c]]) < 1e-12
+
+
+def test_knn_shapes_rows_sorted_and_exclude_self(knn_dotprops):
+    n, k = len(knn_dotprops), 5
+    idx, sc = fastcore.nblast_knn(knn_dotprops, k=k, n_candidates=n - 1)
+    assert idx.shape == (n, k) and sc.shape == (n, k)
+    assert idx.dtype == np.int64
+    for i in range(n):
+        assert i not in idx[i], f"row {i} contains itself"
+        real = sc[i][idx[i] >= 0]
+        assert np.all(np.diff(real) <= 0), f"row {i} not descending"
+
+
+def test_knn_pads_when_k_exceeds_population(knn_dotprops):
+    n = len(knn_dotprops)
+    k = n + 3
+    idx, sc = fastcore.nblast_knn(knn_dotprops, k=k, n_candidates=n - 1, **EXHAUSTIVE)
+    assert np.all(idx[:, n - 1:] == -1)
+    assert np.all(np.isneginf(sc[:, n - 1:]))
+
+
+def test_knn_mean_fixes_containment_asymmetry():
+    """A short neuron inside a long one: forward disagrees by row, mean does not."""
+    long_pts = np.stack([np.arange(120) * 0.5, np.zeros(120), np.zeros(120)], axis=1)
+    short_pts = long_pts[:20].copy()
+    vect_l = np.tile([1.0, 0.0, 0.0], (len(long_pts), 1))
+    vect_s = np.tile([1.0, 0.0, 0.0], (len(short_pts), 1))
+    dps = [Dotprop(long_pts, vect_l), Dotprop(short_pts, vect_s)]
+
+    M = fastcore.nblast_allbyall(dps, precision=64)
+    long_to_short, short_to_long = M[0, 1], M[1, 0]
+    assert short_to_long > long_to_short + 0.2  # the asymmetry exists
+
+    _, fwd = fastcore.nblast_knn(dps, k=1, n_candidates=1, symmetry="forward",
+                                 precision=64, **EXHAUSTIVE)
+    _, mean = fastcore.nblast_knn(dps, k=1, n_candidates=1, symmetry="mean",
+                                  precision=64, **EXHAUSTIVE)
+    assert fwd[1, 0] - fwd[0, 0] > 0.2                  # forward rows disagree
+    assert abs(mean[0, 0] - mean[1, 0]) < 1e-12         # mean rows agree
+    assert long_to_short < mean[0, 0] < short_to_long   # and sit between
+
+
+@pytest.mark.parametrize("precision,dtype", [(32, np.float32), (64, np.float64)])
+def test_knn_precision(knn_dotprops, precision, dtype):
+    _, sc = fastcore.nblast_knn(knn_dotprops, k=3, precision=precision)
+    assert sc.dtype == dtype
+
+
+def test_knn_use_alpha_changes_scores(knn_dotprops):
+    _, plain = fastcore.nblast_knn(knn_dotprops, k=3, n_candidates=len(knn_dotprops) - 1,
+                                   precision=64, **EXHAUSTIVE)
+    _, alpha = fastcore.nblast_knn(knn_dotprops, k=3, n_candidates=len(knn_dotprops) - 1,
+                                   use_alpha=True, precision=64, **EXHAUSTIVE)
+    assert not np.allclose(plain, alpha)
+
+
+@pytest.mark.parametrize("bad", ["nonsense", 1.5])
+def test_knn_unknown_symmetry_raises(knn_dotprops, bad):
+    with pytest.raises(ValueError, match="[Uu]nknown symmetry"):
+        fastcore.nblast_knn(knn_dotprops, k=2, symmetry=bad)
+
+
+def test_knn_rejects_bad_k(knn_dotprops):
+    with pytest.raises(ValueError, match="k must be"):
+        fastcore.nblast_knn(knn_dotprops, k=0)
+
+
+def test_knn_empty_input():
+    idx, sc = fastcore.nblast_knn([], k=5)
+    assert idx.shape == (0, 5) and sc.shape == (0, 5)
+
+
+# --- nblast_knn: query -> target (rectangular) ------------------------------
+
+@pytest.fixture(scope="module")
+def knn_split(knn_dotprops):
+    """Split the k-NN population into disjoint query / target sets."""
+    return knn_dotprops[:4], knn_dotprops[4:]
+
+
+def dense_rect(query, targets, symmetry):
+    """Dense (nq, nt) score matrix under `symmetry`, via the existing nblast path."""
+    F = fastcore.nblast(query, targets, precision=64)
+    if symmetry == "forward":
+        return F
+    R = fastcore.nblast(targets, query, precision=64).T
+    return {"mean": (F + R) / 2, "min": np.minimum(F, R),
+            "max": np.maximum(F, R)}[symmetry]
+
+
+@pytest.mark.parametrize("symmetry", ["mean", "forward", "min", "max"])
+def test_knn_rect_exhaustive_matches_dense(knn_split, symmetry):
+    q, t = knn_split
+    k = 3
+    S = dense_rect(q, t, symmetry)
+    want = np.sort(S, axis=1)[:, ::-1][:, :k]
+    idx, sc = fastcore.nblast_knn(q, target=t, k=k, symmetry=symmetry,
+                                  n_candidates=len(t), precision=64, **EXHAUSTIVE)
+    assert np.allclose(sc, want, atol=1e-12)
+    for i in range(len(q)):
+        for c in range(k):
+            assert abs(sc[i, c] - S[i, idx[i, c]]) < 1e-12
+
+
+def test_knn_rect_indexes_targets_not_queries(knn_split):
+    q, t = knn_split
+    idx, _ = fastcore.nblast_knn(q, target=t, k=3, n_candidates=len(t), **EXHAUSTIVE)
+    assert idx.shape == (len(q), 3)
+    assert idx.max() < len(t), "indices must address the target list"
+    assert idx.min() >= 0
+
+
+def test_knn_rect_keeps_self_when_sets_overlap(knn_dotprops):
+    """Unlike the square form, a neuron present in both sets matches itself at 1.0."""
+    idx, sc = fastcore.nblast_knn(knn_dotprops, target=knn_dotprops, k=1,
+                                  n_candidates=len(knn_dotprops), precision=64,
+                                  **EXHAUSTIVE)
+    assert np.array_equal(idx[:, 0], np.arange(len(knn_dotprops)))
+    assert np.allclose(sc[:, 0], 1.0, atol=1e-9)
+
+
+def test_knn_rect_pads_beyond_target_count(knn_split):
+    q, t = knn_split
+    k = len(t) + 2
+    idx, sc = fastcore.nblast_knn(q, target=t, k=k, n_candidates=len(t), **EXHAUSTIVE)
+    assert np.all(idx[:, len(t):] == -1)
+    assert np.all(np.isneginf(sc[:, len(t):]))
+    assert np.all(idx[:, :len(t)] >= 0), "backfill should fill up to nt"
+
+
+def test_knn_rect_none_targets_is_the_square_form(knn_dotprops):
+    a = fastcore.nblast_knn(knn_dotprops, k=3, n_candidates=5)
+    b = fastcore.nblast_knn(knn_dotprops, target=None, k=3, n_candidates=5)
+    assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1])

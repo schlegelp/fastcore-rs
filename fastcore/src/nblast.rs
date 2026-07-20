@@ -38,7 +38,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// sweet spot for neuron-scale clouds (thousands of points): the descent's
 /// gather-reuse gain plateaus at ~2x around 32-64, so 32 keeps the per-block
 /// scratch small while capturing it. See the profiler's block sweep.
-const GROUP_BLOCK: usize = 32;
+pub(crate) const GROUP_BLOCK: usize = 32;
 
 /// Element type of the returned score matrix. The scoring accumulates in `f64`;
 /// this only controls the width the final score is stored at (navis' `precision`
@@ -415,7 +415,7 @@ pub(crate) fn make_bar(label: &str, total: u64) -> ProgressBar {
 ///
 /// Returns `None` if `cancel` is observed set mid-build (the parallel map
 /// short-circuits); the caller treats that as an interrupted call and bails.
-fn build_indices(
+pub(crate) fn build_indices(
     clouds: &[Vec<[f64; 3]>],
     bar: Option<&ProgressBar>,
     cancel: Option<&AtomicBool>,

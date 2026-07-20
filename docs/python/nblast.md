@@ -37,6 +37,61 @@ scores = fastcore.nblast(query_dps, target_dps)
 scores = fastcore.nblast(query_dps, target_dps, symmetry="mean")
 ```
 
+## k nearest neighbours
+
+`nblast_knn` returns each neuron's `k` nearest neighbours **without ever building
+the score matrix** — the usual reason being a UMAP embedding, which needs a k-NN
+graph rather than every pairwise score. See
+[Concepts › NBLAST](../concepts/nblast.md) for why the shortlist it uses is sound
+rather than merely plausible.
+
+```python
+# (n, 20) neighbour indices and their exact NBLAST scores
+idx, scores = fastcore.nblast_knn(dotprops, k=20)
+
+# straight into UMAP: it wants distances, not similarities
+import umap
+emb = umap.UMAP(precomputed_knn=(idx, 1.0 - scores)).fit_transform(
+    np.zeros((len(dotprops), 2))
+)
+
+# query vs target: `idx` then indexes `target`
+idx, scores = fastcore.nblast_knn(query_dps, target=target_dps, k=5)
+```
+
+Only *which* neurons make the shortlist is approximate; every returned score is an
+exact NBLAST value. On 163,976 real neurons at the default `n_candidates=200`,
+recall@20 was 0.99 while scoring 0.16% of the pairs — about 5 minutes against an
+estimated 35 hours, and 39 MB against 107 GB.
+
+Beyond the shared options below, it takes:
+
+- `k` (default `20`): neighbours per neuron. Rows with fewer available neighbours
+  are padded with `-1` in `idx` and `-inf` in `scores`.
+- `target` (default `None`): search among these instead of among `dotprops`,
+  making `idx` index *them*. Note the saving is on pair *scoring*, so it grows
+  with the size of the query set — for a handful of queries against a large
+  library both paths pay the same target-indexing cost and plain `nblast` is
+  simpler.
+- `symmetry` (default `"mean"`): unlike the matrix functions this defaults to
+  symmetrising, because the combine has to happen **before** the top-`k` cut —
+  once only `k` neighbours per row survive there is no transpose left to
+  symmetrise against. See the concepts page.
+- `n_candidates` (default `200`): shortlist size, and the one recall/cost knob.
+  Measured recall@20 on 163,976 neurons: 0.91 at 50, 0.97 at 100, 0.99 at 200,
+  0.996 at 400.
+- `voxel` (default `20.0`), `n_dirs` (default `3`), `splat` (default `True`):
+  signature resolution. 10–20 µm voxels measured equivalently; `splat` is worth
+  about 0.05 recall@20.
+
+!!! note "Measuring recall against a ground truth"
+
+    Compare neighbour **sets**, not positions. An order-sensitive
+    `(idx == truth).mean()` counts a swap between two near-tied neighbours as two
+    misses and will read several points lower than the set recall — on real data
+    0.957 against 0.988 for the same result. UMAP consumes the set and the
+    distances, and is invariant to ordering within a row.
+
 ## Smart NBLAST
 
 `nblast_smart` is a two-pass approximation for large comparisons. It first runs a
@@ -149,6 +204,8 @@ Both `nblast_allbyall` and `nblast` accept the same options:
       show_root_full_path: false
 
 ::: navis_fastcore.nblast_allbyall
+
+::: navis_fastcore.nblast_knn
 
 ::: navis_fastcore.nblast_smart
 
