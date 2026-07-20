@@ -3,6 +3,8 @@ use ndarray::{Array1, Array2, ArrayView1, ArrayView2, ShapeBuilder};
 use std::collections::HashMap;
 
 use fastcore::cmtk::{self, Chain, Fallback, InverseOpts, Mode, XformOpts};
+use fastcore::mls::MlsTransform;
+use fastcore::tps::TpsTransform;
 use fastcore::elastix::{self, OutOfBounds};
 use fastcore::linkage::{
     condense, leaf_order, linkage as core_linkage, linkage_from_scores,
@@ -2038,6 +2040,180 @@ impl ElastixTransformPtr {
 }
 
 // ---------------------------------------------------------------------------
+// Landmark transforms: thin-plate spline and moving least squares
+// ---------------------------------------------------------------------------
+
+fn xform_threads(n_cores: Option<i32>) -> Option<usize> {
+    n_cores.map(|n| n.max(1) as usize)
+}
+
+/// A fitted thin-plate spline.
+///
+/// Held behind an external pointer because the fit is *cubic* in the landmark count -- a
+/// few thousand landmarks is a second of work -- while applying it is linear. Refitting per
+/// call, which a stateless `f(source, target, points)` would force, would dominate every
+/// realistic workload.
+///
+/// The fit is stored as an `Option` with the error alongside rather than being unwrapped
+/// here: extendr 0.7 loses a panic's payload when it is raised from an *associated*
+/// function, so a singular system would reach R as the useless "User function panicked:
+/// fit". `tps_transform()` reads `error()` immediately and raises a real R condition.
+pub struct TpsTransformPtr {
+    inner: Option<TpsTransform>,
+    error: String,
+}
+
+#[extendr]
+impl TpsTransformPtr {
+    /// Fit the spline mapping `source` onto `target`. Shapes are validated R-side.
+    fn fit(source: RMatrix<f64>, target: RMatrix<f64>) -> Self {
+        let src = rmatrix_to_coords(&source, "source");
+        let trg = rmatrix_to_coords(&target, "target");
+        match TpsTransform::fit(src.view(), trg.view()) {
+            Ok(t) => TpsTransformPtr {
+                inner: Some(t),
+                error: String::new(),
+            },
+            Err(e) => TpsTransformPtr {
+                inner: None,
+                error: e.to_string(),
+            },
+        }
+    }
+
+    /// Rebuild from coefficients, skipping the fit.
+    fn from_coefs(source: RMatrix<f64>, w: RMatrix<f64>, a: RMatrix<f64>) -> Self {
+        let src = rmatrix_to_coords(&source, "source");
+        let wm = rmatrix_to_coords(&w, "W");
+        let am = rmatrix_to_coords(&a, "A");
+        match TpsTransform::from_coefs(src.view(), wm.view(), am.view()) {
+            Ok(t) => TpsTransformPtr {
+                inner: Some(t),
+                error: String::new(),
+            },
+            Err(e) => TpsTransformPtr {
+                inner: None,
+                error: e.to_string(),
+            },
+        }
+    }
+
+    /// Empty when the fit succeeded; the failure message otherwise.
+    fn error(&self) -> String {
+        self.error.clone()
+    }
+
+    fn n_landmarks(&self) -> i32 {
+        self.get().n_landmarks() as i32
+    }
+
+    fn source(&self) -> Robj {
+        coords_to_rmatrix(&self.get().source())
+    }
+
+    fn weights(&self) -> Robj {
+        coords_to_rmatrix(&self.get().weights())
+    }
+
+    fn affine_coefs(&self) -> Robj {
+        coords_to_rmatrix(&self.get().affine_coefs())
+    }
+
+    /// The affine part as a 4x4 homogeneous matrix.
+    fn matrix_affine(&self) -> Robj {
+        let m = self.get().matrix_affine();
+        RArray::new_matrix(4, 4, |r, c| m[r][c]).into()
+    }
+
+    fn xform(&self, coords: RMatrix<f64>, n_cores: Option<i32>) -> Robj {
+        let pts = rmatrix_to_coords(&coords, "xyz");
+        let out = self
+            .get()
+            .xform(pts.view(), xform_threads(n_cores), None)
+            .unwrap_or_else(|e| panic!("{e}"));
+        coords_to_rmatrix(&out)
+    }
+}
+
+impl TpsTransformPtr {
+    /// `tps_transform()` refuses to build an object around a failed fit, so by the time any
+    /// method runs this is always populated.
+    fn get(&self) -> &TpsTransform {
+        self.inner
+            .as_ref()
+            .expect("TPS transform was used despite a failed fit")
+    }
+}
+
+/// Landmark pairs defining a moving-least-squares warp.
+///
+/// There is no fit to cache -- every point is solved independently -- so this pointer
+/// exists only to avoid re-copying the landmarks on every call, and to give R an object
+/// with the same shape as the other transforms.
+pub struct MlsTransformPtr {
+    inner: Option<MlsTransform>,
+    error: String,
+}
+
+#[extendr]
+impl MlsTransformPtr {
+    fn build(source: RMatrix<f64>, target: RMatrix<f64>) -> Self {
+        let src = rmatrix_to_coords(&source, "source");
+        let trg = rmatrix_to_coords(&target, "target");
+        match MlsTransform::new(src.view(), trg.view()) {
+            Ok(t) => MlsTransformPtr {
+                inner: Some(t),
+                error: String::new(),
+            },
+            Err(e) => MlsTransformPtr {
+                inner: None,
+                error: e.to_string(),
+            },
+        }
+    }
+
+    /// Empty when construction succeeded; the failure message otherwise.
+    fn error(&self) -> String {
+        self.error.clone()
+    }
+
+    fn n_landmarks(&self) -> i32 {
+        self.get().n_landmarks() as i32
+    }
+
+    fn source(&self) -> Robj {
+        coords_to_rmatrix(&self.get().source())
+    }
+
+    fn target(&self) -> Robj {
+        coords_to_rmatrix(&self.get().target())
+    }
+
+    /// The *global* affine as a 4x4 homogeneous matrix.
+    fn matrix_affine(&self, reverse: bool) -> Robj {
+        let m = self.get().matrix_affine(reverse);
+        RArray::new_matrix(4, 4, |r, c| m[r][c]).into()
+    }
+
+    fn xform(&self, coords: RMatrix<f64>, reverse: bool, n_cores: Option<i32>) -> Robj {
+        let pts = rmatrix_to_coords(&coords, "xyz");
+        let out = self
+            .get()
+            .xform(pts.view(), reverse, xform_threads(n_cores), None)
+            .unwrap_or_else(|e| panic!("{e}"));
+        coords_to_rmatrix(&out)
+    }
+}
+
+impl MlsTransformPtr {
+    fn get(&self) -> &MlsTransform {
+        self.inner
+            .as_ref()
+            .expect("MLS transform was used despite a failed construction")
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Hierarchical clustering
 // ---------------------------------------------------------------------------
 
@@ -2251,6 +2427,8 @@ extendr_module! {
     mod nat_fastcore;
     impl CmtkRegistration;
     impl ElastixTransformPtr;
+    impl TpsTransformPtr;
+    impl MlsTransformPtr;
     fn probe_invertible_raw;
     fn all_dists_to_root;
     fn node_indices;

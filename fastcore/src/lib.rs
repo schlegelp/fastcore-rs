@@ -28,6 +28,10 @@
 //!   (and the initial-transform chain hanging off it) and apply it to points,
 //!   without shelling out to `transformix` — which also buys an inverse, something
 //!   Elastix itself cannot do.
+//! - [`tps`] / [`mls`] — landmark-based warps (thin-plate spline, moving least
+//!   squares), the fallback when no image registration exists. Both fuse the
+//!   distance computation into the accumulation, so the `n_points x n_landmarks`
+//!   matrix the reference implementations materialise is never built.
 //!
 //! # Representing a tree
 //!
@@ -48,6 +52,10 @@ pub mod linkage;
 pub mod cmtk;
 
 pub mod elastix;
+
+pub mod tps;
+
+pub mod mls;
 
 pub mod dag;
 

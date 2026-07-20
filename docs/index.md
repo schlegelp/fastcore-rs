@@ -127,6 +127,10 @@ surface and how they spell it. `—` means that surface doesn't expose it direct
 | Apply it to points (forward / inverse) | `elastix::transform_points`, `elastix::inverse_transform_points` | `ElastixTransform.xform`, `.xform_inv` | `elastix_xform`, `elastix_xform_inv` |
 | Elastix transform properties | fields on `Linear` / `BSpline` | `.affine`, `.kinds`, `.grid_size`, `.grid_spacing`, `.grid_origin` | `elastix_affine`, `elastix_kinds`, `elastix_grid_size`, `elastix_grid_spacing`, `elastix_grid_origin` |
 | Is an Elastix file invertible? (without parsing it) | `elastix::probe_invertible` | `probe_elastix_invertible` | `elastix_probe_invertible` |
+| Fit a thin-plate spline to landmarks | `tps::TpsTransform::fit`, `::from_coefs` | `TpsTransform`, `.from_coefs` | `tps_transform`, `tps_coefs` |
+| Moving least squares from landmarks | `mls::MlsTransform::new` | `MlsTransform` | `mls_transform` |
+| Apply a landmark transform to points | `TpsTransform::xform`, `MlsTransform::xform` | `.xform` | `tps_xform`, `mls_xform` |
+| Its global affine | `.matrix_affine` | `.matrix_affine` | `tps_affine`, `mls_affine` |
 
 Neither CMTK nor Elastix needs to be installed — see [CMTK transforms](python/cmtk.md) and
 [Elastix transforms](python/elastix.md). The two differ in one important respect: outside the
@@ -137,6 +141,13 @@ which Elastix itself cannot compute.
 Both work the same way: a transform object holds only the *parse*, and **direction is chosen
 per call** (`invert=`, or the `_inv` method), so one object serves every direction rather than
 re-reading the file to walk it the other way.
+
+When there is no registration at all — only matched landmarks — the thin-plate spline and
+moving least squares transforms take over; see
+[Landmark transforms](python/landmarks.md). Neither materialises the
+`n_points x n_landmarks` matrix its reference implementation does, so there is no batch size
+to tune, and moving least squares becomes usable at landmark counts (~3,400) that would
+otherwise need tens of GB.
 
 ### Python only
 

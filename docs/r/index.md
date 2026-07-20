@@ -216,6 +216,29 @@ back <- elastix_xform_inv(xf, xyzmatrix(n))   # Elastix itself cannot invert at 
 As with CMTK, direction is chosen per call — `elastix_xform(xf, pts, invert = TRUE)` — so a
 transform and its inverse share one parse. That matters when the warp is tens of megabytes.
 
+**Landmark transforms** — see [Landmark transforms](../python/landmarks.md) for the full story
+
+When there is no image registration, only matched landmarks:
+
+- `tps_transform` / `tps_xform`: fit a thin-plate spline and apply it. This is `nat`'s
+  `tpsreg`, without the fit being repeated on every call.
+- `mls_transform` / `mls_xform`: moving least squares — every point gets its own locally
+  weighted affine, so there is no fit at all.
+- `tps_affine`, `mls_affine`: the global affine each converges to far from the landmarks
+- `tps_coefs`: the fit itself (`W` and `A`), if you want to store it rather than repeat it
+
+```r
+lm <- read.csv("mirror_landmarks.csv")          # x/y/z columns are found by name
+tps <- tps_transform(lm[, 1:3], lm[, 4:6])
+xyzmatrix(n) <- tps_xform(tps, xyzmatrix(n))
+
+# moving least squares instead; "inverse" is free here, unlike refitting a spline
+mls <- mls_transform(lm[, 1:3], lm[, 4:6], direction = "inverse")
+```
+
+Neither builds the `points x landmarks` matrix the reference implementations do, so there is
+no batch size to tune and the landmark count is not bounded by memory.
+
 ## Function reference
 
 Per-function documentation is generated from the package's roxygen docs and

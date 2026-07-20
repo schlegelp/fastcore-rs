@@ -24,6 +24,7 @@ nav = [
     { "NBLAST" = "python/nblast.md" },
     { "CMTK transforms" = "python/cmtk.md" },
     { "Elastix transforms" = "python/elastix.md" },
+    { "Landmark transforms" = "python/landmarks.md" },
     { "Scipy wrappers" = "python/wrappers.md" },
   ] },
   { "R (nat.fastcore)" = "r/index.md" },

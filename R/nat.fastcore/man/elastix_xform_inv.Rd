@@ -22,7 +22,9 @@ elastix_xform_inv(
 \arguments{
 \item{xf}{An \code{elastix_transform}, from \code{\link[=elastix_read]{elastix_read()}}.}
 
-\item{xyz}{An \verb{(N, 3)} matrix, a data frame with three columns, or a bare length-3 vector.}
+\item{xyz}{An \verb{(N, 3)} matrix of coordinates. A data frame is also accepted -- if it has
+x/y/z columns (in any case) those are used, whatever else it carries, otherwise the
+first three columns -- as is a bare length-3 vector.}
 
 \item{out_of_bounds}{What to do with points outside a B-spline's control-point grid.
 \code{"identity"} (the default) returns them \strong{unchanged}, which is exactly what \code{transformix}

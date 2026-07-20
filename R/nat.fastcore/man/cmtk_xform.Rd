@@ -18,8 +18,10 @@ cmtk_xform(
 \arguments{
 \item{reg}{A \code{cmtk_registration}, from \code{\link[=cmtk_read]{cmtk_read()}}.}
 
-\item{xyz}{An \verb{(N, 3)} matrix of coordinates (a data frame or a length-3 vector is
-also accepted). \code{nat::xyzmatrix()} gives you this for a neuron.}
+\item{xyz}{An \verb{(N, 3)} matrix of coordinates. A data frame is also accepted -- if it has
+x/y/z columns (in any case) those are used, whatever else it carries, otherwise the
+first three columns -- as is a bare length-3 vector. \code{nat::xyzmatrix()} gives you this
+for a neuron.}
 
 \item{transform}{\code{"warp"} (default) applies the full transformation; \code{"affine"}
 applies only the affine component. A registration with no spline warp uses its

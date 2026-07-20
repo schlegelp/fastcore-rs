@@ -59,17 +59,6 @@ print.elastix_transform <- function(x, ...) {
   invisible(x)
 }
 
-# Coerce whatever the user passed into an (N, 3) numeric matrix.
-.elastix_xyz <- function(xyz, arg = "xyz") {
-  if (is.data.frame(xyz)) xyz <- as.matrix(xyz)
-  if (is.vector(xyz) && length(xyz) == 3L) xyz <- matrix(xyz, ncol = 3L)
-  if (!is.matrix(xyz) || ncol(xyz) != 3L) {
-    stop(sprintf("`%s` must be an (N, 3) matrix of 3D coordinates", arg))
-  }
-  storage.mode(xyz) <- "double"
-  xyz
-}
-
 .elastix_ptr <- function(xf) {
   if (!inherits(xf, "elastix_transform")) {
     stop("`xf` must be an <elastix_transform>, as returned by `elastix_read()`")
@@ -80,7 +69,9 @@ print.elastix_transform <- function(x, ...) {
 #' Apply an Elastix transform to points
 #'
 #' @param xf An `elastix_transform`, from [elastix_read()].
-#' @param xyz An `(N, 3)` matrix, a data frame with three columns, or a bare length-3 vector.
+#' @param xyz An `(N, 3)` matrix of coordinates. A data frame is also accepted -- if it has
+#'   x/y/z columns (in any case) those are used, whatever else it carries, otherwise the
+#'   first three columns -- as is a bare length-3 vector.
 #' @param out_of_bounds What to do with points outside a B-spline's control-point grid.
 #'   `"identity"` (the default) returns them **unchanged**, which is exactly what `transformix`
 #'   does. `"nan"` returns `NaN` instead.
@@ -113,7 +104,7 @@ elastix_xform <- function(xf, xyz, out_of_bounds = c("identity", "nan"),
                           invert = FALSE, n_cores = NULL, progress = FALSE) {
   out_of_bounds <- match.arg(out_of_bounds)
   .elastix_ptr(xf)$xform(
-    .elastix_xyz(xyz),
+    .xform_xyz(xyz),
     out_of_bounds,
     .invert_flags(invert, length(xf$path), "transform"),
     if (is.null(n_cores)) NULL else as.integer(n_cores),
@@ -161,7 +152,7 @@ elastix_xform_inv <- function(xf, xyz, out_of_bounds = c("identity", "nan"),
                               tolerance = 1e-9, accuracy = 1e-3, lattice_points = 16000L,
                               invert = FALSE, n_cores = NULL, progress = FALSE) {
   out_of_bounds <- match.arg(out_of_bounds)
-  xyz <- .elastix_xyz(xyz)
+  xyz <- .xform_xyz(xyz)
 
   # Ask before calling in. extendr cannot carry a Rust panic's message across to R -- it arrives
   # as the useless "User function panicked: xform_inv" -- so this has to be checked here.
@@ -173,7 +164,7 @@ elastix_xform_inv <- function(xf, xyz, out_of_bounds = c("identity", "nan"),
   }
 
   if (!is.null(initial_guess)) {
-    initial_guess <- .elastix_xyz(initial_guess, "initial_guess")
+    initial_guess <- .xform_xyz(initial_guess, "initial_guess")
     if (nrow(initial_guess) != nrow(xyz)) {
       stop(sprintf(
         "`initial_guess` must have one point per input point: expected %d, got %d",

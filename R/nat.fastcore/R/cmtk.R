@@ -69,17 +69,6 @@ print.cmtk_registration <- function(x, ...) {
   invisible(x)
 }
 
-# Coerce whatever the user passed into an (N, 3) numeric matrix.
-.cmtk_xyz <- function(xyz, arg = "xyz") {
-  if (is.data.frame(xyz)) xyz <- as.matrix(xyz)
-  if (is.vector(xyz) && length(xyz) == 3L) xyz <- matrix(xyz, ncol = 3L)
-  if (!is.matrix(xyz) || ncol(xyz) != 3L) {
-    stop(sprintf("`%s` must be an (N, 3) matrix of 3D coordinates", arg))
-  }
-  storage.mode(xyz) <- "double"
-  xyz
-}
-
 .cmtk_ptr <- function(reg) {
   if (!inherits(reg, "cmtk_registration")) {
     stop("`reg` must be a <cmtk_registration>, as returned by `cmtk_read()`")
@@ -90,8 +79,10 @@ print.cmtk_registration <- function(x, ...) {
 #' Apply a CMTK registration to points
 #'
 #' @param reg A `cmtk_registration`, from [cmtk_read()].
-#' @param xyz An `(N, 3)` matrix of coordinates (a data frame or a length-3 vector is
-#'   also accepted). `nat::xyzmatrix()` gives you this for a neuron.
+#' @param xyz An `(N, 3)` matrix of coordinates. A data frame is also accepted -- if it has
+#'   x/y/z columns (in any case) those are used, whatever else it carries, otherwise the
+#'   first three columns -- as is a bare length-3 vector. `nat::xyzmatrix()` gives you this
+#'   for a neuron.
 #' @param transform `"warp"` (default) applies the full transformation; `"affine"`
 #'   applies only the affine component. A registration with no spline warp uses its
 #'   affine either way.
@@ -148,7 +139,7 @@ cmtk_xform <- function(reg, xyz, transform = c("warp", "affine"),
                        invert = FALSE, n_cores = NULL, progress = FALSE) {
   transform <- match.arg(transform)
   .cmtk_ptr(reg)$xform(
-    .cmtk_xyz(xyz), transform,
+    .xform_xyz(xyz), transform,
     isTRUE(allow_extrapolation), .fallback_mode(fallback_to_affine),
     .invert_flags(invert, length(reg$path), "registration"),
     if (is.null(n_cores)) NULL else as.integer(n_cores),
@@ -202,9 +193,9 @@ cmtk_xform_inv <- function(reg, xyz, transform = c("warp", "affine"),
                            fallback_to_affine = FALSE, invert = FALSE,
                            n_cores = NULL, progress = FALSE) {
   transform <- match.arg(transform)
-  xyz <- .cmtk_xyz(xyz)
+  xyz <- .xform_xyz(xyz)
   if (!is.null(initial_guess)) {
-    initial_guess <- .cmtk_xyz(initial_guess, "initial_guess")
+    initial_guess <- .xform_xyz(initial_guess, "initial_guess")
     if (nrow(initial_guess) != nrow(xyz)) {
       stop(sprintf(
         "`initial_guess` must have one point per input point: expected %d, got %d",

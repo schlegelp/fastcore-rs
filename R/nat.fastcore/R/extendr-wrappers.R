@@ -636,5 +636,53 @@ ElastixTransformPtr$xform_inv <- function(coords, out_of_bounds, initial_guess, 
 #' @export
 `[[.ElastixTransformPtr` <- `$.ElastixTransformPtr`
 
+TpsTransformPtr <- new.env(parent = emptyenv())
+
+TpsTransformPtr$fit <- function(source, target) .Call(wrap__TpsTransformPtr__fit, source, target)
+
+TpsTransformPtr$from_coefs <- function(source, w, a) .Call(wrap__TpsTransformPtr__from_coefs, source, w, a)
+
+TpsTransformPtr$error <- function() .Call(wrap__TpsTransformPtr__error, self)
+
+TpsTransformPtr$n_landmarks <- function() .Call(wrap__TpsTransformPtr__n_landmarks, self)
+
+TpsTransformPtr$source <- function() .Call(wrap__TpsTransformPtr__source, self)
+
+TpsTransformPtr$weights <- function() .Call(wrap__TpsTransformPtr__weights, self)
+
+TpsTransformPtr$affine_coefs <- function() .Call(wrap__TpsTransformPtr__affine_coefs, self)
+
+TpsTransformPtr$matrix_affine <- function() .Call(wrap__TpsTransformPtr__matrix_affine, self)
+
+TpsTransformPtr$xform <- function(coords, n_cores) .Call(wrap__TpsTransformPtr__xform, self, coords, n_cores)
+
+#' @export
+`$.TpsTransformPtr` <- function (self, name) { func <- TpsTransformPtr[[name]]; environment(func) <- environment(); func }
+
+#' @export
+`[[.TpsTransformPtr` <- `$.TpsTransformPtr`
+
+MlsTransformPtr <- new.env(parent = emptyenv())
+
+MlsTransformPtr$build <- function(source, target) .Call(wrap__MlsTransformPtr__build, source, target)
+
+MlsTransformPtr$error <- function() .Call(wrap__MlsTransformPtr__error, self)
+
+MlsTransformPtr$n_landmarks <- function() .Call(wrap__MlsTransformPtr__n_landmarks, self)
+
+MlsTransformPtr$source <- function() .Call(wrap__MlsTransformPtr__source, self)
+
+MlsTransformPtr$target <- function() .Call(wrap__MlsTransformPtr__target, self)
+
+MlsTransformPtr$matrix_affine <- function(reverse) .Call(wrap__MlsTransformPtr__matrix_affine, self, reverse)
+
+MlsTransformPtr$xform <- function(coords, reverse, n_cores) .Call(wrap__MlsTransformPtr__xform, self, coords, reverse, n_cores)
+
+#' @export
+`$.MlsTransformPtr` <- function (self, name) { func <- MlsTransformPtr[[name]]; environment(func) <- environment(); func }
+
+#' @export
+`[[.MlsTransformPtr` <- `$.MlsTransformPtr`
+
 
 # nolint end

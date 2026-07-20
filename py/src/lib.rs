@@ -16,6 +16,9 @@ use cmtk::*;
 mod elastix;
 use elastix::*;
 
+mod warp;
+use warp::*;
+
 mod dag;
 use dag::*;
 
@@ -156,4 +159,10 @@ mod fastcore {
 
     #[pymodule_export]
     use super::py_probe_elastix_invertible;
+
+    #[pymodule_export]
+    use super::PyTpsTransform;
+
+    #[pymodule_export]
+    use super::PyMlsTransform;
 }

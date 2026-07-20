@@ -8,9 +8,10 @@ Description: A re-implementation of core 'nat' (Neuroanatomy Toolbox) functions
     in Rust for speed. Provides fast skeleton/tree (DAG) operations
     (geodesic distances, Strahler order, segment generation, twig pruning,
     synapse flow centrality, node classification, skeleton healing), mesh
-    connected components, NBLAST/synNBLAST neuron similarity scoring, and CMTK
+    connected components, NBLAST/synNBLAST neuron similarity scoring, CMTK
     and Elastix spatial transforms (applying a registration to points without
-    needing CMTK or Elastix installed), exposed to R via extendr.
+    needing CMTK or Elastix installed), and landmark-based warps (thin-plate
+    spline, moving least squares), exposed to R via extendr.
 License: GPL-3
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
