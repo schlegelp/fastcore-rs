@@ -1,0 +1,2797 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Fast Rust implementations of navis/nat core functions, with Python and R bindings.">
+      
+      
+      
+        <link rel="canonical" href="https://schlegelp.github.io/fastcore-rs/python/landmarks/">
+      
+      
+        <link rel="prev" href="../elastix/">
+      
+      
+        <link rel="next" href="../wrappers/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="zensical-0.0.51">
+    
+    
+      
+        <title>Landmark transforms - fastcore-rs</title>
+      
+    
+    
+      
+        
+      
+      <link rel="stylesheet" href="../../assets/stylesheets/modern/main.62c9b9cc.min.css">
+      
+        
+          
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/modern/palette.dfe2e883.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_scope.pathname.endsWith("/")||(__md_scope=new URL(__md_scope.pathname+"/",location)),__md_hash=e=>[...e].reduce(((e,t)=>(e<<5)-e+t.charCodeAt(0)),0),__md_get=(e,t=localStorage,_=__md_scope)=>JSON.parse(t.getItem(_.pathname+"."+e)),__md_set=(e,t,_=localStorage,a=__md_scope)=>{try{_.setItem(a.pathname+"."+e,JSON.stringify(t))}catch(e){}},document.documentElement.setAttribute("data-platform",navigator.platform)</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer" aria-label="Navigation"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#landmark-transforms" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="fastcore-rs" class="md-header__button md-logo" aria-label="fastcore-rs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 7v14M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer" aria-label="Navigation">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-menu" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            fastcore-rs
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Landmark transforms
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="none" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="none" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-moon" viewBox="0 0 24 24"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search" aria-label="Search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog" aria-label="Search">
+  <button type="button" class="md-search__button">
+    Search
+  </button>
+</div>
+      
+    
+    <div class="md-header__source">
+      
+        <a href="https://github.com/schlegelp/fastcore-rs" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    schlegelp/fastcore-rs
+  </div>
+</a>
+      
+    </div>
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="fastcore-rs" class="md-nav__button md-logo" aria-label="fastcore-rs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 7v14M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg>
+
+    </a>
+    fastcore-rs
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/schlegelp/fastcore-rs" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    schlegelp/fastcore-rs
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Home
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Concepts
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+  Concepts
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/trees/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Rooted trees
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/nblast/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  NBLAST
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Python (navis-fastcore)
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+  Python (navis-fastcore)
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../geodesic/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Geodesic distances
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Connected components
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../morphology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Morphology
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../segments/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Segments
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mesh/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Mesh
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../healing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Healing
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../nblast/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  NBLAST
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cmtk/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  CMTK transforms
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../elastix/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Elastix transforms
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Landmark transforms
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="././" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Landmark transforms
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#which-one" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Which one?
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#direction" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Direction
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#no-batch_size" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        No <code>batch_size</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#speed" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Speed
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Speed">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#500-landmarks" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        500 landmarks
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3390-landmarks-a-real-flybrains-mirroring-registration" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        3,390 landmarks (a real <code>flybrains</code> mirroring registration)
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-one-place-we-are-slower-fitting-a-spline" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The one place we are slower: fitting a spline
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pickling" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Pickling
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#api" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        API
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#navis_fastcore.TpsTransform" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        TpsTransform
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="TpsTransform">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.TpsTransform.A" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        A
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.TpsTransform.W" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        W
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.TpsTransform.matrix_affine" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        matrix_affine
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.TpsTransform.source" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        source
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.TpsTransform.target" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        target
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.TpsTransform.__neg__" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        __neg__
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.TpsTransform.copy" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        copy
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.TpsTransform.from_coefs" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        from_coefs
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.TpsTransform.xform" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        xform
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#navis_fastcore.MlsTransform" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        MlsTransform
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="MlsTransform">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.MlsTransform.direction" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        direction
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.MlsTransform.matrix_affine" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        matrix_affine
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.MlsTransform.source" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        source
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.MlsTransform.target" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        target
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.MlsTransform.__neg__" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        __neg__
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.MlsTransform.copy" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        copy
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.MlsTransform.xform" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        xform
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../wrappers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Scipy wrappers
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../r/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  R (nat.fastcore)
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../rust/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Rust (fastcore crate)
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  
+                    
+                    
+                    
+                      
+                    
+                    
+                      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+                      <div class="md-sidebar-button__wrapper">
+                        <label class="md-sidebar-button" for="__toc"></label>
+                      </div>
+                    
+                  
+                  <div class="md-sidebar__inner">
+                    
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#which-one" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Which one?
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#direction" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Direction
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#no-batch_size" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        No <code>batch_size</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#speed" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Speed
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Speed">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#500-landmarks" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        500 landmarks
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3390-landmarks-a-real-flybrains-mirroring-registration" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        3,390 landmarks (a real <code>flybrains</code> mirroring registration)
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-one-place-we-are-slower-fitting-a-spline" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The one place we are slower: fitting a spline
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pickling" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Pickling
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#api" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        API
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#navis_fastcore.TpsTransform" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        TpsTransform
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="TpsTransform">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.TpsTransform.A" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        A
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.TpsTransform.W" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        W
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.TpsTransform.matrix_affine" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        matrix_affine
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.TpsTransform.source" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        source
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.TpsTransform.target" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        target
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.TpsTransform.__neg__" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        __neg__
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.TpsTransform.copy" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        copy
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.TpsTransform.from_coefs" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        from_coefs
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.TpsTransform.xform" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        xform
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#navis_fastcore.MlsTransform" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        MlsTransform
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="MlsTransform">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.MlsTransform.direction" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        direction
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.MlsTransform.matrix_affine" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        matrix_affine
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.MlsTransform.source" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        source
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.MlsTransform.target" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        target
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.MlsTransform.__neg__" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        __neg__
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.MlsTransform.copy" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        copy
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.MlsTransform.xform" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        xform
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+  
+    <a href="https://github.com/schlegelp/fastcore-rs/edit/main/docs/python/landmarks.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-file-pen" viewBox="0 0 24 24"><path d="M12.659 22H18a2 2 0 0 0 2-2V8a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 14 2H6a2 2 0 0 0-2 2v9.34"/><path d="M14 2v5a1 1 0 0 0 1 1h5M10.378 12.622a1 1 0 0 1 3 3.003L8.36 20.637a2 2 0 0 1-.854.506l-2.867.837a.5.5 0 0 1-.62-.62l.836-2.869a2 2 0 0 1 .506-.853z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="landmark-transforms">Landmark transforms<a class="headerlink" href="#landmark-transforms" title="Permanent link">&para;</a></h1>
+<p>When no image registration exists between two template spaces, what you usually have
+instead is a set of <strong>matched landmarks</strong> — points a human (or another algorithm) has
+identified as corresponding. Two classical methods turn those into a warp:</p>
+<ul>
+<li><a href="#navis_fastcore.TpsTransform"><code>TpsTransform</code></a> — a <strong>thin-plate spline</strong>. Interpolates the
+  landmarks exactly and, between them, minimises the integral bending norm: the smoothest
+  warp consistent with the data.</li>
+<li><a href="#navis_fastcore.MlsTransform"><code>MlsTransform</code></a> — <strong>moving least squares</strong> (the affine
+  flavour of <a href="https://dl.acm.org/doi/pdf/10.1145/1179352.1141920">Schaefer et al. 2006</a>).
+  Gives every point its <em>own</em> affine, solved on the fly from all landmarks weighted by
+  inverse squared distance.</li>
+</ul>
+<p>These mirror <code>navis.transforms.TPStransform</code> and
+<code>navis.transforms.MovingLeastSquaresTransform</code>, and agree with them to ~1e-14 relative.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">navis_fastcore</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">fastcore</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">tps</span> <span class="o">=</span> <span class="n">fastcore</span><span class="o">.</span><span class="n">TpsTransform</span><span class="p">(</span><span class="n">landmarks_source</span><span class="p">,</span> <span class="n">landmarks_target</span><span class="p">)</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">xf</span> <span class="o">=</span> <span class="n">tps</span><span class="o">.</span><span class="n">xform</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>          <span class="c1"># (N, 3) -&gt; (N, 3)</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="n">mls</span> <span class="o">=</span> <span class="n">fastcore</span><span class="o">.</span><span class="n">MlsTransform</span><span class="p">(</span><span class="n">landmarks_source</span><span class="p">,</span> <span class="n">landmarks_target</span><span class="p">)</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="n">xf</span> <span class="o">=</span> <span class="n">mls</span><span class="o">.</span><span class="n">xform</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>
+</span></code></pre></div>
+<p>Landmarks and points may be <code>(N, 3)</code> arrays or <code>DataFrame</code>s with x/y/z columns. A single
+<code>(3,)</code> point is accepted and returns a <code>(3,)</code> point.</p>
+<h2 id="which-one">Which one?<a class="headerlink" href="#which-one" title="Permanent link">&para;</a></h2>
+<p>They give similar but <strong>not</strong> identical results, and which suits a given pair of spaces is
+worth checking empirically. As a rule of thumb:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>thin-plate spline</th>
+<th>moving least squares</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Landmarks</td>
+<td>reproduced exactly</td>
+<td>reproduced exactly</td>
+</tr>
+<tr>
+<td>Cost</td>
+<td>expensive <strong>fit</strong>, cheap to apply</td>
+<td>no fit, ~4× more expensive to apply</td>
+</tr>
+<tr>
+<td>Far from landmarks</td>
+<td>converges to the global affine</td>
+<td>converges to the global affine</td>
+</tr>
+<tr>
+<td>Reusing across many point sets</td>
+<td>strongly favours it — fit once</td>
+<td>no advantage</td>
+</tr>
+</tbody>
+</table>
+<p>Both fall back to a sensible global affine far outside the landmark hull, exposed as
+<code>.matrix_affine</code>.</p>
+<h2 id="direction">Direction<a class="headerlink" href="#direction" title="Permanent link">&para;</a></h2>
+<p>Neither method has a closed-form inverse, so "backwards" means <em>fitting the other way
+round</em>, not inverting. Both spell it <code>-transform</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">back</span> <span class="o">=</span> <span class="p">(</span><span class="o">-</span><span class="n">tps</span><span class="p">)</span><span class="o">.</span><span class="n">xform</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>     <span class="c1"># refits target -&gt; source; costs another fit</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">back</span> <span class="o">=</span> <span class="p">(</span><span class="o">-</span><span class="n">mls</span><span class="p">)</span><span class="o">.</span><span class="n">xform</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>     <span class="c1"># free - MLS has no fit to redo</span>
+</span></code></pre></div>
+<p>For MLS you can also ask at construction: <code>MlsTransform(src, trg, direction="inverse")</code>.</p>
+<h2 id="no-batch_size">No <code>batch_size</code><a class="headerlink" href="#no-batch_size" title="Permanent link">&para;</a></h2>
+<p>The <code>navis</code> versions take a <code>batch_size</code> because both reference implementations build an
+intermediate sized by <em>points × landmarks</em>. That is what makes them expensive, and for MLS
+it is a hard ceiling: <code>molesq</code> allocates <code>(3, M, N)</code> arrays, so 3,400 landmarks at the
+default batch size wants <strong>~23 GB</strong> — which means
+<code>MovingLeastSquaresTransform</code> cannot run at the landmark counts real registrations use.</p>
+<p>Here that intermediate never exists. Each output row depends only on its own row of the
+distance matrix, so the distance and its contribution to the result are fused into one
+streaming pass over landmarks. Peak memory is the output array, independent of the landmark
+count, and there is nothing to tune.</p>
+<p>Transforming 1M points through a 3,390-landmark spline:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>peak memory</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>navis</code> (already batched)</td>
+<td>5.6 GB</td>
+</tr>
+<tr>
+<td>fastcore</td>
+<td>231 MB</td>
+</tr>
+</tbody>
+</table>
+<h2 id="speed">Speed<a class="headerlink" href="#speed" title="Permanent link">&para;</a></h2>
+<p>Measured on 14 cores against the reference implementations (<code>morphops</code> for TPS, <code>molesq</code>
+for MLS — these are what <code>navis</code> calls), 1M points:</p>
+<h3 id="500-landmarks">500 landmarks<a class="headerlink" href="#500-landmarks" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>reference</th>
+<th>fastcore (1 core)</th>
+<th>fastcore (all cores)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>TPS</td>
+<td>0.56 µs/pt</td>
+<td>0.405 µs/pt (<strong>1.4×</strong>)</td>
+<td>0.039 µs/pt (<strong>14×</strong>)</td>
+</tr>
+<tr>
+<td>MLS</td>
+<td>7.03 µs/pt</td>
+<td>1.902 µs/pt (<strong>3.7×</strong>)</td>
+<td>0.186 µs/pt (<strong>38×</strong>)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="3390-landmarks-a-real-flybrains-mirroring-registration">3,390 landmarks (a real <code>flybrains</code> mirroring registration)<a class="headerlink" href="#3390-landmarks-a-real-flybrains-mirroring-registration" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>reference</th>
+<th>fastcore (1 core)</th>
+<th>fastcore (all cores)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>TPS</td>
+<td>3.67 µs/pt</td>
+<td>2.793 µs/pt (<strong>1.3×</strong>)</td>
+<td>0.270 µs/pt (<strong>14×</strong>)</td>
+</tr>
+<tr>
+<td>MLS</td>
+<td>out of memory (~23 GB)</td>
+<td>—</td>
+<td>1.269 µs/pt</td>
+</tr>
+</tbody>
+</table>
+<p>Worth reading honestly: <strong>TPS's win is almost entirely parallelism.</strong> Single-threaded we are
+only ~1.3× ahead, because <code>cdist</code> plus a BLAS matmul is already good code. What we add is
+scaling across cores and the removal of the memory ceiling.</p>
+<p><strong>MLS is a genuine algorithmic win</strong> — 3.7× before any parallelism — because <code>molesq</code>
+expresses the reduction as a chain of <code>einsum</code>s over materialised per-landmark arrays.</p>
+<h2 id="the-one-place-we-are-slower-fitting-a-spline">The one place we are slower: fitting a spline<a class="headerlink" href="#the-one-place-we-are-slower-fitting-a-spline" title="Permanent link">&para;</a></h2>
+<p>The TPS <em>fit</em> solves an <code>(M+4)</code> square system, so it is cubic in the landmark count. <code>numpy</code>
+sends that to hardware LAPACK (on Apple silicon, the AMX coprocessor); we use a blocked LU
+in portable Rust, which cannot match it:</p>
+<table>
+<thead>
+<tr>
+<th>landmarks</th>
+<th>numpy (LAPACK)</th>
+<th>fastcore</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>500</td>
+<td>1 ms</td>
+<td>13 ms</td>
+</tr>
+<tr>
+<td>1,793</td>
+<td>29 ms</td>
+<td>174 ms</td>
+</tr>
+<tr>
+<td>3,390</td>
+<td>141 ms</td>
+<td>553 ms</td>
+</tr>
+</tbody>
+</table>
+<p>This is a <strong>one-off</strong> cost per registration, against an <code>xform</code> that is 14× faster and can
+be called thousands of times, so it is very rarely the thing to optimise. If it is, fit with
+numpy and hand the coefficients over:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">tps</span> <span class="o">=</span> <span class="n">fastcore</span><span class="o">.</span><span class="n">TpsTransform</span><span class="o">.</span><span class="n">from_coefs</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">W</span><span class="p">,</span> <span class="n">A</span><span class="p">)</span>
+</span></code></pre></div>
+<p><code>W</code> and <code>A</code> follow the same convention as <code>morphops.tps_coefs</code> and
+<code>navis.transforms.TPStransform.W</code> / <code>.A</code>, so a <code>navis</code> transform converts directly:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">fast</span> <span class="o">=</span> <span class="n">fastcore</span><span class="o">.</span><span class="n">TpsTransform</span><span class="o">.</span><span class="n">from_coefs</span><span class="p">(</span><span class="n">navis_tps</span><span class="o">.</span><span class="n">source</span><span class="p">,</span> <span class="n">navis_tps</span><span class="o">.</span><span class="n">W</span><span class="p">,</span> <span class="n">navis_tps</span><span class="o">.</span><span class="n">A</span><span class="p">)</span>
+</span></code></pre></div>
+<p>MLS has no fit at all, so none of this applies to it.</p>
+<h2 id="pickling">Pickling<a class="headerlink" href="#pickling" title="Permanent link">&para;</a></h2>
+<p>Both transforms pickle. <code>TpsTransform</code> ships its <strong>coefficients</strong> rather than just the
+landmarks, so unpickling in a <code>multiprocessing</code> worker does not repeat the fit.</p>
+<h2 id="api">API<a class="headerlink" href="#api" title="Permanent link">&para;</a></h2>
+
+
+<div class="doc doc-object doc-class">
+
+
+
+<h2 id="navis_fastcore.TpsTransform" class="doc doc-heading">
+            <code>navis_fastcore.TpsTransform</code>
+
+
+<a href="#navis_fastcore.TpsTransform" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+    <div class="doc doc-contents first">
+
+
+
+        <p>A thin-plate spline transform, fitted to landmark pairs.</p>
+<p>The spline interpolates the source landmarks onto the target landmarks exactly, and
+between them it minimises the integral bending norm - the smoothest warp consistent
+with the landmarks.</p>
+<p>The fit happens once, here, and the transform can then be applied any number of times.</p>
+
+
+<table>
+      <thead>
+        <tr>
+          <th><span class="doc-section-title">PARAMETER</span></th>
+          <th><span>DESCRIPTION</span></th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>landmarks_source</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>            Source landmarks as x/y/z coordinates. A pandas ``DataFrame`` with
+            x/y/z columns is also accepted.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code> (M, 3) array-like</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>landmarks_target</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>            Target landmarks, one per source landmark.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code> (M, 3) array-like</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<table>
+      <thead>
+        <tr>
+          <th><span class="doc-section-title">ATTRIBUTE</span></th>
+          <th><span>DESCRIPTION</span></th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td><code><a class="autorefs autorefs-internal" title="&lt;code class=&quot;highlight language-python&quot;&gt;&lt;span class=&quot;n&quot;&gt;source&lt;/span&gt;&lt;/code&gt;
+
+  &lt;span class=&quot;doc doc-labels&quot;&gt;
+      &lt;small class=&quot;doc doc-label doc-label-property&quot;&gt;&lt;code&gt;property&lt;/code&gt;&lt;/small&gt;
+  &lt;/span&gt;" href="./#navis_fastcore.TpsTransform.source">source</a></code></td>
+            <td class="doc-attribute-details">
+              <div class="doc-md-description">
+                <p>The source landmarks.</p>
+              </div>
+              <p>
+                  <span class="doc-attribute-annotation">
+                    <b>TYPE:</b>
+                      <code>(M, 3) np.ndarray</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><a class="autorefs autorefs-internal" title="&lt;code class=&quot;highlight language-python&quot;&gt;&lt;span class=&quot;n&quot;&gt;W&lt;/span&gt;&lt;/code&gt;
+
+  &lt;span class=&quot;doc doc-labels&quot;&gt;
+      &lt;small class=&quot;doc doc-label doc-label-property&quot;&gt;&lt;code&gt;property&lt;/code&gt;&lt;/small&gt;
+  &lt;/span&gt;" href="./#navis_fastcore.TpsTransform.W">W</a></code></td>
+            <td class="doc-attribute-details">
+              <div class="doc-md-description">
+                <p>Weights of the non-affine part of the spline.</p>
+              </div>
+              <p>
+                  <span class="doc-attribute-annotation">
+                    <b>TYPE:</b>
+                      <code>(M, 3) np.ndarray</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><a class="autorefs autorefs-internal" title="&lt;code class=&quot;highlight language-python&quot;&gt;&lt;span class=&quot;n&quot;&gt;A&lt;/span&gt;&lt;/code&gt;
+
+  &lt;span class=&quot;doc doc-labels&quot;&gt;
+      &lt;small class=&quot;doc doc-label doc-label-property&quot;&gt;&lt;code&gt;property&lt;/code&gt;&lt;/small&gt;
+  &lt;/span&gt;" href="./#navis_fastcore.TpsTransform.A">A</a></code></td>
+            <td class="doc-attribute-details">
+              <div class="doc-md-description">
+                <p>Coefficients of the affine part; row 0 is the translation.</p>
+              </div>
+              <p>
+                  <span class="doc-attribute-annotation">
+                    <b>TYPE:</b>
+                      <code>(4, 3) np.ndarray</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><a class="autorefs autorefs-internal" title="&lt;code class=&quot;highlight language-python&quot;&gt;&lt;span class=&quot;n&quot;&gt;matrix_affine&lt;/span&gt;&lt;/code&gt;
+
+  &lt;span class=&quot;doc doc-labels&quot;&gt;
+      &lt;small class=&quot;doc doc-label doc-label-property&quot;&gt;&lt;code&gt;property&lt;/code&gt;&lt;/small&gt;
+  &lt;/span&gt;" href="./#navis_fastcore.TpsTransform.matrix_affine">matrix_affine</a></code></td>
+            <td class="doc-attribute-details">
+              <div class="doc-md-description">
+                <p>The affine part as a homogeneous matrix - what the spline
+converges to far from the landmarks.</p>
+              </div>
+              <p>
+                  <span class="doc-attribute-annotation">
+                    <b>TYPE:</b>
+                      <code>(4, 4) np.ndarray</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="note" open>
+  <summary>Notes</summary>
+  <p>Unlike <code>navis.transforms.TPStransform</code> there is no <code>batch_size</code>: the distance
+matrix is fused into the accumulation rather than built, so peak memory is the output
+array regardless of how many points or landmarks are involved.</p>
+<p>The fit is cubic in the landmark count and runs through a blocked LU. At a few thousand
+landmarks it is somewhat slower than <code>numpy.linalg.solve</code> (which reaches hardware
+LAPACK); :meth:<code>from_coefs</code> exists if you would rather fit with numpy and only use this
+class to apply the result.</p>
+</details>
+
+<p><span class="doc-section-title">Examples:</span></p>
+    <div class="language-pycon highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">&gt;&gt;&gt; </span><span class="kn">import</span><span class="w"> </span><span class="nn">navis_fastcore</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">fastcore</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="gp">&gt;&gt;&gt; </span><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">src</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">],</span> <span class="p">[</span><span class="mi">10</span><span class="p">,</span> <span class="mi">10</span><span class="p">,</span> <span class="mi">10</span><span class="p">],</span> <span class="p">[</span><span class="mi">100</span><span class="p">,</span> <span class="mi">100</span><span class="p">,</span> <span class="mi">100</span><span class="p">],</span> <span class="p">[</span><span class="mi">80</span><span class="p">,</span> <span class="mi">10</span><span class="p">,</span> <span class="mi">30</span><span class="p">]])</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">trg</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">15</span><span class="p">,</span> <span class="mi">5</span><span class="p">],</span> <span class="p">[</span><span class="mi">9</span><span class="p">,</span> <span class="mi">18</span><span class="p">,</span> <span class="mi">21</span><span class="p">],</span> <span class="p">[</span><span class="mi">80</span><span class="p">,</span> <span class="mi">99</span><span class="p">,</span> <span class="mi">120</span><span class="p">],</span> <span class="p">[</span><span class="mi">5</span><span class="p">,</span> <span class="mi">10</span><span class="p">,</span> <span class="mi">80</span><span class="p">]])</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">tr</span> <span class="o">=</span> <span class="n">fastcore</span><span class="o">.</span><span class="n">TpsTransform</span><span class="p">(</span><span class="n">src</span><span class="p">,</span> <span class="n">trg</span><span class="p">)</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">tr</span><span class="o">.</span><span class="n">xform</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">],</span> <span class="p">[</span><span class="mi">50</span><span class="p">,</span> <span class="mi">50</span><span class="p">,</span> <span class="mi">50</span><span class="p">]]))</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="go">array([[ 1.        , 15.        ,  5.        ],</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="go">       [40.55555556, 54.        , 65.        ]])</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="gp">&gt;&gt;&gt; </span><span class="c1"># Landmarks are reproduced exactly</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">np</span><span class="o">.</span><span class="n">allclose</span><span class="p">(</span><span class="n">tr</span><span class="o">.</span><span class="n">xform</span><span class="p">(</span><span class="n">src</span><span class="p">),</span> <span class="n">trg</span><span class="p">)</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="go">True</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="gp">&gt;&gt;&gt; </span><span class="c1"># Negation refits in the opposite direction</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">np</span><span class="o">.</span><span class="n">allclose</span><span class="p">((</span><span class="o">-</span><span class="n">tr</span><span class="p">)</span><span class="o">.</span><span class="n">xform</span><span class="p">(</span><span class="n">trg</span><span class="p">),</span> <span class="n">src</span><span class="p">)</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="go">True</span>
+</span></code></pre></div>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="navis_fastcore.TpsTransform.A" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">A</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#navis_fastcore.TpsTransform.A" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Coefficients of the affine part, as a (4, 3) array.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="navis_fastcore.TpsTransform.W" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">W</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#navis_fastcore.TpsTransform.W" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Weights of the non-affine part of the spline, as an (M, 3) array.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="navis_fastcore.TpsTransform.matrix_affine" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">matrix_affine</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#navis_fastcore.TpsTransform.matrix_affine" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>The affine part as a (4, 4) homogeneous matrix.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="navis_fastcore.TpsTransform.source" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">source</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#navis_fastcore.TpsTransform.source" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>The source landmarks, as an (M, 3) array.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="navis_fastcore.TpsTransform.target" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">target</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#navis_fastcore.TpsTransform.target" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>The target landmarks, or <code>None</code> if built from coefficients without them.</p>
+
+    </div>
+
+</div>
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="navis_fastcore.TpsTransform.__neg__" class="doc doc-heading">
+            <code class="highlight language-python"><span class="fm">__neg__</span><span class="p">()</span></code>
+
+<a href="#navis_fastcore.TpsTransform.__neg__" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Fit the spline in the opposite direction.</p>
+<p>This is a fresh fit of target onto source, not an inversion of this one - a thin
+plate spline has no closed-form inverse. Requires the target landmarks.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="navis_fastcore.TpsTransform.copy" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">copy</span><span class="p">()</span></code>
+
+<a href="#navis_fastcore.TpsTransform.copy" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Return a copy. Shares the fit rather than repeating it.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="navis_fastcore.TpsTransform.from_coefs" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">from_coefs</span><span class="p">(</span><span class="n">landmarks_source</span><span class="p">,</span> <span class="n">W</span><span class="p">,</span> <span class="n">A</span><span class="p">,</span> <span class="n">landmarks_target</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
+  </span>
+
+<a href="#navis_fastcore.TpsTransform.from_coefs" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Build from coefficients fitted elsewhere, skipping the fit.</p>
+
+
+<table>
+      <thead>
+        <tr>
+          <th><span class="doc-section-title">PARAMETER</span></th>
+          <th><span>DESCRIPTION</span></th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>landmarks_source</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>            The source landmarks the coefficients belong to.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code> (M, 3) array-like</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>W</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>            Weights of the non-affine part.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>                (M, 3) array-like</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>A</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>            Coefficients of the affine part.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>                (4, 3) array-like</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>landmarks_target</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>            The target landmarks. Not needed to transform points, but
+            without them :meth:`__neg__` cannot refit the inverse.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code> (M, 3) array-like</code>
+                  </span>
+                  <span class="doc-param-default">
+                    <b>DEFAULT:</b>
+                      <code>None</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<table>
+      <thead>
+        <tr>
+          <th><span class="doc-section-title">RETURNS</span></th>
+          <th><span>DESCRIPTION</span></th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <span class="doc-returns-annotation">
+                    <code><a class="autorefs autorefs-internal" title="&lt;code&gt;navis_fastcore.TpsTransform&lt;/code&gt;" href="./#navis_fastcore.TpsTransform">TpsTransform</a></code>
+                </span>
+            </td>
+            <td class="doc-returns-details">
+              <div class="doc-md-description">
+                
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Examples:</span></p>
+    <div class="language-pycon highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">&gt;&gt;&gt; </span><span class="kn">import</span><span class="w"> </span><span class="nn">navis_fastcore</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">fastcore</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="gp">&gt;&gt;&gt; </span><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">src</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">],</span> <span class="p">[</span><span class="mi">10</span><span class="p">,</span> <span class="mi">10</span><span class="p">,</span> <span class="mi">10</span><span class="p">],</span> <span class="p">[</span><span class="mi">100</span><span class="p">,</span> <span class="mi">100</span><span class="p">,</span> <span class="mi">100</span><span class="p">],</span> <span class="p">[</span><span class="mi">80</span><span class="p">,</span> <span class="mi">10</span><span class="p">,</span> <span class="mi">30</span><span class="p">]])</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">trg</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">15</span><span class="p">,</span> <span class="mi">5</span><span class="p">],</span> <span class="p">[</span><span class="mi">9</span><span class="p">,</span> <span class="mi">18</span><span class="p">,</span> <span class="mi">21</span><span class="p">],</span> <span class="p">[</span><span class="mi">80</span><span class="p">,</span> <span class="mi">99</span><span class="p">,</span> <span class="mi">120</span><span class="p">],</span> <span class="p">[</span><span class="mi">5</span><span class="p">,</span> <span class="mi">10</span><span class="p">,</span> <span class="mi">80</span><span class="p">]])</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">tr</span> <span class="o">=</span> <span class="n">fastcore</span><span class="o">.</span><span class="n">TpsTransform</span><span class="p">(</span><span class="n">src</span><span class="p">,</span> <span class="n">trg</span><span class="p">)</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">same</span> <span class="o">=</span> <span class="n">fastcore</span><span class="o">.</span><span class="n">TpsTransform</span><span class="o">.</span><span class="n">from_coefs</span><span class="p">(</span><span class="n">tr</span><span class="o">.</span><span class="n">source</span><span class="p">,</span> <span class="n">tr</span><span class="o">.</span><span class="n">W</span><span class="p">,</span> <span class="n">tr</span><span class="o">.</span><span class="n">A</span><span class="p">)</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">np</span><span class="o">.</span><span class="n">allclose</span><span class="p">(</span><span class="n">same</span><span class="o">.</span><span class="n">xform</span><span class="p">(</span><span class="n">src</span><span class="p">),</span> <span class="n">trg</span><span class="p">)</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="go">True</span>
+</span></code></pre></div>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="navis_fastcore.TpsTransform.xform" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">xform</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">n_cores</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+
+<a href="#navis_fastcore.TpsTransform.xform" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Transform points.</p>
+
+
+<table>
+      <thead>
+        <tr>
+          <th><span class="doc-section-title">PARAMETER</span></th>
+          <th><span>DESCRIPTION</span></th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>points</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>    Coordinates to transform. A single ``(3,)`` point is accepted and
+    returns a ``(3,)`` point; a ``DataFrame`` with x/y/z columns also works.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>   (N, 3) array-like</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>n_cores</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>    Number of threads. ``None`` (default) uses all cores.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>  int</code>
+                  </span>
+                  <span class="doc-param-default">
+                    <b>DEFAULT:</b>
+                      <code>None</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<table>
+      <thead>
+        <tr>
+          <th><span class="doc-section-title">RETURNS</span></th>
+          <th><span>DESCRIPTION</span></th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <span class="doc-returns-annotation">
+                    <code>(N, 3) np.ndarray</code>
+                </span>
+            </td>
+            <td class="doc-returns-details">
+              <div class="doc-md-description">
+                <p>Transformed coordinates.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h2 id="navis_fastcore.MlsTransform" class="doc doc-heading">
+            <code>navis_fastcore.MlsTransform</code>
+
+
+<a href="#navis_fastcore.MlsTransform" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+    <div class="doc doc-contents first">
+
+
+
+        <p>A moving least squares transform, defined by landmark pairs.</p>
+<p>The affine flavour of the algorithm published in
+<a href="https://dl.acm.org/doi/pdf/10.1145/1179352.1141920">Schaefer et al. (2006)</a>. Unlike a
+thin-plate spline there is no fit: every point gets its <em>own</em> affine, solved on the fly
+from all landmarks weighted by inverse squared distance. That makes construction free
+and :meth:<code>xform</code> the entire cost.</p>
+
+
+<table>
+      <thead>
+        <tr>
+          <th><span class="doc-section-title">PARAMETER</span></th>
+          <th><span>DESCRIPTION</span></th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>landmarks_source</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>            Source landmarks as x/y/z coordinates. A pandas ``DataFrame`` with
+            x/y/z columns is also accepted.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code> (M, 3) array-like</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>landmarks_target</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>            Target landmarks, one per source landmark.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code> (M, 3) array-like</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>direction</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>            ``&quot;inverse&quot;`` treats the target as the source and vice versa.
+            Note this fits the warp in the opposite direction; it is not an
+            exact inverse, which moving least squares does not have.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>        &#34;forward&#34; | &#34;inverse&#34;</code>
+                  </span>
+                  <span class="doc-param-default">
+                    <b>DEFAULT:</b>
+                      <code>&#39;forward&#39;</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="note" open>
+  <summary>Notes</summary>
+  <p><code>navis.transforms.MovingLeastSquaresTransform</code> (via <code>molesq</code>) builds
+<code>(3, M, N)</code>-shaped intermediates, which is why it takes a <code>batch_size</code> - and why in
+practice it cannot run at the landmark counts real registrations use: 3400 landmarks at
+the default batch size needs ~23 GB. Here everything but the result is a reduction over
+landmarks, so peak memory is the output array and the landmark count is unbounded.</p>
+</details>
+
+<p><span class="doc-section-title">Examples:</span></p>
+    <div class="language-pycon highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">&gt;&gt;&gt; </span><span class="kn">import</span><span class="w"> </span><span class="nn">navis_fastcore</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">fastcore</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="gp">&gt;&gt;&gt; </span><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">src</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">],</span> <span class="p">[</span><span class="mi">10</span><span class="p">,</span> <span class="mi">10</span><span class="p">,</span> <span class="mi">10</span><span class="p">],</span> <span class="p">[</span><span class="mi">100</span><span class="p">,</span> <span class="mi">100</span><span class="p">,</span> <span class="mi">100</span><span class="p">],</span> <span class="p">[</span><span class="mi">80</span><span class="p">,</span> <span class="mi">10</span><span class="p">,</span> <span class="mi">30</span><span class="p">]])</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">trg</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">15</span><span class="p">,</span> <span class="mi">5</span><span class="p">],</span> <span class="p">[</span><span class="mi">9</span><span class="p">,</span> <span class="mi">18</span><span class="p">,</span> <span class="mi">21</span><span class="p">],</span> <span class="p">[</span><span class="mi">80</span><span class="p">,</span> <span class="mi">99</span><span class="p">,</span> <span class="mi">120</span><span class="p">],</span> <span class="p">[</span><span class="mi">5</span><span class="p">,</span> <span class="mi">10</span><span class="p">,</span> <span class="mi">80</span><span class="p">]])</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">tr</span> <span class="o">=</span> <span class="n">fastcore</span><span class="o">.</span><span class="n">MlsTransform</span><span class="p">(</span><span class="n">src</span><span class="p">,</span> <span class="n">trg</span><span class="p">)</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="gp">&gt;&gt;&gt; </span><span class="c1"># A point sitting on a landmark maps to its partner</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">np</span><span class="o">.</span><span class="n">allclose</span><span class="p">(</span><span class="n">tr</span><span class="o">.</span><span class="n">xform</span><span class="p">(</span><span class="n">src</span><span class="p">),</span> <span class="n">trg</span><span class="p">)</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="go">True</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="gp">&gt;&gt;&gt; </span><span class="c1"># Negation swaps the direction</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">np</span><span class="o">.</span><span class="n">allclose</span><span class="p">((</span><span class="o">-</span><span class="n">tr</span><span class="p">)</span><span class="o">.</span><span class="n">xform</span><span class="p">(</span><span class="n">trg</span><span class="p">),</span> <span class="n">src</span><span class="p">)</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="go">True</span>
+</span></code></pre></div>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="navis_fastcore.MlsTransform.direction" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">direction</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#navis_fastcore.MlsTransform.direction" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p><code>"forward"</code> or <code>"inverse"</code>.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="navis_fastcore.MlsTransform.matrix_affine" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">matrix_affine</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#navis_fastcore.MlsTransform.matrix_affine" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>The <em>global</em> affine as a (4, 4) homogeneous matrix.</p>
+<p>Moving least squares is <em>locally</em> weighted - every point effectively gets its own
+affine - so there is no single matrix describing it. This is the least-squares fit
+of source onto target landmarks, which is what the warp converges to far from them.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="navis_fastcore.MlsTransform.source" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">source</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#navis_fastcore.MlsTransform.source" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>The landmarks this transform maps <em>from</em>, honouring <code>direction</code>.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="navis_fastcore.MlsTransform.target" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">target</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#navis_fastcore.MlsTransform.target" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>The landmarks this transform maps <em>to</em>, honouring <code>direction</code>.</p>
+
+    </div>
+
+</div>
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="navis_fastcore.MlsTransform.__neg__" class="doc doc-heading">
+            <code class="highlight language-python"><span class="fm">__neg__</span><span class="p">()</span></code>
+
+<a href="#navis_fastcore.MlsTransform.__neg__" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Flip the direction.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="navis_fastcore.MlsTransform.copy" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">copy</span><span class="p">()</span></code>
+
+<a href="#navis_fastcore.MlsTransform.copy" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Return a copy.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="navis_fastcore.MlsTransform.xform" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">xform</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">n_cores</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">reverse</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+
+<a href="#navis_fastcore.MlsTransform.xform" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Transform points.</p>
+
+
+<table>
+      <thead>
+        <tr>
+          <th><span class="doc-section-title">PARAMETER</span></th>
+          <th><span>DESCRIPTION</span></th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>points</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>    Coordinates to transform. A single ``(3,)`` point is accepted and
+    returns a ``(3,)`` point; a ``DataFrame`` with x/y/z columns also works.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>   (N, 3) array-like</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>n_cores</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>    Number of threads. ``None`` (default) uses all cores.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>  int</code>
+                  </span>
+                  <span class="doc-param-default">
+                    <b>DEFAULT:</b>
+                      <code>None</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>reverse</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>    Override this transform&#39;s ``direction`` for this call only:
+    ``False`` maps source -&gt; target, ``True`` target -&gt; source.
+    ``None`` (default) uses ``direction``. The underlying fit is
+    direction-agnostic, so this saves rebuilding the object just
+    to run it the other way.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>  bool</code>
+                  </span>
+                  <span class="doc-param-default">
+                    <b>DEFAULT:</b>
+                      <code>None</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<table>
+      <thead>
+        <tr>
+          <th><span class="doc-section-title">RETURNS</span></th>
+          <th><span>DESCRIPTION</span></th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <span class="doc-returns-annotation">
+                    <code>(N, 3) np.ndarray</code>
+                </span>
+            </td>
+            <td class="doc-returns-details">
+              <div class="doc-md-description">
+                <p>Transformed coordinates.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-circle-arrow-up" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m16 12-4-4-4 4M12 16V8"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://zensical.org/" target="_blank" rel="noopener">
+      Zensical
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate":null,"base":"../..","features":["content.action.edit","content.code.annotate","content.code.copy","content.tabs.link","navigation.indexes","navigation.instant","navigation.top","search.highlight","toc.follow"],"search":"../../assets/javascripts/workers/search.b6b7e04f.min.js","tags":null,"translations":{"clipboard.copied":"Copied to clipboard","clipboard.copy":"Copy to clipboard","search.result.more.one":"1 more on this page","search.result.more.other":"# more on this page","search.result.none":"No matching documents","search.result.one":"1 matching document","search.result.other":"# matching documents","search.result.placeholder":"Type to start searching","search.result.term.missing":"Missing","select.version":"Select version"},"version":null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7f30b55.min.js"></script>
+      
+    
+  </body>
+</html>

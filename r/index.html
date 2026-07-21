@@ -1,0 +1,1287 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Fast Rust implementations of navis/nat core functions, with Python and R bindings.">
+      
+      
+      
+        <link rel="canonical" href="https://schlegelp.github.io/fastcore-rs/r/">
+      
+      
+        <link rel="prev" href="../python/wrappers/">
+      
+      
+        <link rel="next" href="../rust/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="zensical-0.0.51">
+    
+    
+      
+        <title>nat.fastcore (R) - fastcore-rs</title>
+      
+    
+    
+      
+        
+      
+      <link rel="stylesheet" href="../assets/stylesheets/modern/main.62c9b9cc.min.css">
+      
+        
+          
+        
+        <link rel="stylesheet" href="../assets/stylesheets/modern/palette.dfe2e883.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_scope.pathname.endsWith("/")||(__md_scope=new URL(__md_scope.pathname+"/",location)),__md_hash=e=>[...e].reduce(((e,t)=>(e<<5)-e+t.charCodeAt(0)),0),__md_get=(e,t=localStorage,_=__md_scope)=>JSON.parse(t.getItem(_.pathname+"."+e)),__md_set=(e,t,_=localStorage,a=__md_scope)=>{try{_.setItem(a.pathname+"."+e,JSON.stringify(t))}catch(e){}},document.documentElement.setAttribute("data-platform",navigator.platform)</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer" aria-label="Navigation"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#natfastcore-r" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="./.." title="fastcore-rs" class="md-header__button md-logo" aria-label="fastcore-rs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 7v14M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer" aria-label="Navigation">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-menu" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            fastcore-rs
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              nat.fastcore (R)
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="none" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="none" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-moon" viewBox="0 0 24 24"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search" aria-label="Search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog" aria-label="Search">
+  <button type="button" class="md-search__button">
+    Search
+  </button>
+</div>
+      
+    
+    <div class="md-header__source">
+      
+        <a href="https://github.com/schlegelp/fastcore-rs" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    schlegelp/fastcore-rs
+  </div>
+</a>
+      
+    </div>
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="./.." title="fastcore-rs" class="md-nav__button md-logo" aria-label="fastcore-rs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 7v14M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg>
+
+    </a>
+    fastcore-rs
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/schlegelp/fastcore-rs" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    schlegelp/fastcore-rs
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Home
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Concepts
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+  Concepts
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/trees/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Rooted trees
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/nblast/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  NBLAST
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../python/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Python (navis-fastcore)
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+  Python (navis-fastcore)
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/geodesic/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Geodesic distances
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/cc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Connected components
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/morphology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Morphology
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/segments/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Segments
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/mesh/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Mesh
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/healing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Healing
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/nblast/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  NBLAST
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/cmtk/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  CMTK transforms
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/elastix/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Elastix transforms
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/landmarks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Landmark transforms
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/wrappers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Scipy wrappers
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  R (nat.fastcore)
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="././" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  R (nat.fastcore)
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#install" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Install
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#usage" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Usage
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#available-functions" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Available functions
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#function-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Function reference
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rust/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Rust (fastcore crate)
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  
+                    
+                    
+                    
+                      
+                    
+                    
+                      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+                      <div class="md-sidebar-button__wrapper">
+                        <label class="md-sidebar-button" for="__toc"></label>
+                      </div>
+                    
+                  
+                  <div class="md-sidebar__inner">
+                    
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#install" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Install
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#usage" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Usage
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#available-functions" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Available functions
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#function-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Function reference
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+  
+    <a href="https://github.com/schlegelp/fastcore-rs/edit/main/docs/r/index.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-file-pen" viewBox="0 0 24 24"><path d="M12.659 22H18a2 2 0 0 0 2-2V8a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 14 2H6a2 2 0 0 0-2 2v9.34"/><path d="M14 2v5a1 1 0 0 0 1 1h5M10.378 12.622a1 1 0 0 1 3 3.003L8.36 20.637a2 2 0 0 1-.854.506l-2.867.837a.5.5 0 0 1-.62-.62l.836-2.869a2 2 0 0 1 .506-.853z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="natfastcore-r"><code>nat.fastcore</code> (R)<a class="headerlink" href="#natfastcore-r" title="Permanent link">&para;</a></h1>
+<p>R bindings for the <a href="../rust/"><code>fastcore</code></a> Rust core, built with
+<a href="https://extendr.github.io/">extendr</a>. Intended for use alongside
+<a href="https://natverse.org/"><code>nat</code></a> and the rest of the natverse, though the functions
+themselves are generic and don't depend on it.</p>
+<h2 id="install">Install<a class="headerlink" href="#install" title="Permanent link">&para;</a></h2>
+<p>Pre-compiled binaries for Windows and macOS are served from R-universe, so <strong>no
+Rust toolchain is required</strong>:</p>
+<div class="language-r highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">install.packages</span><span class="p">(</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="s">&quot;nat.fastcore&quot;</span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span><span class="n">repos</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nf">c</span><span class="p">(</span><span class="s">&quot;https://schlegelp.r-universe.dev&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;https://cloud.r-project.org&quot;</span><span class="p">)</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>On Linux this installs from source (compiling the bundled Rust), which needs the
+<a href="https://rustup.rs/">Rust toolchain</a>.</p>
+<details class="note">
+<summary>Building from source</summary>
+<ol>
+<li>Clone <a href="https://github.com/schlegelp/fastcore-rs">the repository</a></li>
+<li>Make sure the <a href="https://rustup.rs/">Rust toolchain</a> and the R <code>rextendr</code> &amp;
+   <code>devtools</code> packages are installed</li>
+<li>In R, run:
+   <div class="language-r highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">utils</span><span class="o">::</span><span class="nf">install.packages</span><span class="p">(</span><span class="s">&quot;/path/to/fastcore-rs/R/nat.fastcore/&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;source&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">repos</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">NULL</span><span class="p">)</span>
+</span></code></pre></div></li>
+</ol>
+<p>For development, <code>cd</code> into <code>R/nat.fastcore/</code> and run:
+<div class="language-r highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nf">library</span><span class="p">(</span><span class="n">rextendr</span><span class="p">)</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nf">library</span><span class="p">(</span><span class="n">devtools</span><span class="p">)</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">rextendr</span><span class="o">::</span><span class="nf">document</span><span class="p">()</span><span class="w">  </span><span class="c1"># compiles the Rust code and updates the R wrappers</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">devtools</span><span class="o">::</span><span class="nf">load_all</span><span class="p">(</span><span class="s">&quot;.&quot;</span><span class="p">)</span>
+</span></code></pre></div></p>
+</details>
+<h2 id="usage">Usage<a class="headerlink" href="#usage" title="Permanent link">&para;</a></h2>
+<p>Unlike the Python bindings, <code>nat.fastcore</code> works on an explicit <strong>parent-index
+vector</strong> rather than node/parent IDs — build one with <code>node_indices</code> and pass it
+to everything else.</p>
+<div class="language-r highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nf">library</span><span class="p">(</span><span class="n">nat.fastcore</span><span class="p">)</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="c1"># Load a single skeleton</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">s</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nf">read.neurons</span><span class="p">(</span><span class="s">&#39;test.swc&#39;</span><span class="p">)[[</span><span class="m">1</span><span class="p">]]</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="c1"># Generate node indices from node -&gt; parent IDs</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="n">parents</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nf">node_indices</span><span class="p">(</span><span class="n">s</span><span class="o">$</span><span class="n">d</span><span class="o">$</span><span class="n">PointNo</span><span class="p">,</span><span class="w"> </span><span class="n">s</span><span class="o">$</span><span class="n">d</span><span class="o">$</span><span class="n">Parent</span><span class="p">)</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="c1"># Find distances to roots</span>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="nf">all_dists_to_root</span><span class="p">(</span><span class="n">parents</span><span class="p">,</span><span class="w"> </span><span class="n">sources</span><span class="o">=</span><span class="kc">NULL</span><span class="p">,</span><span class="w"> </span><span class="n">weights</span><span class="o">=</span><span class="kc">NULL</span><span class="p">)</span>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="c1">#&gt; [1]  0 47 48 49 50 51 ...</span>
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>
+</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="c1"># Calculate child -&gt; parent distances</span>
+</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="n">weights</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nf">child_to_parent_dists</span><span class="p">(</span><span class="n">parents</span><span class="p">,</span><span class="w"> </span><span class="n">s</span><span class="o">$</span><span class="n">d</span><span class="o">$</span><span class="n">X</span><span class="p">,</span><span class="w"> </span><span class="n">s</span><span class="o">$</span><span class="n">d</span><span class="o">$</span><span class="n">Y</span><span class="p">,</span><span class="w"> </span><span class="n">s</span><span class="o">$</span><span class="n">d</span><span class="o">$</span><span class="n">Z</span><span class="p">)</span>
+</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a>
+</span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="c1"># Generate all-by-all geodesic distance matrix</span>
+</span><span id="__span-3-17"><a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="n">dists</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nf">geodesic_distances</span><span class="p">(</span><span class="n">parents</span><span class="p">,</span><span class="w"> </span><span class="n">sources</span><span class="o">=</span><span class="kc">NULL</span><span class="p">,</span><span class="w"> </span><span class="n">targets</span><span class="o">=</span><span class="kc">NULL</span><span class="p">,</span><span class="w"> </span><span class="n">weights</span><span class="o">=</span><span class="n">weights</span><span class="p">,</span><span class="w"> </span><span class="n">directed</span><span class="o">=</span><span class="bp">F</span><span class="p">)</span>
+</span></code></pre></div>
+<p>Healing a fragmented skeleton (reconnecting its disconnected fragments):</p>
+<div class="language-r highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">healed</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nf">heal_skeleton</span><span class="p">(</span><span class="n">parents</span><span class="p">,</span><span class="w"> </span><span class="n">s</span><span class="o">$</span><span class="n">d</span><span class="o">$</span><span class="n">X</span><span class="p">,</span><span class="w"> </span><span class="n">s</span><span class="o">$</span><span class="n">d</span><span class="o">$</span><span class="n">Y</span><span class="p">,</span><span class="w"> </span><span class="n">s</span><span class="o">$</span><span class="n">d</span><span class="o">$</span><span class="n">Z</span><span class="p">,</span><span class="w"> </span><span class="n">method</span><span class="o">=</span><span class="s">&quot;ALL&quot;</span><span class="p">,</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">                       </span><span class="n">max_dist</span><span class="o">=</span><span class="kc">NULL</span><span class="p">,</span><span class="w"> </span><span class="n">min_size</span><span class="o">=</span><span class="kc">NULL</span><span class="p">,</span><span class="w"> </span><span class="n">mask</span><span class="o">=</span><span class="kc">NULL</span><span class="p">,</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">                       </span><span class="n">radius</span><span class="o">=</span><span class="kc">NULL</span><span class="p">,</span><span class="w"> </span><span class="n">use_radius</span><span class="o">=</span><span class="kc">FALSE</span><span class="p">)</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="c1"># ... optionally taking node radii into account, which prefers to connect</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="c1"># fragments of similar calibre (higher `use_radius` = more influence)</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="n">healed</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nf">heal_skeleton</span><span class="p">(</span><span class="n">parents</span><span class="p">,</span><span class="w"> </span><span class="n">s</span><span class="o">$</span><span class="n">d</span><span class="o">$</span><span class="n">X</span><span class="p">,</span><span class="w"> </span><span class="n">s</span><span class="o">$</span><span class="n">d</span><span class="o">$</span><span class="n">Y</span><span class="p">,</span><span class="w"> </span><span class="n">s</span><span class="o">$</span><span class="n">d</span><span class="o">$</span><span class="n">Z</span><span class="p">,</span><span class="w"> </span><span class="n">method</span><span class="o">=</span><span class="s">&quot;ALL&quot;</span><span class="p">,</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">                       </span><span class="n">max_dist</span><span class="o">=</span><span class="kc">NULL</span><span class="p">,</span><span class="w"> </span><span class="n">min_size</span><span class="o">=</span><span class="kc">NULL</span><span class="p">,</span><span class="w"> </span><span class="n">mask</span><span class="o">=</span><span class="kc">NULL</span><span class="p">,</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">                       </span><span class="n">radius</span><span class="o">=</span><span class="n">s</span><span class="o">$</span><span class="n">d</span><span class="o">$</span><span class="n">W</span><span class="p">,</span><span class="w"> </span><span class="n">use_radius</span><span class="o">=</span><span class="kc">TRUE</span><span class="p">)</span>
+</span></code></pre></div>
+<h2 id="available-functions">Available functions<a class="headerlink" href="#available-functions" title="Permanent link">&para;</a></h2>
+<p><strong>Skeleton / tree (DAG)</strong></p>
+<ul>
+<li><code>node_indices</code>: turn node and parent IDs into parent indices</li>
+<li><code>geodesic_distances</code>: geodesic distances between all/subsets of nodes</li>
+<li><code>geodesic_pairs</code>: geodesic distances for explicit pairs of nodes</li>
+<li><code>geodesic_nearest</code>: distance to the nearest target for each source (no full matrix)</li>
+<li><code>geodesic_farthest</code>: distance to the farthest target for each source (no full matrix)</li>
+<li><code>strahler_index</code>: calculate the Strahler index</li>
+<li><code>subtree_height</code>: distance from each node down to the farthest leaf below it</li>
+<li><code>connected_components</code>: extract connected components</li>
+<li><code>classify_nodes</code>: classify nodes into roots, leaves, branch points and slabs</li>
+<li><code>all_dists_to_root</code>: distances from all/subsets of nodes to the root</li>
+<li><code>dist_to_root</code>: distance from a single node to the root</li>
+<li><code>prune_twigs</code>: prune twigs under a given size threshold</li>
+<li><code>generate_segments</code> / <code>break_segments</code>: split the tree into linear segments</li>
+<li><code>synapse_flow_centrality</code>: synapse flow centrality per node</li>
+<li><code>has_cycles</code>: check whether a tree contains cycles</li>
+<li><code>child_to_parent_dists</code>: helper to calculate child -&gt; parent distances</li>
+<li><code>heal_skeleton</code>: reconnect the fragments of a broken skeleton</li>
+<li><code>stitch_fragments</code>: find the minimal-length edges that reconnect fragments</li>
+<li><code>reroot_rewire</code>: regenerate a parent vector after adding edges</li>
+</ul>
+<p><strong>Mesh</strong></p>
+<ul>
+<li><code>mesh_connected_components</code>: connected components of a triangle mesh</li>
+</ul>
+<p><strong>Neuron similarity (NBLAST / synNBLAST)</strong> — see <a href="../concepts/nblast/">Concepts › NBLAST</a></p>
+<ul>
+<li><code>nblast</code> / <code>nblast_allbyall</code>: forward NBLAST (query-vs-target / all-by-all)</li>
+<li><code>nblast_knn</code>: each neuron's <code>k</code> nearest neighbours, without the score matrix</li>
+<li><code>nblast_pairs</code>: forward NBLAST for a set of <code>(query, target)</code> index pairs</li>
+<li><code>synblast</code> / <code>synblast_allbyall</code>: synapse-based NBLAST</li>
+<li><code>smat_auto_limit</code>: the <code>limit_dist="auto"</code> value for a scoring matrix</li>
+</ul>
+<div class="language-r highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># The 20 nearest neighbours of every neuron, never materialising the n x n matrix.</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">nn</span><span class="w"> </span><span class="o">&lt;-</span><span class="w"> </span><span class="nf">nblast_knn</span><span class="p">(</span><span class="n">points</span><span class="p">,</span><span class="w"> </span><span class="n">vects</span><span class="p">,</span><span class="w"> </span><span class="n">k</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">20</span><span class="p">)</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">nn</span><span class="o">$</span><span class="n">idx</span><span class="p">[</span><span class="m">1</span><span class="p">,</span><span class="w"> </span><span class="p">]</span><span class="w">      </span><span class="c1"># 1-based neighbour indices, best first (NA-padded if short)</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">nn</span><span class="o">$</span><span class="n">scores</span><span class="p">[</span><span class="m">1</span><span class="p">,</span><span class="w"> </span><span class="p">]</span><span class="w">   </span><span class="c1"># their exact NBLAST scores</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="c1"># Query vs target: `idx` then indexes the targets.</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="n">nn</span><span class="w"> </span><span class="o">&lt;-</span><span class="w"> </span><span class="nf">nblast_knn</span><span class="p">(</span><span class="n">q_points</span><span class="p">,</span><span class="w"> </span><span class="n">q_vects</span><span class="p">,</span><span class="w"> </span><span class="n">target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">t_points</span><span class="p">,</span><span class="w"> </span><span class="n">target_vects</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">t_vects</span><span class="p">,</span><span class="w"> </span><span class="n">k</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">5</span><span class="p">)</span>
+</span></code></pre></div>
+<p>Only <em>which</em> neurons make the shortlist is approximate; every returned score is an
+exact NBLAST value. <code>symmetry</code> defaults to <code>"mean"</code> here (unlike the matrix
+functions) because the combine has to happen <strong>before</strong> the top-<code>k</code> cut — once
+only <code>k</code> neighbours per row survive there is no transpose left to symmetrise
+against. <code>n_candidates</code> (default <code>200</code>) trades recall against cost: on 163,976
+real neurons recall@20 was 0.91 at 50, 0.97 at 100 and 0.99 at 200. Unlike the
+Python bindings, <code>idx</code> is <strong>1-based</strong> and short rows are padded with <code>NA</code> rather
+than <code>-1</code> / <code>-Inf</code>.</p>
+<p><strong>Clustering</strong></p>
+<ul>
+<li><code>nblast_hclust</code>: cluster a score matrix, returning an <code>hclust</code></li>
+<li><code>nblast_dist</code>: condensed distances from a score matrix, as a <code>dist</code></li>
+<li><code>fast_hclust</code>: cluster an existing <code>dist</code>, without the 65536 limit</li>
+</ul>
+<div class="language-r highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">scores</span><span class="w"> </span><span class="o">&lt;-</span><span class="w"> </span><span class="nf">nblast_allbyall</span><span class="p">(</span><span class="n">points</span><span class="p">,</span><span class="w"> </span><span class="n">vects</span><span class="p">,</span><span class="w"> </span><span class="kc">...</span><span class="p">)</span><span class="w">   </span><span class="c1"># (n, n) score matrix</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="c1"># Symmetrise, 1 - score, condense and cluster - in one fused pass.</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="n">h</span><span class="w"> </span><span class="o">&lt;-</span><span class="w"> </span><span class="nf">nblast_hclust</span><span class="p">(</span><span class="n">scores</span><span class="p">,</span><span class="w"> </span><span class="n">method</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;ward&quot;</span><span class="p">)</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="c1"># A standard hclust object, so the rest of R just works.</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="n">groups</span><span class="w"> </span><span class="o">&lt;-</span><span class="w"> </span><span class="nf">cutree</span><span class="p">(</span><span class="n">h</span><span class="p">,</span><span class="w"> </span><span class="n">k</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">10</span><span class="p">)</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="nf">plot</span><span class="p">(</span><span class="n">h</span><span class="p">)</span>
+</span></code></pre></div>
+<p>Two things this buys you over the idiomatic spelling:</p>
+<ul>
+<li><strong>No size ceiling.</strong> <code>stats::hclust</code> refuses more than 65536 observations —
+  a hard blocker at whole-brain scale, where 100k–200k neurons is routine.
+  <code>nblast_hclust</code> and <code>fast_hclust</code> are bounded only by memory.</li>
+<li><strong>No <code>n × n</code> temporaries.</strong> <code>hclust(as.dist(1 - (m + t(m)) / 2))</code> materialises
+  three more full matrices before clustering starts. Here symmetrising, the
+  distance transform and condensing are fused into a single pass, and the
+  condensed buffer is then clustered in place.</li>
+</ul>
+<p>Method names follow SciPy, so <code>"ward"</code> is R's <code>"ward.D2"</code> and <code>"weighted"</code> is
+R's <code>"mcquitty"</code>. Note <code>"centroid"</code> and <code>"median"</code> take <strong>plain</strong> distances here,
+whereas <code>stats::hclust</code> expects squared ones for those two.</p>
+<p><strong>CMTK transforms</strong> — see <a href="../python/cmtk/">CMTK transforms</a> for the full story</p>
+<ul>
+<li><code>cmtk_read</code>: read a CMTK <code>.list</code> registration (or a chain of them)</li>
+<li><code>cmtk_xform</code> / <code>cmtk_xform_inv</code>: apply it to points, forwards / backwards</li>
+<li><code>cmtk_affine</code>, <code>cmtk_domain</code>, <code>cmtk_dims</code>, <code>cmtk_spacing</code>, <code>cmtk_versions</code>: properties</li>
+</ul>
+<p>CMTK itself does <strong>not</strong> need to be installed — no shelling out to <code>streamxform</code>:</p>
+<div class="language-r highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">reg</span><span class="w"> </span><span class="o">&lt;-</span><span class="w"> </span><span class="nf">cmtk_read</span><span class="p">(</span><span class="s">&quot;JFRC2_FCWB.list&quot;</span><span class="p">)</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="n">n</span><span class="w"> </span><span class="o">&lt;-</span><span class="w"> </span><span class="n">Cell07PNs</span><span class="p">[[</span><span class="m">1</span><span class="p">]]</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="nf">xyzmatrix</span><span class="p">(</span><span class="n">n</span><span class="p">)</span><span class="w"> </span><span class="o">&lt;-</span><span class="w"> </span><span class="nf">cmtk_xform</span><span class="p">(</span><span class="n">reg</span><span class="p">,</span><span class="w"> </span><span class="nf">xyzmatrix</span><span class="p">(</span><span class="n">n</span><span class="p">))</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="c1"># points outside the registration&#39;s domain come back as NaN, exactly as CMTK</span>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="c1"># reports them as FAILED</span>
+</span></code></pre></div>
+<p>Direction is chosen per call, so one object serves both ways round and the file is parsed
+once. <code>invert</code> is <em>per hop</em> — unlike <code>cmtk_xform_inv</code>, which reverses the whole chain — so
+it is the only way to express a mixed-direction traversal:</p>
+<div class="language-r highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">back</span><span class="w">  </span><span class="o">&lt;-</span><span class="w"> </span><span class="nf">cmtk_xform</span><span class="p">(</span><span class="n">reg</span><span class="p">,</span><span class="w"> </span><span class="n">pts</span><span class="p">,</span><span class="w"> </span><span class="n">invert</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">TRUE</span><span class="p">)</span><span class="w">          </span><span class="c1"># same parse, other direction</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">chain</span><span class="w"> </span><span class="o">&lt;-</span><span class="w"> </span><span class="nf">cmtk_read</span><span class="p">(</span><span class="nf">c</span><span class="p">(</span><span class="s">&quot;A_B.list&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;C_B.list&quot;</span><span class="p">))</span><span class="w">         </span><span class="c1"># A -&gt; B -&gt; C, 2nd stored as C-&gt;B</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">mixed</span><span class="w"> </span><span class="o">&lt;-</span><span class="w"> </span><span class="nf">cmtk_xform</span><span class="p">(</span><span class="n">chain</span><span class="p">,</span><span class="w"> </span><span class="n">pts</span><span class="p">,</span><span class="w"> </span><span class="n">invert</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nf">c</span><span class="p">(</span><span class="kc">FALSE</span><span class="p">,</span><span class="w"> </span><span class="kc">TRUE</span><span class="p">))</span>
+</span></code></pre></div>
+<p><strong>Elastix transforms</strong> — see <a href="../python/elastix/">Elastix transforms</a> for the full story</p>
+<ul>
+<li><code>elastix_read</code>: read a <code>TransformParameters</code> file (its initial-transform chain is followed
+  automatically, however deep)</li>
+<li><code>elastix_xform</code> / <code>elastix_xform_inv</code>: apply it to points, forwards / backwards</li>
+<li><code>elastix_probe_invertible</code>: can it be inverted? Answered without reading the coefficients —
+  ~20x faster than a full read, for labelling many files at once</li>
+<li><code>elastix_affine</code>, <code>elastix_kinds</code>, <code>elastix_grid_size</code>, <code>elastix_grid_spacing</code>,
+  <code>elastix_grid_origin</code>: properties</li>
+</ul>
+<p>Elastix itself does <strong>not</strong> need to be installed — no shelling out to <code>transformix</code>:</p>
+<div class="language-r highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">xf</span><span class="w"> </span><span class="o">&lt;-</span><span class="w"> </span><span class="nf">elastix_read</span><span class="p">(</span><span class="s">&quot;TransformParameters.FixedFANC.txt&quot;</span><span class="p">)</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="nf">xyzmatrix</span><span class="p">(</span><span class="n">n</span><span class="p">)</span><span class="w"> </span><span class="o">&lt;-</span><span class="w"> </span><span class="nf">elastix_xform</span><span class="p">(</span><span class="n">xf</span><span class="p">,</span><span class="w"> </span><span class="nf">xyzmatrix</span><span class="p">(</span><span class="n">n</span><span class="p">))</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="c1"># NB the opposite convention to CMTK: points outside the control-point grid come back</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="c1"># *unchanged*, which is what Elastix does. Pass out_of_bounds = &quot;nan&quot; to see the boundary.</span>
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="n">back</span><span class="w"> </span><span class="o">&lt;-</span><span class="w"> </span><span class="nf">elastix_xform_inv</span><span class="p">(</span><span class="n">xf</span><span class="p">,</span><span class="w"> </span><span class="nf">xyzmatrix</span><span class="p">(</span><span class="n">n</span><span class="p">))</span><span class="w">   </span><span class="c1"># Elastix itself cannot invert at all</span>
+</span></code></pre></div>
+<p>As with CMTK, direction is chosen per call — <code>elastix_xform(xf, pts, invert = TRUE)</code> — so a
+transform and its inverse share one parse. That matters when the warp is tens of megabytes.</p>
+<p><strong>Landmark transforms</strong> — see <a href="../python/landmarks/">Landmark transforms</a> for the full story</p>
+<p>When there is no image registration, only matched landmarks:</p>
+<ul>
+<li><code>tps_transform</code> / <code>tps_xform</code>: fit a thin-plate spline and apply it. This is <code>nat</code>'s
+  <code>tpsreg</code>, without the fit being repeated on every call.</li>
+<li><code>mls_transform</code> / <code>mls_xform</code>: moving least squares — every point gets its own locally
+  weighted affine, so there is no fit at all.</li>
+<li><code>tps_affine</code>, <code>mls_affine</code>: the global affine each converges to far from the landmarks</li>
+<li><code>tps_coefs</code>: the fit itself (<code>W</code> and <code>A</code>), if you want to store it rather than repeat it</li>
+</ul>
+<div class="language-r highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="n">lm</span><span class="w"> </span><span class="o">&lt;-</span><span class="w"> </span><span class="nf">read.csv</span><span class="p">(</span><span class="s">&quot;mirror_landmarks.csv&quot;</span><span class="p">)</span><span class="w">          </span><span class="c1"># x/y/z columns are found by name</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="n">tps</span><span class="w"> </span><span class="o">&lt;-</span><span class="w"> </span><span class="nf">tps_transform</span><span class="p">(</span><span class="n">lm</span><span class="p">[,</span><span class="w"> </span><span class="m">1</span><span class="o">:</span><span class="m">3</span><span class="p">],</span><span class="w"> </span><span class="n">lm</span><span class="p">[,</span><span class="w"> </span><span class="m">4</span><span class="o">:</span><span class="m">6</span><span class="p">])</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="nf">xyzmatrix</span><span class="p">(</span><span class="n">n</span><span class="p">)</span><span class="w"> </span><span class="o">&lt;-</span><span class="w"> </span><span class="nf">tps_xform</span><span class="p">(</span><span class="n">tps</span><span class="p">,</span><span class="w"> </span><span class="nf">xyzmatrix</span><span class="p">(</span><span class="n">n</span><span class="p">))</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="c1"># moving least squares instead; &quot;inverse&quot; is free here, unlike refitting a spline</span>
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="n">mls</span><span class="w"> </span><span class="o">&lt;-</span><span class="w"> </span><span class="nf">mls_transform</span><span class="p">(</span><span class="n">lm</span><span class="p">[,</span><span class="w"> </span><span class="m">1</span><span class="o">:</span><span class="m">3</span><span class="p">],</span><span class="w"> </span><span class="n">lm</span><span class="p">[,</span><span class="w"> </span><span class="m">4</span><span class="o">:</span><span class="m">6</span><span class="p">],</span><span class="w"> </span><span class="n">direction</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;inverse&quot;</span><span class="p">)</span>
+</span></code></pre></div>
+<p>Neither builds the <code>points x landmarks</code> matrix the reference implementations do, so there is
+no batch size to tune and the landmark count is not bounded by memory.</p>
+<h2 id="function-reference">Function reference<a class="headerlink" href="#function-reference" title="Permanent link">&para;</a></h2>
+<p>Per-function documentation is generated from the package's roxygen docs and
+published by R-universe:</p>
+<p><a class="md-button" href="https://schlegelp.r-universe.dev/nat.fastcore"><strong>nat.fastcore reference on R-universe</strong></a></p>
+<p>From R, the usual <code>?geodesic_distances</code> works too.</p>
+<div class="admonition note">
+<p class="admonition-title">Differences from the Python bindings</p>
+<p><code>prune_twigs</code> has no <code>mask</code> argument in R (extendr cannot take a <code>Vec&lt;bool&gt;</code>).
+Conversely, R exposes several functions that Python keeps internal or folds
+into keyword arguments — <code>node_indices</code>, <code>child_to_parent_dists</code>,
+<code>all_dists_to_root</code>, <code>dist_to_root</code>, <code>has_cycles</code>, <code>reroot_rewire</code>,
+<code>nblast_pairs</code>, <code>synblast_allbyall</code> and <code>smat_auto_limit</code>. See the
+<a href="../#whats-available-where">capability matrix</a>.</p>
+</div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-circle-arrow-up" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m16 12-4-4-4 4M12 16V8"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://zensical.org/" target="_blank" rel="noopener">
+      Zensical
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["content.action.edit","content.code.annotate","content.code.copy","content.tabs.link","navigation.indexes","navigation.instant","navigation.top","search.highlight","toc.follow"],"search":"../assets/javascripts/workers/search.b6b7e04f.min.js","tags":null,"translations":{"clipboard.copied":"Copied to clipboard","clipboard.copy":"Copy to clipboard","search.result.more.one":"1 more on this page","search.result.more.other":"# more on this page","search.result.none":"No matching documents","search.result.one":"1 matching document","search.result.other":"# matching documents","search.result.placeholder":"Type to start searching","search.result.term.missing":"Missing","select.version":"Select version"},"version":null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7f30b55.min.js"></script>
+      
+    
+  </body>
+</html>

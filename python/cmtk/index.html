@@ -1,0 +1,2445 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Fast Rust implementations of navis/nat core functions, with Python and R bindings.">
+      
+      
+      
+        <link rel="canonical" href="https://schlegelp.github.io/fastcore-rs/python/cmtk/">
+      
+      
+        <link rel="prev" href="../nblast/">
+      
+      
+        <link rel="next" href="../elastix/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="zensical-0.0.51">
+    
+    
+      
+        <title>CMTK transforms - fastcore-rs</title>
+      
+    
+    
+      
+        
+      
+      <link rel="stylesheet" href="../../assets/stylesheets/modern/main.62c9b9cc.min.css">
+      
+        
+          
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/modern/palette.dfe2e883.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_scope.pathname.endsWith("/")||(__md_scope=new URL(__md_scope.pathname+"/",location)),__md_hash=e=>[...e].reduce(((e,t)=>(e<<5)-e+t.charCodeAt(0)),0),__md_get=(e,t=localStorage,_=__md_scope)=>JSON.parse(t.getItem(_.pathname+"."+e)),__md_set=(e,t,_=localStorage,a=__md_scope)=>{try{_.setItem(a.pathname+"."+e,JSON.stringify(t))}catch(e){}},document.documentElement.setAttribute("data-platform",navigator.platform)</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer" aria-label="Navigation"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#cmtk-transforms" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="fastcore-rs" class="md-header__button md-logo" aria-label="fastcore-rs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 7v14M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer" aria-label="Navigation">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-menu" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            fastcore-rs
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              CMTK transforms
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="none" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="none" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-moon" viewBox="0 0 24 24"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search" aria-label="Search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog" aria-label="Search">
+  <button type="button" class="md-search__button">
+    Search
+  </button>
+</div>
+      
+    
+    <div class="md-header__source">
+      
+        <a href="https://github.com/schlegelp/fastcore-rs" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    schlegelp/fastcore-rs
+  </div>
+</a>
+      
+    </div>
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="fastcore-rs" class="md-nav__button md-logo" aria-label="fastcore-rs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 7v14M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg>
+
+    </a>
+    fastcore-rs
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/schlegelp/fastcore-rs" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    schlegelp/fastcore-rs
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Home
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Concepts
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+  Concepts
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/trees/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Rooted trees
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/nblast/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  NBLAST
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Python (navis-fastcore)
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+  Python (navis-fastcore)
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../geodesic/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Geodesic distances
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Connected components
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../morphology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Morphology
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../segments/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Segments
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mesh/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Mesh
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../healing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Healing
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../nblast/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  NBLAST
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  CMTK transforms
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="././" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  CMTK transforms
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#chaining-and-direction" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Chaining, and direction
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#failed-points-are-nan-and-that-is-deliberate" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Failed points are <code>NaN</code>, and that is deliberate
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Failed points are NaN, and that is deliberate">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#on-a-chain-what-falls-back-matters" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        On a chain, <em>what</em> falls back matters
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#accuracy" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Accuracy
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#speed" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Speed
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#api" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        API
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#navis_fastcore.CmtkRegistration" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        CmtkRegistration
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="CmtkRegistration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.CmtkRegistration.affine" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        affine
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.CmtkRegistration.dims" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        dims
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.CmtkRegistration.has_spline" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        has_spline
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.CmtkRegistration.paths" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        paths
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.CmtkRegistration.spacing" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        spacing
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.CmtkRegistration.version" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        version
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.CmtkRegistration.xform" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        xform
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.CmtkRegistration.xform_inv" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        xform_inv
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#navis_fastcore.load_cmtk_registration" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        load_cmtk_registration
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../elastix/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Elastix transforms
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../landmarks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Landmark transforms
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../wrappers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Scipy wrappers
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../r/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  R (nat.fastcore)
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../rust/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Rust (fastcore crate)
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  
+                    
+                    
+                    
+                      
+                    
+                    
+                      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+                      <div class="md-sidebar-button__wrapper">
+                        <label class="md-sidebar-button" for="__toc"></label>
+                      </div>
+                    
+                  
+                  <div class="md-sidebar__inner">
+                    
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#chaining-and-direction" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Chaining, and direction
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#failed-points-are-nan-and-that-is-deliberate" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Failed points are <code>NaN</code>, and that is deliberate
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Failed points are NaN, and that is deliberate">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#on-a-chain-what-falls-back-matters" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        On a chain, <em>what</em> falls back matters
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#accuracy" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Accuracy
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#speed" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Speed
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#api" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        API
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#navis_fastcore.CmtkRegistration" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        CmtkRegistration
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="CmtkRegistration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.CmtkRegistration.affine" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        affine
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.CmtkRegistration.dims" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        dims
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.CmtkRegistration.has_spline" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        has_spline
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.CmtkRegistration.paths" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        paths
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.CmtkRegistration.spacing" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        spacing
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.CmtkRegistration.version" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        version
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.CmtkRegistration.xform" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        xform
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#navis_fastcore.CmtkRegistration.xform_inv" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        xform_inv
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#navis_fastcore.load_cmtk_registration" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        load_cmtk_registration
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+  
+    <a href="https://github.com/schlegelp/fastcore-rs/edit/main/docs/python/cmtk.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-file-pen" viewBox="0 0 24 24"><path d="M12.659 22H18a2 2 0 0 0 2-2V8a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 14 2H6a2 2 0 0 0-2 2v9.34"/><path d="M14 2v5a1 1 0 0 0 1 1h5M10.378 12.622a1 1 0 0 1 3 3.003L8.36 20.637a2 2 0 0 1-.854.506l-2.867.837a.5.5 0 0 1-.62-.62l.836-2.869a2 2 0 0 1 .506-.853z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="cmtk-transforms">CMTK transforms<a class="headerlink" href="#cmtk-transforms" title="Permanent link">&para;</a></h1>
+<p><a href="https://www.nitrc.org/projects/cmtk">CMTK</a> registrations are how <em>Drosophila</em>
+connectomics bridges between template brain spaces — JFRC2 → FCWB and friends. A
+registration is a 12-DOF affine, usually followed by a cubic B-spline warp on a
+control-point lattice.</p>
+<p><a href="#navis_fastcore.CmtkRegistration"><code>CmtkRegistration</code></a> reads one and applies it to points.
+<strong>CMTK itself does not need to be installed</strong>: unlike <code>nat</code> and <code>navis</code>, this does not shell
+out to the <code>streamxform</code> binary.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">navis_fastcore</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">fastcore</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">reg</span> <span class="o">=</span> <span class="n">fastcore</span><span class="o">.</span><span class="n">CmtkRegistration</span><span class="p">(</span><span class="s2">&quot;JFRC2_FCWB.list&quot;</span><span class="p">)</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">xf</span> <span class="o">=</span> <span class="n">reg</span><span class="o">.</span><span class="n">xform</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>          <span class="c1"># (N, 3) -&gt; (N, 3)</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="n">back</span> <span class="o">=</span> <span class="n">reg</span><span class="o">.</span><span class="n">xform_inv</span><span class="p">(</span><span class="n">xf</span><span class="p">)</span>        <span class="c1"># and back again</span>
+</span></code></pre></div>
+<p>The path may be a <code>*.list</code> directory or a <code>registration</code> file itself, plain or gzipped.</p>
+<h2 id="chaining-and-direction">Chaining, and direction<a class="headerlink" href="#chaining-and-direction" title="Permanent link">&para;</a></h2>
+<p>Pass a list to compose registrations, applied left to right.</p>
+<p><strong>Direction is chosen per call, not per object.</strong> The registration you load holds only the
+<em>parse</em>, so one instance serves every direction — you never pay to read a file twice just to
+walk it the other way.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">chain</span> <span class="o">=</span> <span class="n">fastcore</span><span class="o">.</span><span class="n">CmtkRegistration</span><span class="p">([</span><span class="s2">&quot;A_B.list&quot;</span><span class="p">,</span> <span class="s2">&quot;B_C.list&quot;</span><span class="p">])</span>   <span class="c1"># A -&gt; B -&gt; C</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">chain</span><span class="o">.</span><span class="n">xform</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>                            <span class="c1"># forwards</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="n">chain</span><span class="o">.</span><span class="n">xform_inv</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>                        <span class="c1"># the whole composition, backwards</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="n">chain</span><span class="o">.</span><span class="n">xform</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">invert</span><span class="o">=</span><span class="p">[</span><span class="kc">False</span><span class="p">,</span> <span class="kc">True</span><span class="p">])</span>      <span class="c1"># hop 0 forwards, hop 1 backwards</span>
+</span></code></pre></div>
+<p>Those last two are <strong>not</strong> the same knob, and the difference bites on a chain. <code>xform_inv</code>
+inverts the whole composition — it reverses the order <em>and</em> flips every hop. <code>invert</code> flips
+hops in place, keeping the order. For a single registration they agree; for a chain they do
+not, and only <code>invert</code> can express a <strong>mixed-direction</strong> traversal — which is exactly what a
+bridging graph hands you, since an edge may be stored in either direction:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># A -&gt; B -&gt; C, where the second registration happens to be stored as C-&gt;B</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">chain</span> <span class="o">=</span> <span class="n">fastcore</span><span class="o">.</span><span class="n">CmtkRegistration</span><span class="p">([</span><span class="s2">&quot;A_B.list&quot;</span><span class="p">,</span> <span class="s2">&quot;C_B.list&quot;</span><span class="p">])</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">chain</span><span class="o">.</span><span class="n">xform</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">invert</span><span class="o">=</span><span class="p">[</span><span class="kc">False</span><span class="p">,</span> <span class="kc">True</span><span class="p">])</span>
+</span></code></pre></div>
+<h2 id="failed-points-are-nan-and-that-is-deliberate">Failed points are <code>NaN</code>, and that is deliberate<a class="headerlink" href="#failed-points-are-nan-and-that-is-deliberate" title="Permanent link">&para;</a></h2>
+<p>A registration is only defined over a finite <strong>domain box</strong> — the volume the template brain
+occupies. CMTK reports any point outside it as <code>FAILED</code>; we return <code>NaN</code>.</p>
+<p>This applies in both directions:</p>
+<ul>
+<li><strong>Forward</strong>: points outside the domain box are <code>NaN</code>. Pass <code>allow_extrapolation=True</code> to
+  get a value anyway, by clamping to the outermost control points.</li>
+<li><strong>Inverse</strong>: some points have no preimage <em>inside</em> the domain. Pass
+  <code>clamp_to_domain=False</code> to find preimages outside it.</li>
+</ul>
+<p>Both escape hatches make you <strong>disagree with CMTK</strong>, so use them knowingly. The default in
+each case is to return <code>NaN</code>, because returning a plausible-looking number from a warp that
+was never fitted at that location is worse than returning nothing — it would silently
+diverge from every other CMTK-based tool.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">faithful</span> <span class="o">=</span> <span class="n">reg</span><span class="o">.</span><span class="n">xform</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>                              <span class="c1"># NaN outside the domain</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">loose</span>    <span class="o">=</span> <span class="n">reg</span><span class="o">.</span><span class="n">xform</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">allow_extrapolation</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>    <span class="c1"># extrapolates instead</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">faithful</span> <span class="o">=</span> <span class="n">reg</span><span class="o">.</span><span class="n">xform_inv</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>                          <span class="c1"># NaN where CMTK says FAILED</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="n">loose</span>    <span class="o">=</span> <span class="n">reg</span><span class="o">.</span><span class="n">xform_inv</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">clamp_to_domain</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>   <span class="c1"># finds out-of-domain preimages</span>
+</span></code></pre></div>
+<p><code>fallback_to_affine=True</code> is a middle road: points the warp cannot place fall back to the
+affine component rather than becoming <code>NaN</code>. It works in <strong>both</strong> directions, and on either
+method — a hop travelled backwards (<code>invert=True</code>, or <code>xform_inv</code>) falls back to the
+<em>inverse</em> affine, so the rescued point still lands in the space you asked for.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">reg</span><span class="o">.</span><span class="n">xform</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">fallback_to_affine</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>                     <span class="c1"># out-of-domain -&gt; affine</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">reg</span><span class="o">.</span><span class="n">xform</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">invert</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">fallback_to_affine</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>        <span class="c1"># ...-&gt; inverse affine</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">reg</span><span class="o">.</span><span class="n">xform_inv</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">fallback_to_affine</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>                 <span class="c1"># ...same</span>
+</span></code></pre></div>
+<h3 id="on-a-chain-what-falls-back-matters">On a chain, <em>what</em> falls back matters<a class="headerlink" href="#on-a-chain-what-falls-back-matters" title="Permanent link">&para;</a></h3>
+<p>Say a point clears hop 1 but its image lands outside hop 2's domain. There are two defensible
+things to do, and they are <strong>not</strong> close together — on a two-hop JFRC2→FCWB chain they differ
+by a median of 6.4 and up to 18 world units:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>what it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>fallback_to_affine=True</code> (= <code>"chain"</code>)</td>
+<td>Re-runs the <strong>whole chain</strong> affine-only, from the <em>original</em> point. The good hop-1 warp is discarded along with the hop-2 failure.</td>
+</tr>
+<tr>
+<td><code>fallback_to_affine="hop"</code></td>
+<td>Keeps the hop-1 warp and swaps the affine in for <strong>only</strong> the hop that failed.</td>
+</tr>
+</tbody>
+</table>
+<p><code>"chain"</code> is the default because it is what <code>nat</code> and <code>navis</code> do: they hand the failed rows
+straight back to <code>streamxform --affine-only</code> over the same registration list, and (verified
+against the binary) <code>--affine-only</code> composes the affine of <em>every</em> registration in that list.</p>
+<p><code>"hop"</code> is arguably the better answer — throwing away a perfectly good hop-1 warp because hop
+2 ran out of domain is crude. But it is a <strong>silent</strong> departure from every other CMTK-based
+tool, so you have to name it. On a single registration the two are identical.</p>
+<h2 id="accuracy">Accuracy<a class="headerlink" href="#accuracy" title="Permanent link">&para;</a></h2>
+<p>Validated against the <strong><code>streamxform</code> binary itself</strong> (CMTK 3.3.1) on 5000 points spanning
+the domain and well beyond it. All four paths — affine and warp, forward and inverse — agree
+to <strong>5e-7</strong>, which is <code>streamxform</code>'s own print precision, and the set of points it reports
+as <code>FAILED</code> is reproduced <em>exactly</em>.</p>
+<h2 id="speed">Speed<a class="headerlink" href="#speed" title="Permanent link">&para;</a></h2>
+<p>Measured against <code>streamxform</code> on the same machine (14 cores), 100k points:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><code>streamxform</code></th>
+<th>fastcore (1 core)</th>
+<th>fastcore (all cores)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Affine</td>
+<td>8.07 µs/pt</td>
+<td>0.006 µs/pt (<strong>1300×</strong>)</td>
+<td>0.005 µs/pt (<strong>1600×</strong>)</td>
+</tr>
+<tr>
+<td>Warp, forward</td>
+<td>8.28 µs/pt</td>
+<td>0.061 µs/pt (<strong>135×</strong>)</td>
+<td>0.013 µs/pt (<strong>644×</strong>)</td>
+</tr>
+<tr>
+<td>Warp, inverse</td>
+<td>50.8 µs/pt</td>
+<td>1.58 µs/pt (<strong>32×</strong>)</td>
+<td>0.157 µs/pt (<strong>323×</strong>)</td>
+</tr>
+</tbody>
+</table>
+<p><code>streamxform</code> is a separate process, so it also pays ~15 ms of startup per call — which
+dominates for small point sets. Transforming 10 points costs it 15.6 ms and us 0.03 ms.</p>
+<h2 id="api">API<a class="headerlink" href="#api" title="Permanent link">&para;</a></h2>
+
+
+<div class="doc doc-object doc-class">
+
+
+
+<h2 id="navis_fastcore.CmtkRegistration" class="doc doc-heading">
+            <code>navis_fastcore.CmtkRegistration</code>
+
+
+<a href="#navis_fastcore.CmtkRegistration" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+    <div class="doc doc-contents first">
+
+
+
+        <p>A CMTK registration - or a chain of them - ready to apply to points.</p>
+<p>A registration is parsed once, on construction, and can then be applied any number of
+times. It consists of a 12-DOF affine and, usually, a cubic B-spline warp on a
+control-point lattice.</p>
+<p>Unlike <code>nat</code>/<code>navis</code>, this does not shell out to CMTK's <code>streamxform</code> binary: CMTK
+does not need to be installed. Results match <code>streamxform</code> to ~1e-7, including its
+convention of failing (here: returning <code>NaN</code>) on points whose inverse does not
+converge.</p>
+
+
+<table>
+      <thead>
+        <tr>
+          <th><span class="doc-section-title">PARAMETER</span></th>
+          <th><span>DESCRIPTION</span></th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>path</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>    Path to a CMTK ``*.list`` registration directory, or to a ``registration``
+    file itself (plain or gzipped). Pass a list to build a chain, applied in
+    order: ``points -&gt; path[0] -&gt; path[1] -&gt; ... -&gt; output``.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>     str | pathlib.Path | list thereof</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>Direction</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                
+              </div>
+              <p>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>files</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                
+              </div>
+              <p>
+              </p>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<table>
+      <thead>
+        <tr>
+          <th><span class="doc-section-title">ATTRIBUTE</span></th>
+          <th><span>DESCRIPTION</span></th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td><code><a class="autorefs autorefs-internal" title="&lt;code class=&quot;highlight language-python&quot;&gt;&lt;span class=&quot;n&quot;&gt;affine&lt;/span&gt;&lt;/code&gt;
+
+  &lt;span class=&quot;doc doc-labels&quot;&gt;
+      &lt;small class=&quot;doc doc-label doc-label-property&quot;&gt;&lt;code&gt;property&lt;/code&gt;&lt;/small&gt;
+  &lt;/span&gt;" href="./#navis_fastcore.CmtkRegistration.affine">affine</a></code></td>
+            <td class="doc-attribute-details">
+              <div class="doc-md-description">
+                <p>The affine matrix of the first registration in the chain.</p>
+              </div>
+              <p>
+                  <span class="doc-attribute-annotation">
+                    <b>TYPE:</b>
+                      <code>(4, 4) np.ndarray</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><a class="autorefs autorefs-internal" title="&lt;code class=&quot;highlight language-python&quot;&gt;&lt;span class=&quot;n&quot;&gt;dims&lt;/span&gt;&lt;/code&gt;
+
+  &lt;span class=&quot;doc doc-labels&quot;&gt;
+      &lt;small class=&quot;doc doc-label doc-label-property&quot;&gt;&lt;code&gt;property&lt;/code&gt;&lt;/small&gt;
+  &lt;/span&gt;" href="./#navis_fastcore.CmtkRegistration.dims">dims</a></code></td>
+            <td class="doc-attribute-details">
+              <div class="doc-md-description">
+                <p>Control-point lattice dimensions of each spline warp in the chain.</p>
+              </div>
+              <p>
+                  <span class="doc-attribute-annotation">
+                    <b>TYPE:</b>
+                      <code>(k, 3) np.ndarray</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><a class="autorefs autorefs-internal" title="&lt;code class=&quot;highlight language-python&quot;&gt;&lt;span class=&quot;n&quot;&gt;spacing&lt;/span&gt;&lt;/code&gt;
+
+  &lt;span class=&quot;doc doc-labels&quot;&gt;
+      &lt;small class=&quot;doc doc-label doc-label-property&quot;&gt;&lt;code&gt;property&lt;/code&gt;&lt;/small&gt;
+  &lt;/span&gt;" href="./#navis_fastcore.CmtkRegistration.spacing">spacing</a></code></td>
+            <td class="doc-attribute-details">
+              <div class="doc-md-description">
+                <p>Control-point spacing of each spline warp in the chain.</p>
+              </div>
+              <p>
+                  <span class="doc-attribute-annotation">
+                    <b>TYPE:</b>
+                      <code>(k, 3) np.ndarray</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><a class="autorefs autorefs-internal" title="&lt;code class=&quot;highlight language-python&quot;&gt;&lt;span class=&quot;n&quot;&gt;version&lt;/span&gt;&lt;/code&gt;
+
+  &lt;span class=&quot;doc doc-labels&quot;&gt;
+      &lt;small class=&quot;doc doc-label doc-label-property&quot;&gt;&lt;code&gt;property&lt;/code&gt;&lt;/small&gt;
+  &lt;/span&gt;" href="./#navis_fastcore.CmtkRegistration.version">version</a></code></td>
+            <td class="doc-attribute-details">
+              <div class="doc-md-description">
+                <p>CMTK TypedStream version of each registration.</p>
+              </div>
+              <p>
+                  <span class="doc-attribute-annotation">
+                    <b>TYPE:</b>
+                      <code>list of str</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Examples:</span></p>
+    <div class="language-pycon highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">&gt;&gt;&gt; </span><span class="kn">import</span><span class="w"> </span><span class="nn">navis_fastcore</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">fastcore</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="gp">&gt;&gt;&gt; </span><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">reg</span> <span class="o">=</span> <span class="n">fastcore</span><span class="o">.</span><span class="n">CmtkRegistration</span><span class="p">(</span><span class="s2">&quot;JFRC2_FCWB.list&quot;</span><span class="p">)</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">pts</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="mf">50.0</span><span class="p">,</span> <span class="mf">50.0</span><span class="p">,</span> <span class="mf">50.0</span><span class="p">],</span> <span class="p">[</span><span class="mf">100.0</span><span class="p">,</span> <span class="mf">100.0</span><span class="p">,</span> <span class="mf">20.0</span><span class="p">]])</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">xf</span> <span class="o">=</span> <span class="n">reg</span><span class="o">.</span><span class="n">xform</span><span class="p">(</span><span class="n">pts</span><span class="p">)</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">back</span> <span class="o">=</span> <span class="n">reg</span><span class="o">.</span><span class="n">xform_inv</span><span class="p">(</span><span class="n">xf</span><span class="p">)</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">np</span><span class="o">.</span><span class="n">allclose</span><span class="p">(</span><span class="n">back</span><span class="p">,</span> <span class="n">pts</span><span class="p">,</span> <span class="n">atol</span><span class="o">=</span><span class="mf">1e-4</span><span class="p">)</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="go">True</span>
+</span></code></pre></div>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="navis_fastcore.CmtkRegistration.affine" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">affine</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#navis_fastcore.CmtkRegistration.affine" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>The (4, 4) affine matrix of the first registration in the chain.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="navis_fastcore.CmtkRegistration.dims" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">dims</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#navis_fastcore.CmtkRegistration.dims" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Control-point lattice dimensions of each spline warp, as a (k, 3) array.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="navis_fastcore.CmtkRegistration.has_spline" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">has_spline</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#navis_fastcore.CmtkRegistration.has_spline" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Whether each registration carries a spline warp (vs. affine only).</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="navis_fastcore.CmtkRegistration.paths" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">paths</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#navis_fastcore.CmtkRegistration.paths" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>The paths this registration was loaded from.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="navis_fastcore.CmtkRegistration.spacing" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">spacing</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#navis_fastcore.CmtkRegistration.spacing" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Control-point spacing of each spline warp, as a (k, 3) array.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="navis_fastcore.CmtkRegistration.version" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">version</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#navis_fastcore.CmtkRegistration.version" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>CMTK TypedStream version of each registration in the chain.</p>
+
+    </div>
+
+</div>
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="navis_fastcore.CmtkRegistration.xform" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">xform</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">transform</span><span class="o">=</span><span class="s1">&#39;warp&#39;</span><span class="p">,</span> <span class="n">allow_extrapolation</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">fallback_to_affine</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">invert</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">n_cores</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">progress</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span></code>
+
+<a href="#navis_fastcore.CmtkRegistration.xform" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Transform points forward through the registration.</p>
+
+
+<table>
+      <thead>
+        <tr>
+          <th><span class="doc-section-title">PARAMETER</span></th>
+          <th><span>DESCRIPTION</span></th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>points</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>                Coordinates to transform. A single ``(3,)`` point is
+                accepted and returns a ``(3,)`` point.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>               (N, 3) array-like</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>transform</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>                ``&quot;warp&quot;`` (default) applies the full transformation.
+                ``&quot;affine&quot;`` applies only the affine component. A
+                registration with no spline warp uses its affine either way.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>            &#34;warp&#34; | &#34;affine&#34;</code>
+                  </span>
+                  <span class="doc-param-default">
+                    <b>DEFAULT:</b>
+                      <code>&#39;warp&#39;</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>allow_extrapolation</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>                Evaluate points outside the registration&#39;s domain box by
+                clamping to the outermost control points, instead of failing
+                them.
+
+                Defaults to ``False``, **which is what CMTK does**:
+                ``streamxform`` reports a point outside the domain as
+                ``FAILED``, and we return ``NaN``. Setting this to ``True``
+                gives every point *an* answer, but that answer extrapolates a
+                warp that was never fitted there, and it will silently
+                disagree with every other CMTK-based tool.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>  bool</code>
+                  </span>
+                  <span class="doc-param-default">
+                    <b>DEFAULT:</b>
+                      <code>False</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>fallback_to_affine</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>                Replace failed rows with the affine result rather than
+                ``NaN``. Only reachable when ``allow_extrapolation=False``,
+                since extrapolation otherwise never fails.
+
+                ``True`` (or ``&quot;chain&quot;``) re-runs the **whole chain**
+                affine-only, starting again from the *original* point. This is
+                what ``nat``/``navis`` do - they hand the failed rows back to
+                ``streamxform --affine-only`` over the same registration list -
+                so it is the default whenever a fallback is asked for.
+
+                ``&quot;hop&quot;`` instead swaps the affine in for **only the hop that
+                failed**, keeping the warps of the hops that succeeded.
+                Arguably the better answer, since discarding a perfectly good
+                hop-1 warp because hop 2 ran out of domain is crude - but it is
+                a silent departure from every other CMTK-based tool, so you
+                have to ask for it. On a single registration the two are
+                identical; on a chain they differ by a median of ~6 world
+                units.
+
+                Works in both directions: a hop travelled backwards falls back
+                to the *inverse* affine, so the rescued point still lands in
+                the space you asked for.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>   bool | &#34;chain&#34; | &#34;hop&#34;</code>
+                  </span>
+                  <span class="doc-param-default">
+                    <b>DEFAULT:</b>
+                      <code>False</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>invert</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>                Traverse a registration backwards. A single bool applies to
+                every hop; pass a list to set them per registration. This is
+                what you need when routing through a bridging graph, where an
+                edge may be walked in either direction - and a chain may need
+                some hops forwards and others backwards.
+
+                Note this is **not** the same as :meth:`xform_inv`, which
+                inverts the whole composition (reversing the order *and*
+                flipping every hop). For a single registration the two agree;
+                for a chain they do not, and only ``invert`` can express a
+                mixed-direction traversal.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>               bool | list of bool</code>
+                  </span>
+                  <span class="doc-param-default">
+                    <b>DEFAULT:</b>
+                      <code>False</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>n_cores</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>                Number of threads. ``None`` (default) uses all cores.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>              int</code>
+                  </span>
+                  <span class="doc-param-default">
+                    <b>DEFAULT:</b>
+                      <code>None</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>progress</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>                Show a progress bar.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>             bool</code>
+                  </span>
+                  <span class="doc-param-default">
+                    <b>DEFAULT:</b>
+                      <code>False</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<table>
+      <thead>
+        <tr>
+          <th><span class="doc-section-title">RETURNS</span></th>
+          <th><span>DESCRIPTION</span></th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <span class="doc-returns-annotation">
+                    <code>(N, 3) np.ndarray</code>
+                </span>
+            </td>
+            <td class="doc-returns-details">
+              <div class="doc-md-description">
+                <p>Transformed coordinates. Rows that could not be transformed
+are <code>NaN</code>.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="navis_fastcore.CmtkRegistration.xform_inv" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">xform_inv</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">transform</span><span class="o">=</span><span class="s1">&#39;warp&#39;</span><span class="p">,</span> <span class="n">initial_guess</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">max_iter</span><span class="o">=</span><span class="mi">50</span><span class="p">,</span> <span class="n">tolerance</span><span class="o">=</span><span class="mf">1e-09</span><span class="p">,</span> <span class="n">accuracy</span><span class="o">=</span><span class="mf">0.001</span><span class="p">,</span> <span class="n">clamp_to_domain</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">fallback_to_affine</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">invert</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">n_cores</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">progress</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span></code>
+
+<a href="#navis_fastcore.CmtkRegistration.xform_inv" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Transform points backwards through the registration.</p>
+<p>The affine part is inverted exactly. The spline warp has no closed-form inverse and
+is solved per point by damped Gauss-Newton against the analytic Jacobian. Points
+whose residual does not converge come back as <code>NaN</code> - this is deliberate, and
+matches CMTK's <code>streamxform</code>, which reports such points as <code>FAILED</code>.</p>
+
+
+<table>
+      <thead>
+        <tr>
+          <th><span class="doc-section-title">PARAMETER</span></th>
+          <th><span>DESCRIPTION</span></th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>points</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>            Coordinates to invert.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>           (N, 3) array-like</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>transform</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>            Which forward transform to invert.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>        &#34;warp&#34; | &#34;affine&#34;</code>
+                  </span>
+                  <span class="doc-param-default">
+                    <b>DEFAULT:</b>
+                      <code>&#39;warp&#39;</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>initial_guess</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>            Starting points for the solver. Defaults to ``points`` itself,
+            which is a good guess for any well-behaved registration. In a
+            chain, this seeds only the first solve.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>    (N, 3) array-like</code>
+                  </span>
+                  <span class="doc-param-default">
+                    <b>DEFAULT:</b>
+                      <code>None</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>max_iter</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>            Maximum Gauss-Newton iterations per point.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>         int</code>
+                  </span>
+                  <span class="doc-param-default">
+                    <b>DEFAULT:</b>
+                      <code>50</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>tolerance</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>            Stop once the step falls below this.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>        float</code>
+                  </span>
+                  <span class="doc-param-default">
+                    <b>DEFAULT:</b>
+                      <code>1e-09</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>accuracy</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>            Accept a solution only if its residual is within this of the
+            target; otherwise the row is ``NaN``.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>         float</code>
+                  </span>
+                  <span class="doc-param-default">
+                    <b>DEFAULT:</b>
+                      <code>0.001</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>clamp_to_domain</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>            Confine the iterate to the spline&#39;s domain box. **This is what
+            makes the result agree with CMTK.** Turning it off finds
+            preimages that lie outside the image domain, where ``streamxform``
+            reports failure - so you will get finite numbers where CMTK gives
+            you none.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>  bool</code>
+                  </span>
+                  <span class="doc-param-default">
+                    <b>DEFAULT:</b>
+                      <code>True</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>fallback_to_affine</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>            Replace rows the solver could not land with the *inverse* affine
+            result rather than ``NaN`` - the mirror of the same argument on
+            :meth:`xform`, with the same ``&quot;chain&quot;`` (default) and ``&quot;hop&quot;``
+            semantics.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/library/functions.html#bool">bool</a> | <span title="chain">chain</span> | <span title="hop">hop</span></code>
+                  </span>
+                  <span class="doc-param-default">
+                    <b>DEFAULT:</b>
+                      <code>False</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>invert</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>            The same per-hop flags as on :meth:`xform`, composed with this
+            whole-chain inversion: hop ``i`` runs *forwards* here exactly when
+            ``invert[i]`` is set.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>           bool | list of bool</code>
+                  </span>
+                  <span class="doc-param-default">
+                    <b>DEFAULT:</b>
+                      <code>False</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>n_cores</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>            Number of threads. ``None`` (default) uses all cores.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>          int</code>
+                  </span>
+                  <span class="doc-param-default">
+                    <b>DEFAULT:</b>
+                      <code>None</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>progress</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>            Show a progress bar.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>         bool</code>
+                  </span>
+                  <span class="doc-param-default">
+                    <b>DEFAULT:</b>
+                      <code>False</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<table>
+      <thead>
+        <tr>
+          <th><span class="doc-section-title">RETURNS</span></th>
+          <th><span>DESCRIPTION</span></th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <span class="doc-returns-annotation">
+                    <code>(N, 3) np.ndarray</code>
+                </span>
+            </td>
+            <td class="doc-returns-details">
+              <div class="doc-md-description">
+                <p>Inverse-transformed coordinates. Rows that did not converge are
+<code>NaN</code>.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="navis_fastcore.load_cmtk_registration" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">navis_fastcore</span><span class="o">.</span><span class="n">load_cmtk_registration</span><span class="p">(</span><span class="n">path</span><span class="p">)</span></code>
+
+<a href="#navis_fastcore.load_cmtk_registration" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+    <div class="doc doc-contents first">
+
+        <p>Load one or more CMTK registrations.</p>
+<p>A convenience wrapper around :class:<code>~navis_fastcore.CmtkRegistration</code>.</p>
+
+
+<table>
+      <thead>
+        <tr>
+          <th><span class="doc-section-title">PARAMETER</span></th>
+          <th><span>DESCRIPTION</span></th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>path</code>
+            </td>
+            <td class="doc-param-details">
+              <div class="doc-md-description">
+                <div class="language-text highlight"><pre><span></span><code>    Path to a CMTK ``*.list`` directory, or to a ``registration`` file itself
+    (plain or gzipped). A list builds a chain, applied in order.
+</code></pre></div>
+              </div>
+              <p>
+                  <span class="doc-param-annotation">
+                    <b>TYPE:</b>
+                      <code>     str | pathlib.Path | list thereof</code>
+                  </span>
+              </p>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<table>
+      <thead>
+        <tr>
+          <th><span class="doc-section-title">RETURNS</span></th>
+          <th><span>DESCRIPTION</span></th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <span class="doc-returns-annotation">
+                    <code><a class="autorefs autorefs-internal" title="&lt;code&gt;navis_fastcore.CmtkRegistration&lt;/code&gt;" href="./#navis_fastcore.CmtkRegistration">CmtkRegistration</a></code>
+                </span>
+            </td>
+            <td class="doc-returns-details">
+              <div class="doc-md-description">
+                
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Examples:</span></p>
+    <div class="language-pycon highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">&gt;&gt;&gt; </span><span class="kn">import</span><span class="w"> </span><span class="nn">navis_fastcore</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">fastcore</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="gp">&gt;&gt;&gt; </span><span class="n">reg</span> <span class="o">=</span> <span class="n">fastcore</span><span class="o">.</span><span class="n">load_cmtk_registration</span><span class="p">(</span><span class="s2">&quot;JFRC2_FCWB.list&quot;</span><span class="p">)</span>
+</span></code></pre></div>
+
+
+    </div>
+
+</div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-circle-arrow-up" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m16 12-4-4-4 4M12 16V8"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://zensical.org/" target="_blank" rel="noopener">
+      Zensical
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate":null,"base":"../..","features":["content.action.edit","content.code.annotate","content.code.copy","content.tabs.link","navigation.indexes","navigation.instant","navigation.top","search.highlight","toc.follow"],"search":"../../assets/javascripts/workers/search.b6b7e04f.min.js","tags":null,"translations":{"clipboard.copied":"Copied to clipboard","clipboard.copy":"Copy to clipboard","search.result.more.one":"1 more on this page","search.result.more.other":"# more on this page","search.result.none":"No matching documents","search.result.one":"1 matching document","search.result.other":"# matching documents","search.result.placeholder":"Type to start searching","search.result.term.missing":"Missing","select.version":"Select version"},"version":null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7f30b55.min.js"></script>
+      
+    
+  </body>
+</html>
