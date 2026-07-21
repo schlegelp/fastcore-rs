@@ -3,8 +3,9 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use fastcore::mesh::{
-    connected_components_graph, contract_vertices, geodesic_farthest_mesh, geodesic_matrix_graph,
-    geodesic_matrix_mesh, geodesic_nearest_mesh, level_set_components, mesh_connected_components,
+    connected_components_graph, contract_vertices, geodesic_clusters, geodesic_farthest_mesh,
+    geodesic_matrix_graph, geodesic_matrix_mesh, geodesic_nearest_mesh, geodesic_path_graph,
+    geodesic_predecessors_graph, level_set_components, mesh_connected_components,
     minimum_spanning_tree, unique_edges,
 };
 
@@ -384,4 +385,133 @@ pub fn geodesic_farthest_mesh_py<'py>(
         threads,
     );
     Ok((dists.into_pyarray(py), nodes.into_pyarray(py)))
+}
+
+/// Shortest-path trees over a graph — distances *and* the route to each node.
+///
+/// The predecessor-returning counterpart of `geodesic_matrix_graph`.
+///
+/// Arguments
+/// ---------
+/// - `edges`:    (E, 2) uint32 array of edges (node indices).
+/// - `n_nodes`:  Total number of nodes.
+/// - `weights`:  (E, ) float32 edge lengths, or `None` for hop counts. Zero weights are
+///   allowed.
+/// - `directed`: If `True`, an edge `(u, v)` may only be traversed from `u` to `v`.
+/// - `sources`:  (S, ) uint32 source nodes, or `None` for all nodes.
+/// - `limit`:    Prune the search at this distance.
+/// - `threads`:  Size of the thread pool, or `None` for all cores.
+///
+/// Returns
+/// -------
+/// `(distances, predecessors)`: a (S, n_nodes) float32 matrix, `-1` where unreachable, and a
+/// (S, n_nodes) int32 matrix holding the node before each node on its shortest path back to
+/// that row's source (`-1` for the source itself and for unreachable nodes).
+#[pyfunction]
+#[pyo3(
+    name = "geodesic_predecessors",
+    signature = (edges, n_nodes, weights=None, directed=false, sources=None, limit=None, threads=None)
+)]
+#[allow(clippy::too_many_arguments)]
+pub fn geodesic_predecessors_py<'py>(
+    py: Python<'py>,
+    edges: PyReadonlyArray2<u32>,
+    n_nodes: usize,
+    weights: Option<PyReadonlyArray1<f32>>,
+    directed: bool,
+    sources: Option<PyReadonlyArray1<u32>>,
+    limit: Option<f32>,
+    threads: Option<usize>,
+) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i32>>)> {
+    let src = match sources.as_ref() {
+        Some(a) => Some(as_slice(a, "sources")?),
+        None => None,
+    };
+    let w = weights.as_ref().map(|w| w.as_array());
+    let (dists, preds) = geodesic_predecessors_graph(
+        edges.as_array(),
+        n_nodes,
+        w.as_ref(),
+        directed,
+        src,
+        limit,
+        threads,
+    );
+    Ok((dists.into_pyarray(py), preds.into_pyarray(py)))
+}
+
+/// Node sequences of the shortest paths from one source to each target.
+///
+/// One search, with the predecessor chains walked in Rust — the per-call overhead this exists
+/// to remove. Also stops as soon as the last target settles.
+///
+/// Arguments
+/// ---------
+/// - `edges`, `n_nodes`, `weights`, `directed`: as `geodesic_predecessors`.
+/// - `source`:  Source node index.
+/// - `targets`: (T, ) uint32 target node indices.
+///
+/// Returns
+/// -------
+/// A list of `T` 1-D uint32 arrays, ordered source-first / target-last. An unreachable target
+/// gives an empty array.
+#[pyfunction]
+#[pyo3(
+    name = "geodesic_path",
+    signature = (edges, n_nodes, source, targets, weights=None, directed=false)
+)]
+pub fn geodesic_path_py<'py>(
+    py: Python<'py>,
+    edges: PyReadonlyArray2<u32>,
+    n_nodes: usize,
+    source: u32,
+    targets: PyReadonlyArray1<u32>,
+    weights: Option<PyReadonlyArray1<f32>>,
+    directed: bool,
+) -> PyResult<Vec<Bound<'py, PyArray1<u32>>>> {
+    let tgt = as_slice(&targets, "targets")?;
+    let w = weights.as_ref().map(|w| w.as_array());
+    let paths = geodesic_path_graph(edges.as_array(), n_nodes, w.as_ref(), directed, source, tgt);
+    Ok(paths.into_iter().map(|p| p.into_pyarray(py)).collect())
+}
+
+/// Greedily partition nodes into connected clusters of bounded geodesic radius.
+///
+/// Each cluster is a ball of radius `max_dist` around its seed, minus whatever earlier
+/// clusters already claimed. The radius is the true geodesic distance from the seed, not the
+/// length of the walk that reached it.
+///
+/// Arguments
+/// ---------
+/// - `edges`:    (E, 2) uint32 array of undirected edges (node indices).
+/// - `n_nodes`:  Total number of nodes.
+/// - `max_dist`: Maximum distance from a cluster's seed.
+/// - `weights`:  (E, ) float32 edge lengths, or `None` for hop counts.
+/// - `seeds`:    (S, ) uint32 preferred seeds, in order of preference. Any node still
+///   unassigned afterwards seeds a cluster of its own, in ascending index order.
+///
+/// Returns
+/// -------
+/// `(labels, n_clusters)`: `labels` is a 1-D int32 array of contiguous cluster ids in
+/// `[0, n_clusters)`, numbered in the order the clusters were grown.
+#[pyfunction]
+#[pyo3(
+    name = "geodesic_clusters",
+    signature = (edges, n_nodes, max_dist, weights=None, seeds=None)
+)]
+pub fn geodesic_clusters_py<'py>(
+    py: Python<'py>,
+    edges: PyReadonlyArray2<u32>,
+    n_nodes: usize,
+    max_dist: f32,
+    weights: Option<PyReadonlyArray1<f32>>,
+    seeds: Option<PyReadonlyArray1<u32>>,
+) -> PyResult<(Bound<'py, PyArray1<i32>>, usize)> {
+    let sd = match seeds.as_ref() {
+        Some(a) => Some(as_slice(a, "seeds")?),
+        None => None,
+    };
+    let w = weights.as_ref().map(|w| w.as_array());
+    let (labels, n) = geodesic_clusters(edges.as_array(), n_nodes, max_dist, w.as_ref(), sd);
+    Ok((labels.into_pyarray(py), n))
 }

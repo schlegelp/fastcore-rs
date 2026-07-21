@@ -820,3 +820,188 @@ def test_graph_primitives_threads_do_not_change_the_result():
             fastcore.minimum_spanning_tree(edges, 200, w, threads=t),
             fastcore.minimum_spanning_tree(edges, 200, w, threads=1),
         )
+
+
+# -----------------------------------------------------------------------------
+# Predecessors, paths and geodesic clustering
+#
+# Oracles: scipy's `dijkstra(..., return_predecessors=True)` (note its predecessor
+# sentinel is -9999, not -1) and igraph's `get_shortest_paths`.
+# -----------------------------------------------------------------------------
+
+
+def as_csr(edges, n_nodes, weights=None, directed=False):
+    """The same graph as a scipy sparse matrix, parallel edges collapsed to the shortest."""
+    w = np.ones(len(edges), dtype=np.float64) if weights is None else np.asarray(
+        weights, dtype=np.float64
+    )
+    rows = list(edges[:, 0])
+    cols = list(edges[:, 1])
+    data = list(w)
+    if not directed:
+        rows, cols = rows + cols, cols + rows
+        data = data + data
+    m = csr_matrix((data, (rows, cols)), shape=(n_nodes, n_nodes))
+    # `csr_matrix` sums duplicates; take the minimum instead, as fastcore does.
+    m = m.tolil()
+    for i, j, d in zip(rows, cols, data):
+        if m[i, j] > d or m[i, j] == 0:
+            m[i, j] = d
+    return m.tocsr()
+
+
+def test_predecessors_match_scipy():
+    edges = random_graph(n_nodes=120, n_edges=400, seed=3)
+    rng = np.random.default_rng(3)
+    w = rng.random(len(edges)).astype(np.float32)
+    sources = np.array([0, 7, 55], dtype=np.uint32)
+
+    dist, pred = fastcore.geodesic_predecessors(edges, 120, w, sources=sources)
+    ref_d, ref_p = dijkstra(
+        as_csr(edges, 120, w), directed=False, indices=sources, return_predecessors=True
+    )
+
+    # Distances agree outright.
+    np.testing.assert_allclose(np.where(dist < 0, np.inf, dist), ref_d, rtol=1e-5)
+
+    # Predecessors need not be *identical* - equal-length paths are resolved
+    # differently - but every chain must exist and weigh the reference distance.
+    lookup = {}
+    for (u, v), x in zip(edges, w):
+        key = (min(u, v), max(u, v))
+        lookup[key] = min(lookup.get(key, np.inf), x)
+
+    for r, s in enumerate(sources):
+        assert pred[r, s] == -1
+        for t in range(120):
+            if not np.isfinite(ref_d[r, t]):
+                assert dist[r, t] == -1 and pred[r, t] == -1
+                continue
+            total, cur, hops = 0.0, t, 0
+            while cur != s:
+                p = pred[r, cur]
+                assert p >= 0, f"chain broke at {cur}"
+                total += lookup[(min(p, cur), max(p, cur))]
+                cur = p
+                hops += 1
+                assert hops <= 120, "predecessor cycle"
+            assert total == pytest.approx(ref_d[r, t], rel=1e-4)
+
+
+def test_predecessors_unweighted_match_scipy():
+    edges = random_graph(n_nodes=80, n_edges=200, seed=5)
+    dist, pred = fastcore.geodesic_predecessors(edges, 80, sources=[0])
+    ref_d = dijkstra(as_csr(edges, 80), directed=False, indices=[0], unweighted=True)
+
+    np.testing.assert_allclose(np.where(dist < 0, np.inf, dist), ref_d)
+    # A hop-count chain must be exactly as long as the distance says.
+    for t in range(80):
+        if not np.isfinite(ref_d[0, t]):
+            continue
+        cur, hops = t, 0
+        while cur != 0:
+            cur = pred[0, cur]
+            hops += 1
+        assert hops == ref_d[0, t]
+
+
+def test_geodesic_path_matches_igraph():
+    ig = pytest.importorskip("igraph")
+
+    edges = random_graph(n_nodes=150, n_edges=500, seed=11)
+    rng = np.random.default_rng(11)
+    w = rng.random(len(edges)).astype(np.float32)
+    targets = np.arange(150, dtype=np.uint32)
+
+    ours = fastcore.geodesic_path(edges, 150, 0, targets, weights=w)
+    g = ig.Graph(n=150, edges=[tuple(e) for e in edges], directed=False)
+    theirs = g.get_shortest_paths(0, to=list(targets), weights=list(w.astype(np.float64)))
+
+    lengths = {}
+    for (u, v), x in zip(edges, w.astype(np.float64)):
+        lengths[(min(u, v), max(u, v))] = x
+
+    def walk(path):
+        return sum(lengths[(min(a, b), max(a, b))] for a, b in zip(path[:-1], path[1:]))
+
+    for t, (mine, ref) in enumerate(zip(ours, theirs)):
+        if not ref:  # igraph returns [] for unreachable
+            assert len(mine) == 0
+            continue
+        assert mine[0] == 0 and mine[-1] == t
+        assert walk(list(mine)) == pytest.approx(walk(ref), rel=1e-5)
+
+
+def test_geodesic_path_zero_weights_are_free():
+    # The TEASAR mechanism: zeroing the edges of a path makes it free to re-traverse.
+    edges = np.array([[0, 1], [1, 2], [2, 3], [0, 3]], dtype=np.uint32)
+    w = np.array([0.0, 0.0, 0.0, 10.0], dtype=np.float32)
+    (path,) = fastcore.geodesic_path(edges, 4, 0, [3], weights=w)
+    np.testing.assert_array_equal(path, [0, 1, 2, 3])
+
+
+def test_geodesic_path_edge_cases():
+    edges = np.array([[0, 1], [2, 3]], dtype=np.uint32)
+    paths = fastcore.geodesic_path(edges, 4, 0, [0, 1, 3])
+    np.testing.assert_array_equal(paths[0], [0])
+    np.testing.assert_array_equal(paths[1], [0, 1])
+    assert len(paths[2]) == 0
+
+    with pytest.raises(ValueError):
+        fastcore.geodesic_path(edges, 4, 9, [0])
+
+
+def test_geodesic_predecessors_directed_is_one_way():
+    edges = np.array([[0, 1], [1, 2]], dtype=np.uint32)
+    dist, pred = fastcore.geodesic_predecessors(edges, 3, directed=True, sources=[2])
+    np.testing.assert_array_equal(dist[0], [-1, -1, 0])
+    np.testing.assert_array_equal(pred[0], [-1, -1, -1])
+
+
+def test_geodesic_clusters_are_balls_around_their_seeds():
+    edges = random_graph(n_nodes=200, n_edges=700, seed=17)
+    rng = np.random.default_rng(17)
+    w = rng.random(len(edges)).astype(np.float32)
+    max_dist = 0.8
+
+    labels, n = fastcore.geodesic_clusters(edges, 200, max_dist, weights=w)
+    assert labels.min() >= 0, "every node is labelled"
+    assert set(np.unique(labels)) == set(range(n))
+
+    # Seeds are the lowest-index member of each cluster, because clusters are grown
+    # in ascending index order when no preferred seeds are given.
+    seeds = np.array([np.flatnonzero(labels == c).min() for c in range(n)], np.uint32)
+    d = dijkstra(as_csr(edges, 200, w), directed=False, indices=seeds)
+    for node, c in enumerate(labels):
+        assert d[c, node] <= max_dist + 1e-6
+
+    # And each node belongs to the *first* cluster whose ball contains it.
+    for node, c in enumerate(labels):
+        first = np.flatnonzero(d[:, node] <= max_dist + 1e-6).min()
+        assert first == c
+
+
+def test_geodesic_clusters_use_true_distance_not_traversal_path():
+    # A 5-cycle within 2 hops of node 0 the short way round; a depth-first walk that
+    # took the long branch first would wrongly reject node 3.
+    edges = np.array([[0, 1], [1, 2], [2, 3], [3, 4], [4, 0]], dtype=np.uint32)
+    labels, n = fastcore.geodesic_clusters(edges, 5, 2)
+    np.testing.assert_array_equal(labels, [0, 0, 0, 0, 0])
+    assert n == 1
+
+
+def test_geodesic_clusters_preferred_seeds():
+    edges = np.array([[0, 1], [1, 2], [2, 3], [3, 4], [4, 5]], dtype=np.uint32)
+    labels, n = fastcore.geodesic_clusters(edges, 6, 1, seeds=[3, 3, 1])
+    np.testing.assert_array_equal(labels, [1, 1, 0, 0, 0, 2])
+    assert n == 3
+
+
+def test_geodesic_clusters_validation():
+    edges = np.array([[0, 1]], dtype=np.uint32)
+    with pytest.raises(ValueError):
+        fastcore.geodesic_clusters(edges, 2, -1)
+    with pytest.raises(ValueError):
+        fastcore.geodesic_clusters(edges, 2, np.inf)
+    with pytest.raises(ValueError):
+        fastcore.geodesic_clusters(edges, 2, 1, weights=[1.0, 2.0])

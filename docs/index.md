@@ -100,11 +100,14 @@ surface and how they spell it. `—` means that surface doesn't expose it direct
 | Components of every level set at once | `mesh::level_set_components` | `level_set_components` | — |
 | Contract nodes and simplify the edge list | `mesh::contract_vertices` | `contract_vertices` | — |
 | Minimum / maximum spanning forest | `mesh::minimum_spanning_tree` | `minimum_spanning_tree` | — |
+| Shortest paths with the route, not just the length | `mesh::geodesic_predecessors_graph`, `mesh::geodesic_path_graph` | `geodesic_predecessors`, `geodesic_path` | — |
+| Greedy clustering by geodesic radius | `mesh::geodesic_clusters` | `geodesic_clusters` | — |
 
 ### Neuron similarity
 
 | Capability | Rust (`fastcore`) | Python (`navis-fastcore`) | R (`nat.fastcore`) |
 |---|---|---|---|
+| Tangent vectors + alpha from a point cloud | `points::dotprops` | `dotprops`, `Dotprop.from_points` | — |
 | NBLAST, query vs target | `nblast::nblast_query_target` | `nblast` | `nblast` |
 | NBLAST, all-by-all | `nblast::nblast_allbyall` | `nblast_allbyall` | `nblast_allbyall` |
 | NBLAST for explicit index pairs | `nblast::nblast_pairs` | — | `nblast_pairs` |

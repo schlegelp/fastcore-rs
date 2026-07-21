@@ -13,6 +13,9 @@ __all__ = [
     "geodesic_matrix_graph",
     "geodesic_nearest_mesh",
     "geodesic_farthest_mesh",
+    "geodesic_predecessors",
+    "geodesic_path",
+    "geodesic_clusters",
 ]
 
 
@@ -832,4 +835,254 @@ def geodesic_farthest_mesh(
         _prep_indices(targets, n_vertices, "targets"),
         None if limit is None else float(limit),
         None if threads is None else int(threads),
+    )
+
+
+def _prep_weights(weights, edges):
+    """Coerce optional edge weights to a contiguous float32 array of the right length."""
+    if weights is None:
+        return None
+    weights = np.ascontiguousarray(np.asarray(weights, dtype=np.float32).ravel())
+    if len(weights) != len(edges):
+        raise ValueError(
+            f"`weights` must have one entry per edge: got {len(weights)} "
+            f"for {len(edges)} edges"
+        )
+    return weights
+
+
+def geodesic_predecessors(
+    edges,
+    n_nodes,
+    weights=None,
+    directed=False,
+    sources=None,
+    limit=None,
+    threads=None,
+):
+    """Shortest path tree(s) - distances *and* the route to each node.
+
+    The predecessor-returning counterpart to
+    :func:`~navis_fastcore.geodesic_matrix_graph`. Use this when you need the path
+    itself; use ``geodesic_matrix_graph`` when the distance is enough, and
+    :func:`~navis_fastcore.geodesic_path` when you want the node sequences rather
+    than the raw chains.
+
+    Because this takes a bare edge list there is no index to build or invalidate
+    between calls, which is what algorithms that re-weight the graph every iteration
+    (TEASAR zeroes the edges along each path it extracts, then searches again) need.
+
+    Parameters
+    ----------
+    edges :      (E, 2) array
+                 Edges given as rows of two node indices.
+    n_nodes :    int
+                 Total number of nodes.
+    weights :    (E, ) array, optional
+                 Length of each edge. If ``None`` all edges weigh 1. Must be finite
+                 and non-negative. **Zero weights are explicitly allowed** - they
+                 are how a penalised-path search makes an already-extracted route
+                 free to re-traverse.
+    directed :   bool, optional
+                 If ``True`` an edge ``(u, v)`` may only be traversed from ``u`` to
+                 ``v``.
+    sources :    iterable, optional
+                 Source nodes, one shortest path tree each. If ``None`` all nodes
+                 are used.
+    limit :      float, optional
+                 Ignore any nodes further away than this.
+    threads :    int, optional
+                 Number of threads to use. If ``None`` uses all available cores.
+
+    Returns
+    -------
+    distances :  (len(sources), n_nodes) float32 array
+                 As ``geodesic_matrix_graph``: ``-1`` where unreachable.
+    predecessors : (len(sources), n_nodes) int32 array
+                 For each node, the node before it on the shortest path back to that
+                 row's source. ``-1`` for the source itself and for unreachable
+                 nodes - so a single ``>= 0`` test both walks the path and
+                 terminates it.
+
+    Notes
+    -----
+    Among equal-length paths the predecessor is the one reached first in the
+    search's own deterministic order, so results are reproducible run to run and do
+    not depend on ``threads``.
+
+    Examples
+    --------
+    A triangle whose direct 0-2 edge is expensive, so the shortest path to 2 goes
+    the long way round via 1:
+
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> edges = np.array([[0, 1], [1, 2], [2, 0]], dtype=np.uint32)
+    >>> weights = np.array([1, 1, 5], dtype=np.float32)
+    >>> dists, pred = fastcore.geodesic_predecessors(
+    ...     edges, 3, weights=weights, sources=[0]
+    ... )
+    >>> dists
+    array([[0., 1., 2.]], dtype=float32)
+    >>> pred
+    array([[-1,  0,  1]], dtype=int32)
+
+    """
+    edges, n_nodes = _prep_edges(edges, n_nodes)
+    return _fastcore.geodesic_predecessors(
+        edges,
+        n_nodes,
+        _prep_weights(weights, edges),
+        bool(directed),
+        _prep_indices(sources, n_nodes, "sources"),
+        None if limit is None else float(limit),
+        None if threads is None else int(threads),
+    )
+
+
+def geodesic_path(edges, n_nodes, source, targets, weights=None, directed=False):
+    """Node sequences of the shortest paths from ``source`` to each target.
+
+    The convenience form of :func:`~navis_fastcore.geodesic_predecessors` for the
+    common single-source case: one search, with the predecessor chains walked in
+    Rust rather than in Python. Because every target is known up front the search
+    also stops as soon as the last of them settles, so a short path in a large graph
+    costs a ball, not a sweep.
+
+    Parameters
+    ----------
+    edges :      (E, 2) array
+                 Edges given as rows of two node indices.
+    n_nodes :    int
+                 Total number of nodes.
+    source :     int
+                 Source node index.
+    targets :    iterable
+                 Target node indices.
+    weights :    (E, ) array, optional
+                 Length of each edge. If ``None`` all edges weigh 1. Zero weights
+                 are allowed.
+    directed :   bool, optional
+                 If ``True`` an edge ``(u, v)`` may only be traversed from ``u`` to
+                 ``v``.
+
+    Returns
+    -------
+    paths :      list of (L, ) uint32 arrays
+                 One per target, ordered source-first / target-last (so ``path[0]``
+                 is always ``source``). Empty array where the target is
+                 unreachable; the single-element ``[source]`` where the target *is*
+                 the source.
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> edges = np.array([[0, 1], [1, 2], [2, 0]], dtype=np.uint32)
+    >>> weights = np.array([1, 1, 5], dtype=np.float32)
+    >>> fastcore.geodesic_path(edges, 3, 0, [2], weights=weights)
+    [array([0, 1, 2], dtype=uint32)]
+
+    An unreachable target gives an empty path:
+
+    >>> edges = np.array([[0, 1], [2, 3]], dtype=np.uint32)
+    >>> fastcore.geodesic_path(edges, 4, 0, [1, 3])
+    [array([0, 1], dtype=uint32), array([], dtype=uint32)]
+
+    """
+    edges, n_nodes = _prep_edges(edges, n_nodes)
+    source = int(source)
+    if not 0 <= source < n_nodes:
+        raise ValueError(f"`source` is node {source} but n_nodes = {n_nodes}")
+
+    targets = _prep_indices(targets, n_nodes, "targets")
+    if targets is None:
+        raise ValueError("`targets` must be given")
+
+    return _fastcore.geodesic_path(
+        edges,
+        n_nodes,
+        source,
+        targets,
+        _prep_weights(weights, edges),
+        bool(directed),
+    )
+
+
+def geodesic_clusters(edges, n_nodes, max_dist, weights=None, seeds=None):
+    """Greedily partition nodes into connected clusters of bounded radius.
+
+    Repeatedly takes an unassigned node as a seed and grows a cluster outwards from
+    it, absorbing any node reachable within ``max_dist`` that no earlier cluster has
+    already claimed. Collapsing each cluster to its centroid gives a coarser graph
+    whose nodes are spaced by roughly ``max_dist``, which is what makes this useful
+    as mesh or skeleton downsampling.
+
+    The radius is the **true geodesic distance from the seed**, not the length of
+    the walk that happened to reach it - so a node close to a seed is never excluded
+    merely because a traversal arrived at it the long way round.
+
+    Parameters
+    ----------
+    edges :      (E, 2) array
+                 Edges given as rows of two node indices. Treated as undirected.
+    n_nodes :    int
+                 Total number of nodes. Isolated nodes each become their own
+                 cluster.
+    max_dist :   float
+                 Maximum distance from a cluster's seed. Must be finite and
+                 non-negative.
+    weights :    (E, ) array, optional
+                 Length of each edge. If ``None`` all edges weigh 1, i.e.
+                 ``max_dist`` is a hop count.
+    seeds :      iterable, optional
+                 Nodes to use as seeds, in order of preference. Any node left
+                 unassigned afterwards becomes a seed in ascending index order. If
+                 ``None``, seeds are picked in ascending index order throughout. A
+                 seed an earlier cluster already claimed is skipped.
+
+    Returns
+    -------
+    labels :     (n_nodes, ) int32 array
+                 Cluster of each node, contiguous in ``[0, n_clusters)`` and
+                 numbered in the order the clusters were grown. Every node is
+                 labelled.
+    n_clusters : int
+
+    Notes
+    -----
+    The greedy outer loop is inherently sequential - cluster *n* depends on
+    everything every earlier cluster claimed - so there is no ``threads`` argument.
+
+    Examples
+    --------
+    A path 0-1-...-5 with a radius of one hop:
+
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> edges = np.array([[0, 1], [1, 2], [2, 3], [3, 4], [4, 5]], dtype=np.uint32)
+    >>> labels, n = fastcore.geodesic_clusters(edges, 6, 1)
+    >>> labels
+    array([0, 0, 1, 1, 2, 2], dtype=int32)
+    >>> n
+    3
+
+    Seeding from the middle instead:
+
+    >>> labels, n = fastcore.geodesic_clusters(edges, 6, 1, seeds=[3])
+    >>> labels
+    array([1, 1, 0, 0, 0, 2], dtype=int32)
+
+    """
+    edges, n_nodes = _prep_edges(edges, n_nodes)
+    max_dist = float(max_dist)
+    if not np.isfinite(max_dist) or max_dist < 0:
+        raise ValueError(f"`max_dist` must be finite and non-negative, got {max_dist}")
+
+    return _fastcore.geodesic_clusters(
+        edges,
+        n_nodes,
+        max_dist,
+        _prep_weights(weights, edges),
+        _prep_indices(seeds, n_nodes, "seeds"),
     )

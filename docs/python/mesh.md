@@ -156,3 +156,66 @@ entirely.
 ::: navis_fastcore.contract_vertices
 
 ::: navis_fastcore.minimum_spanning_tree
+
+### Paths, not just distances
+
+[`geodesic_matrix_graph`](#navis_fastcore.geodesic_matrix_graph) answers *how far*;
+[`geodesic_path`](#navis_fastcore.geodesic_path) and
+[`geodesic_predecessors`](#navis_fastcore.geodesic_predecessors) answer *which way*.
+
+The motivating case is TEASAR-style skeletonization, which extracts a path, zeroes the
+edge weights along it so it is free to re-traverse, and searches again — so the graph
+changes between every call. That is why these take a bare edge list: there is no index
+to build, and nothing to invalidate when the weights move.
+
+```python
+import navis_fastcore as fastcore
+import numpy as np
+
+edges, lengths = fastcore.unique_edges(faces, vertices)
+edges = edges.astype(np.uint32)
+weights = lengths.astype(np.float32)
+
+# The route from the root to the farthest vertex...
+dists, _ = fastcore.geodesic_predecessors(edges, n, weights, sources=[root])
+farthest = int(np.argmax(dists[0]))
+(path,) = fastcore.geodesic_path(edges, n, root, [farthest], weights=weights)
+
+# ...and make it free to walk again
+on_path = np.isin(edges, path).all(axis=1)
+weights[on_path] = 0
+```
+
+Zero weights are explicitly supported. Among equal-length paths the route is picked
+deterministically, so repeated runs give the same skeleton.
+
+::: navis_fastcore.geodesic_path
+
+::: navis_fastcore.geodesic_predecessors
+
+### Clustering by geodesic radius
+
+[`geodesic_clusters`](#navis_fastcore.geodesic_clusters) partitions a graph into
+connected clusters of bounded radius: pick an unassigned seed, absorb everything within
+`max_dist` of it that no earlier cluster claimed, repeat. Collapsing each cluster to its
+centroid is a downsampling step — vertices come out spaced by roughly `max_dist`.
+
+```python
+labels, n_clusters = fastcore.geodesic_clusters(edges, n, max_dist=2.0, weights=weights)
+
+# Contiguous labels, so the centroids are one bincount away
+centers = np.zeros((n_clusters, 3))
+np.add.at(centers, labels, vertices)
+centers /= np.bincount(labels, minlength=n_clusters)[:, None]
+
+# ...and the coarse graph is just the contracted edge list
+coarse = fastcore.contract_vertices(edges, labels.astype(np.uint32))
+```
+
+The radius is the **true geodesic distance from the seed**, not the length of the walk
+that reached it. The usual Python implementation of this is a recursive depth-first walk
+that accumulates distance along its own traversal path, which both gives worse clusters
+(a node close to a seed is dropped because the walk arrived the long way round) and
+recurses as deep as the cluster is large.
+
+::: navis_fastcore.geodesic_clusters

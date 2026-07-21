@@ -10,13 +10,54 @@ __all__ = [
     "nblast_knn",
     "nblast_smart",
     "synblast",
+    "dotprops",
     "Dotprop",
     "Synapses",
 ]
 
-#: Minimal dotprop container: `points` (N, 3), unit tangent `vect` (N, 3) and an
-#: optional per-point `alpha` (N,) used only when ``use_alpha=True``.
-Dotprop = namedtuple("Dotprop", ["points", "vect", "alpha"], defaults=[None])
+_DotpropBase = namedtuple("Dotprop", ["points", "vect", "alpha"], defaults=[None])
+
+
+class Dotprop(_DotpropBase):
+    """Minimal dotprop container.
+
+    ``points`` (N, 3), unit tangent ``vect`` (N, 3) and an optional per-point
+    ``alpha`` (N,) used only when ``use_alpha=True``. A plain namedtuple, so it
+    unpacks and compares like one.
+    """
+
+    __slots__ = ()
+
+    @classmethod
+    def from_points(cls, points, k=20, threads=None):
+        """Build a `Dotprop` from a bare point cloud.
+
+        The one-call form of :func:`~navis_fastcore.dotprops`; see there for the
+        meaning of ``k`` and for the conventions on sign and degenerate
+        neighbourhoods.
+
+        Parameters
+        ----------
+        points :  (N, 3) array
+                  Point coordinates.
+        k :       int
+                  Number of nearest neighbours, *including the point itself*.
+        threads : int, optional
+                  Number of threads. If ``None`` uses all available cores.
+
+        Examples
+        --------
+        >>> import navis_fastcore as fastcore
+        >>> import numpy as np
+        >>> pts = np.arange(30, dtype=np.float64).reshape(10, 3)
+        >>> dp = fastcore.Dotprop.from_points(pts, k=5)
+        >>> dp.alpha.round(3)
+        array([1., 1., 1., 1., 1., 1., 1., 1., 1., 1.])
+
+        """
+        points = np.ascontiguousarray(np.asarray(points, dtype=np.float64))
+        vect, alpha = dotprops(points, k=k, threads=threads)
+        return cls(points, vect, alpha)
 
 #: Minimal synapse container for `synblast`: `connectors` is an ``(N, 3)`` or
 #: ``(N, 4)`` array of ``[x, y, z, (type)]``. The optional 4th column is a numeric
@@ -976,41 +1017,80 @@ def synblast(
     return M
 
 
-def _make_dotprop(points, k=5):
-    """Create a `Dotprop` (points + tangent vectors + alpha) from a point cloud.
+def dotprops(points, k=20, threads=None):
+    """Compute tangent vectors and alpha values for a point cloud.
 
-    Convenience helper only; not on the NBLAST scoring path. Requires scipy.
+    For each point, takes its ``k`` nearest neighbours (the point itself included),
+    forms the scatter matrix of that neighbourhood about its centroid, and returns
+    the principal direction plus a measure of how elongated the neighbourhood is.
+    Together with the points themselves those are the *dotprops* representation
+    :func:`~navis_fastcore.nblast` consumes - see
+    :meth:`navis_fastcore.Dotprop.from_points` for the one-call form.
+
+    This replaces the usual ``scipy.spatial.cKDTree.query`` plus ``N`` 3x3 SVDs,
+    which is single-threaded and was the only reason ``navis-fastcore`` would have
+    needed scipy at all.
+
+    Parameters
+    ----------
+    points :  (N, 3) array
+              Point coordinates. Converted to float64. Must be finite.
+    k :       int
+              Number of nearest neighbours, *including the point itself* - i.e.
+              ``k=20`` uses 19 other points. This matches
+              ``scipy.spatial.cKDTree.query(x, k=k)``, which returns the query point
+              as its own first neighbour. Clamped to ``N``.
+    threads : int, optional
+              Number of threads. If ``None`` uses all available cores.
+
+    Returns
+    -------
+    vect :    (N, 3) float64 array
+              Principal direction of each neighbourhood, unit length.
+    alpha :   (N, ) float64 array
+              ``(l1 - l2) / (l1 + l2 + l3)`` for scatter matrix eigenvalues
+              ``l1 >= l2 >= l3``. 0 for an isotropic neighbourhood, 1 for a
+              perfectly collinear one.
+
+    Notes
+    -----
+    The **sign of each vector is arbitrary** - an eigenvector is only defined up to
+    sign, and NBLAST scores on ``|dot|`` so it never observes the choice. It is
+    nonetheless deterministic here (the largest-magnitude component is forced
+    positive), so results are reproducible run to run and across thread counts.
+
+    **Degenerate neighbourhoods** - all-coincident points, or a single point - have
+    no defined direction and an ``alpha`` of ``0/0``. They come back as
+    ``alpha = 0`` with the unit vector ``[1, 0, 0]``, rather than the NaNs that
+    would silently poison every downstream NBLAST score.
+
+    Examples
+    --------
+    Points on a line are perfectly anisotropic:
+
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> pts = np.zeros((10, 3))
+    >>> pts[:, 0] = np.arange(10)
+    >>> vect, alpha = fastcore.dotprops(pts, k=5)
+    >>> alpha.round(6)
+    array([1., 1., 1., 1., 1., 1., 1., 1., 1., 1.])
+    >>> vect[0]
+    array([1., 0., 0.])
+
     """
-    vect, alpha = _tangents_and_alpha(points, k)
-    return Dotprop(np.asarray(points, dtype=np.float64), vect, alpha)
+    points = np.ascontiguousarray(np.asarray(points, dtype=np.float64))
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError(
+            f"`points` must be a 2-D array of shape (N, 3), got {points.shape}"
+        )
+    k = int(k)
+    if k < 1:
+        raise ValueError(f"`k` must be at least 1, got {k}")
 
-
-def _calculate_tangent_vectors(points, k):
-    """Tangent vectors as the first principal axis of each point's k-neighborhood.
-
-    Requires scipy (imported lazily).
-    """
-    return _tangents_and_alpha(points, k)[0]
+    return _fastcore.dotprops(points, k, None if threads is None else int(threads))
 
 
 def _tangents_and_alpha(points, k):
-    """Per-point tangent vector and alpha from the local k-neighborhood SVD.
-
-    `alpha = (s0 - s1) / (s0 + s1 + s2)` over the neighborhood scatter matrix's
-    singular values, matching navis' dotprops. Requires scipy (lazy import).
-    """
-    from scipy.spatial import cKDTree as KDTree
-
-    points = np.asarray(points, dtype=np.float64)
-    _, ix = KDTree(points).query(points, k=k)
-
-    # (N, k, 3) neighborhoods, centered, then SVD of the local inertia tensor.
-    pt = points[ix]
-    centers = np.mean(pt, axis=1)
-    cpt = pt - centers.reshape((pt.shape[0], 1, 3))
-    inertia = cpt.transpose((0, 2, 1)) @ cpt
-    _, s, vh = np.linalg.svd(inertia)
-    vect = vh[:, 0, :]
-    alpha = (s[:, 0] - s[:, 1]) / s.sum(axis=1)
-
-    return vect, alpha
+    """Back-compat alias for :func:`dotprops`."""
+    return dotprops(points, k=k)

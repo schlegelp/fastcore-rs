@@ -25,6 +25,9 @@ use dag::*;
 mod mesh;
 use mesh::*;
 
+mod points;
+use points::*;
+
 mod topo;
 use topo::*;
 
@@ -156,6 +159,18 @@ mod fastcore {
 
     #[pymodule_export]
     use super::minimum_spanning_tree_py;
+
+    #[pymodule_export]
+    use super::geodesic_predecessors_py;
+
+    #[pymodule_export]
+    use super::geodesic_path_py;
+
+    #[pymodule_export]
+    use super::geodesic_clusters_py;
+
+    #[pymodule_export]
+    use super::dotprops_py;
 
     #[pymodule_export]
     use super::stitch_fragments_py;

@@ -13,9 +13,14 @@
 //!   the minimal-length edges that reconnect the pieces,
 //!   [`topo::reroot_rewire`] re-derives the parent vector afterwards.
 //! - [`mesh`] — triangle meshes as vertex graphs: connected components, unique edges,
-//!   parallel geodesic search, and the traversal primitives mesh algorithms need
-//!   ([`mesh::level_set_components`], [`mesh::contract_vertices`],
-//!   [`mesh::minimum_spanning_tree`]) without building a graph object first.
+//!   parallel geodesic search — for distances ([`mesh::geodesic_matrix_graph`]) or for
+//!   the route itself ([`mesh::geodesic_path_graph`]) — and the traversal primitives
+//!   mesh algorithms need ([`mesh::level_set_components`], [`mesh::contract_vertices`],
+//!   [`mesh::minimum_spanning_tree`], [`mesh::geodesic_clusters`]) without building a
+//!   graph object first.
+//! - [`points`] — raw 3D point clouds: [`points::dotprops`] derives the unit tangent
+//!   vector and `alpha` of every point's local neighbourhood, which is what [`nblast`]
+//!   consumes and what callers previously had to produce with scipy.
 //! - [`nblast`] / [`synblast`] — NBLAST neuron similarity, on skeleton points and
 //!   on synapses respectively.
 //! - [`matches`] — pulling the top matches back out of a score matrix (top-N, an
@@ -64,4 +69,8 @@ pub mod dag;
 
 pub mod mesh;
 
+pub mod points;
+
 pub mod topo;
+
+mod kdtree;

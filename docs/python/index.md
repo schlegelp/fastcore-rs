@@ -66,9 +66,12 @@ Meshes:
 - [`geodesic_matrix_mesh`](mesh.md#navis_fastcore.geodesic_matrix_mesh): parallel geodesic distances across a mesh
 - [`level_set_components`](mesh.md#navis_fastcore.level_set_components): components of every level set at once (wavefront rings)
 - [`contract_vertices`](mesh.md#navis_fastcore.contract_vertices) / [`minimum_spanning_tree`](mesh.md#navis_fastcore.minimum_spanning_tree): collapse a graph onto new nodes, then span it
+- [`geodesic_path`](mesh.md#navis_fastcore.geodesic_path) / [`geodesic_predecessors`](mesh.md#navis_fastcore.geodesic_predecessors): the shortest *route*, not just its length
+- [`geodesic_clusters`](mesh.md#navis_fastcore.geodesic_clusters): greedily partition a graph into clusters of bounded geodesic radius
 
 [Neuron similarity](../concepts/nblast.md):
 
+- [`dotprops`](nblast.md#navis_fastcore.dotprops) / [`Dotprop.from_points`](nblast.md#navis_fastcore.dotprops): tangent vectors and alpha from a bare point cloud
 - [`nblast`](nblast.md#navis_fastcore.nblast.nblast) / [`nblast_allbyall`](nblast.md#navis_fastcore.nblast_allbyall): NBLAST (query-vs-target / all-by-all)
 - [`nblast_smart`](nblast.md#navis_fastcore.nblast_smart): two-pass approximate NBLAST for large comparisons
 - [`synblast`](nblast.md#navis_fastcore.synblast): synapse-based NBLAST

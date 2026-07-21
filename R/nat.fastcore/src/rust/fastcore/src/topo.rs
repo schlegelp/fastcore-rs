@@ -26,6 +26,7 @@
 //! `min_size`, dropping disconnected fragments, …) is left to the caller
 //! (navis), matching the general-interface convention of the rest of the crate.
 
+use crate::kdtree::{box_dist2, dist2, KdTree, LEAF};
 use ndarray::{Array, Array1, ArrayView1, ArrayView2};
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -54,55 +55,7 @@ fn atomic_min_f64(cell: &AtomicU64, val: f64) {
 /// Marker for "the points below this subtree are not all in one component".
 const MIXED: u32 = u32::MAX;
 
-/// Marker stored in `KdNode::left` to say "this node is a leaf".
-const LEAF: u32 = u32::MAX;
-
-/// Points per k-d tree leaf. Big enough that a leaf scan amortises the descent,
-/// small enough that a leaf is rarely worth splitting further.
-const LEAF_SIZE: usize = 16;
-
-/// Squared Euclidean distance between two points.
-#[inline]
-fn dist2<const D: usize>(a: &[f64; D], b: &[f64; D]) -> f64 {
-    let mut sum = 0.0;
-    for k in 0..D {
-        let d = a[k] - b[k];
-        sum += d * d;
-    }
-    sum
-}
-
-/// Squared distance from `q` to the closest point of the box `lo..hi` (zero if
-/// `q` is inside it).
-#[inline]
-fn box_dist2<const D: usize>(lo: &[f64; D], hi: &[f64; D], q: &[f64; D]) -> f64 {
-    let mut sum = 0.0;
-    for k in 0..D {
-        let d = if q[k] < lo[k] {
-            lo[k] - q[k]
-        } else if q[k] > hi[k] {
-            q[k] - hi[k]
-        } else {
-            0.0
-        };
-        sum += d * d;
-    }
-    sum
-}
-
-/// One node of the k-d tree. Leaves have `left == LEAF` and cover the points
-/// `start..end` of the (tree-ordered) point array; internal nodes index their
-/// two children.
-struct KdNode<const D: usize> {
-    lo: [f64; D],
-    hi: [f64; D],
-    start: u32,
-    end: u32,
-    left: u32,
-    right: u32,
-}
-
-/// A static k-d tree supporting *nearest neighbour in a different component*.
+/// *Nearest neighbour in a different component*, on top of the shared [`KdTree`].
 ///
 /// This is the primitive a stock nearest-neighbour index cannot provide. Walking
 /// neighbours in distance order and skipping own-component hits is quadratic when
@@ -118,61 +71,7 @@ struct KdNode<const D: usize> {
 /// point, so the search skips it in O(1) — turning "walk across my entire
 /// fragment" into "step over it". Fragments are spatially coherent, so most
 /// subtrees are single-component and the labels prune almost everything.
-struct KdTree<const D: usize> {
-    /// Point coordinates, permuted into tree order.
-    pts: Vec<[f64; D]>,
-    /// Original node index of each point, in the same tree order.
-    idx: Vec<u32>,
-    nodes: Vec<KdNode<D>>,
-}
-
 impl<const D: usize> KdTree<D> {
-    fn build(mut items: Vec<([f64; D], u32)>) -> Self {
-        let mut nodes = Vec::with_capacity(2 * items.len() / LEAF_SIZE + 1);
-        Self::split(&mut items, 0, &mut nodes);
-        let (pts, idx) = items.into_iter().unzip();
-        KdTree { pts, idx, nodes }
-    }
-
-    /// Recursively split `items` at the median of its widest axis, appending the
-    /// resulting nodes in pre-order (so children always sit *after* their parent,
-    /// which is what lets [`KdTree::label`] work bottom-up by iterating in
-    /// reverse). Returns the index of the node covering `items`.
-    fn split(items: &mut [([f64; D], u32)], offset: usize, nodes: &mut Vec<KdNode<D>>) -> u32 {
-        let me = nodes.len() as u32;
-        let mut lo = [f64::INFINITY; D];
-        let mut hi = [f64::NEG_INFINITY; D];
-        for (p, _) in items.iter() {
-            for k in 0..D {
-                lo[k] = lo[k].min(p[k]);
-                hi[k] = hi[k].max(p[k]);
-            }
-        }
-        nodes.push(KdNode {
-            lo,
-            hi,
-            start: offset as u32,
-            end: (offset + items.len()) as u32,
-            left: LEAF,
-            right: LEAF,
-        });
-        if items.len() <= LEAF_SIZE {
-            return me;
-        }
-
-        let axis = (0..D)
-            .max_by(|&a, &b| (hi[a] - lo[a]).total_cmp(&(hi[b] - lo[b])))
-            .unwrap();
-        let mid = items.len() / 2;
-        items.select_nth_unstable_by(mid, |a, b| a.0[axis].total_cmp(&b.0[axis]));
-        let (left_items, right_items) = items.split_at_mut(mid);
-        let left = Self::split(left_items, offset, nodes);
-        let right = Self::split(right_items, offset + mid, nodes);
-        nodes[me as usize].left = left;
-        nodes[me as usize].right = right;
-        me
-    }
-
     /// Label every subtree with the super-component shared by all its points, or
     /// [`MIXED`]. `roots` gives each point's super-component in tree order.
     ///

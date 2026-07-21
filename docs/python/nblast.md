@@ -7,6 +7,29 @@ A "dotprop" is any object exposing `points` (an `(N, 3)` array of coordinates)
 and `vect` (an `(N, 3)` array of **unit** tangent vectors). When `use_alpha` is
 enabled it must additionally expose `alpha` (an `(N,)` array).
 
+## Building dotprops
+
+[`dotprops`](#navis_fastcore.dotprops) derives `vect` and `alpha` from a bare point
+cloud, so nothing outside `fastcore` is needed to get to a scoreable neuron:
+
+```python
+import navis_fastcore as fastcore
+
+dp = fastcore.Dotprop.from_points(points, k=20)      # or:
+vect, alpha = fastcore.dotprops(points, k=20)
+```
+
+`k` counts the point itself, matching `scipy.spatial.cKDTree.query` and what navis
+does. This replaces the usual `cKDTree.query` plus `N` 3x3 SVDs — a single-threaded
+step that on 100,000 points takes ~510 ms against ~33 ms here, and which was the only
+reason `navis-fastcore` would have needed scipy at all.
+
+The sign of each tangent vector is arbitrary (NBLAST scores on `|dot|`) but
+deterministic. Degenerate neighbourhoods — coincident points — give `alpha = 0` and a
+unit vector rather than the `NaN`s that would silently poison every score they touch.
+
+::: navis_fastcore.dotprops
+
 ## All-by-all
 
 ```python
