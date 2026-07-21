@@ -95,6 +95,11 @@ surface and how they spell it. `—` means that surface doesn't expose it direct
 | Geodesic distances across a mesh | `mesh::geodesic_matrix_mesh` | `geodesic_matrix_mesh` | `geodesic_matrix_mesh` |
 | Nearest / farthest target vertex | `mesh::geodesic_nearest_mesh`, `mesh::geodesic_farthest_mesh` | `geodesic_nearest_mesh`, `geodesic_farthest_mesh` | `geodesic_nearest_mesh`, `geodesic_farthest_mesh` |
 | Geodesic distances across any graph | `mesh::geodesic_matrix_graph` | `geodesic_matrix_graph` | `geodesic_matrix_graph` |
+| Unique undirected edges of a mesh | `mesh::unique_edges` | `unique_edges` | — |
+| Connected components of any graph | `mesh::connected_components_graph` | `connected_components_graph` | — |
+| Components of every level set at once | `mesh::level_set_components` | `level_set_components` | — |
+| Contract nodes and simplify the edge list | `mesh::contract_vertices` | `contract_vertices` | — |
+| Minimum / maximum spanning forest | `mesh::minimum_spanning_tree` | `minimum_spanning_tree` | — |
 
 ### Neuron similarity
 

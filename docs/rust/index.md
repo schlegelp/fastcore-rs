@@ -10,7 +10,7 @@ translate each language's idioms into the core's index-based API.
 |---|---|
 | `dag` | Traversal and geometry on rooted trees: geodesic distances, linear segments, Strahler index, twig pruning, node classification, connected components, synapse flow centrality, cycle detection. |
 | `topo` | Repairing fragmented skeletons: `stitch_fragments` finds the minimal-length edges that reconnect the pieces (optionally preferring fragments of similar calibre), `reroot_rewire` re-derives the parent vector afterwards. |
-| `mesh` | Triangle meshes as vertex graphs: `mesh_connected_components`, plus a parallel Dijkstra/BFS behind `geodesic_matrix_mesh`, `geodesic_nearest_mesh`, `geodesic_farthest_mesh` and — for arbitrary (cyclic) graphs given as an edge list — `geodesic_matrix_graph`. |
+| `mesh` | Triangle meshes as vertex graphs: `mesh_connected_components` and `unique_edges`, a parallel Dijkstra/BFS behind `geodesic_matrix_mesh`, `geodesic_nearest_mesh`, `geodesic_farthest_mesh` and — for arbitrary (cyclic) graphs given as an edge list — `geodesic_matrix_graph`, plus the traversal primitives that go with them: `connected_components_graph`, `level_set_components`, `contract_vertices` and `minimum_spanning_tree`. |
 | `nblast` | The NBLAST pipeline — `build_index`, `score_pair`, `nblast_query_target`, `nblast_allbyall`, `nblast_pairs`, plus the `Smat` scoring matrix and `Opts`. |
 | `nblast_knn` | Each neuron's `k` nearest neighbours without the `n x n` matrix — `nblast_knn`, `nblast_knn_query_target`, plus `build_signatures` / `candidate_pairs` and the `Symmetry` combine. |
 | `synblast` | Synapse-based NBLAST: `synblast_query_target`, `synblast_allbyall`. |

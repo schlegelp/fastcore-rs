@@ -21,6 +21,24 @@ fn find(parent: &mut [u32], mut x: u32) -> u32 {
     }
 }
 
+/// Union two nodes, attaching the larger root to the smaller.
+///
+/// Keeping the *smaller* index as the root is what makes the component label of a set of
+/// vertices independent of the order the edges arrived in — callers rely on the label being
+/// the minimum vertex index of the component.
+#[inline]
+fn union(parent: &mut [u32], a: u32, b: u32) {
+    let ra = find(parent, a);
+    let rb = find(parent, b);
+    if ra != rb {
+        if ra < rb {
+            parent[rb as usize] = ra;
+        } else {
+            parent[ra as usize] = rb;
+        }
+    }
+}
+
 /// Find connected components of a triangle mesh.
 ///
 /// Uses Union-Find (DSU) with path-halving. The only extra allocation is a
@@ -40,34 +58,11 @@ pub fn mesh_connected_components(faces: ArrayView2<u32>, n_vertices: usize) -> V
     // Each vertex is its own parent initially — the only allocation.
     let mut parent: Vec<u32> = (0..n_vertices as u32).collect();
 
-    // Walk every face and union the three vertices.
+    // Walk every face and union the three vertices. Unioning a–b and a–c is enough; b–c
+    // follows by transitivity.
     for face in faces.rows() {
-        let a = face[0];
-        let b = face[1];
-        let c = face[2];
-
-        // Union a–b
-        let ra = find(&mut parent, a);
-        let rb = find(&mut parent, b);
-        if ra != rb {
-            // Attach larger root to smaller root so root IDs are consistent.
-            if ra < rb {
-                parent[rb as usize] = ra;
-            } else {
-                parent[ra as usize] = rb;
-            }
-        }
-
-        // Union a–c  (re-find ra since it may have changed)
-        let ra2 = find(&mut parent, a);
-        let rc = find(&mut parent, c);
-        if ra2 != rc {
-            if ra2 < rc {
-                parent[rc as usize] = ra2;
-            } else {
-                parent[ra2 as usize] = rc;
-            }
-        }
+        union(&mut parent, face[0], face[1]);
+        union(&mut parent, face[0], face[2]);
     }
 
     // Final compression: make every vertex point directly to its root.
@@ -236,6 +231,282 @@ fn edge_lengths(edges: &[i64], coords: ArrayView2<f64>) -> Array1<f64> {
             let dz = a[2] - b[2];
             *o = (dx * dx + dy * dy + dz * dz).sqrt();
         });
+    Array1::from_vec(out)
+}
+
+// ---------------------------------------------------------------------------
+// Graph primitives
+// ---------------------------------------------------------------------------
+
+/// Range-check an edge list and return its row count.
+fn check_edges(edges: ArrayView2<u32>, n_nodes: usize) -> usize {
+    assert_eq!(edges.ncols(), 2, "`edges` must have shape (E, 2)");
+    for e in edges.rows() {
+        for &v in e {
+            assert!(
+                (v as usize) < n_nodes,
+                "edge references node {v}, but n_nodes = {n_nodes}"
+            );
+        }
+    }
+    edges.nrows()
+}
+
+/// Connected components of an undirected graph given as an edge list.
+///
+/// The edge-list counterpart of [`mesh_connected_components`], and the same Union-Find: one
+/// `Vec<u32>` of length `n_nodes`, no adjacency list. Use this when the graph is not a
+/// triangle mesh (or when you already hold the deduplicated edges and would rather not walk
+/// the faces again).
+///
+/// Arguments
+/// ---------
+/// - `edges`:   (E, 2) array of edges given as node indices. Direction is ignored;
+///   self-loops and parallel edges are harmless.
+/// - `n_nodes`: Total number of nodes. Nodes not named by any edge are isolated
+///   components of size one.
+///
+/// Returns
+/// -------
+/// A `Vec<u32>` of length `n_nodes` holding, per node, the root of its component — which is
+/// the smallest node index in that component.
+pub fn connected_components_graph(edges: ArrayView2<u32>, n_nodes: usize) -> Vec<u32> {
+    check_edges(edges, n_nodes);
+
+    let mut parent: Vec<u32> = (0..n_nodes as u32).collect();
+    for e in edges.rows() {
+        union(&mut parent, e[0], e[1]);
+    }
+    for i in 0..n_nodes {
+        parent[i] = find(&mut parent, i as u32);
+    }
+    parent
+}
+
+/// Connected components of every level set at once.
+///
+/// Given a label per node, this finds the connected components of each subgraph induced by
+/// the nodes sharing a label — all labels in a single pass, by unioning an edge only when its
+/// two endpoints agree. It is the primitive behind "which nodes were reached by the same
+/// wavefront and are actually touching", where the label is a (binned) geodesic distance and
+/// each component is one ring around the structure.
+///
+/// The point is that it replaces a *loop*. Done with a general-purpose graph library the same
+/// result costs one induced-subgraph construction plus one component search per distinct
+/// label, so a mesh with a thousand levels pays a thousand graph builds; here the whole thing
+/// is one `O(E α(N))` sweep over the edges, and the only allocations are three `N`-sized
+/// integer arrays.
+///
+/// Arguments
+/// ---------
+/// - `edges`:   (E, 2) array of edges given as node indices.
+/// - `n_nodes`: Total number of nodes.
+/// - `labels`:  One label per node. **Negative labels mark excluded nodes**: they join no
+///   component and come back as `-1`. That is what makes the output of a search that could
+///   not reach everything (`geodesic_matrix_*` returns `-1.0` for unreachable) usable here
+///   directly, rather than lumping every unreachable node into one bogus level.
+///
+/// Returns
+/// -------
+/// `(ids, n_components)` where `ids[i]` is the component of node `i` in `[0, n_components)`,
+/// or `-1` if the node was excluded. Ids are contiguous and assigned in order of first
+/// appearance scanning nodes low to high, so they are deterministic and can index straight
+/// into a `n_components`-long accumulator — no separate "unique" pass needed.
+pub fn level_set_components(
+    edges: ArrayView2<u32>,
+    n_nodes: usize,
+    labels: ArrayView1<i64>,
+) -> (Vec<i32>, usize) {
+    check_edges(edges, n_nodes);
+    assert_eq!(
+        labels.len(),
+        n_nodes,
+        "`labels` must have one entry per node ({n_nodes}), got {}",
+        labels.len()
+    );
+
+    let mut parent: Vec<u32> = (0..n_nodes as u32).collect();
+    for e in edges.rows() {
+        let (u, v) = (e[0], e[1]);
+        // A negative label excludes the node outright, so testing `>= 0` on one endpoint is
+        // enough — if it passes and the labels are equal, neither is negative.
+        let lu = labels[u as usize];
+        if lu >= 0 && lu == labels[v as usize] {
+            union(&mut parent, u, v);
+        }
+    }
+
+    // Densify. `remap` is indexed by DSU root, which is always a node index, so one N-sized
+    // array covers every possible root without a hash map.
+    let mut remap: Vec<i32> = vec![-1; n_nodes];
+    let mut ids: Vec<i32> = vec![-1; n_nodes];
+    let mut n_components: usize = 0;
+    for i in 0..n_nodes {
+        if labels[i] < 0 {
+            continue;
+        }
+        let root = find(&mut parent, i as u32) as usize;
+        if remap[root] < 0 {
+            remap[root] = n_components as i32;
+            n_components += 1;
+        }
+        ids[i] = remap[root];
+    }
+
+    (ids, n_components)
+}
+
+/// Contract nodes onto new ids, returning the simplified edge list.
+///
+/// Both endpoints of every edge are pushed through `mapping`; edges that end up with both
+/// ends on the same new node (self-loops) are dropped, and the rest are deduplicated. This is
+/// igraph's `contract_vertices()` followed by `simplify()`, fused — and, unlike igraph's
+/// version, it does not rewrite a graph object in place, so contracting does not cost a copy
+/// of the graph.
+///
+/// Arguments
+/// ---------
+/// - `edges`:   (E, 2) array of edges given as node indices.
+/// - `mapping`: New id for each old node, i.e. `mapping[old] = new`. Ids need not be
+///   contiguous, but the output is only as compact as the ids you supply.
+/// - `threads`: Size of the thread pool, or `None` for all cores.
+///
+/// Returns
+/// -------
+/// An `(n_unique, 2)` i64 array of the surviving edges as `[min, max]` rows, sorted ascending
+/// by `(max, min)` — the same ordering [`unique_edges`] produces.
+pub fn contract_vertices(
+    edges: ArrayView2<u32>,
+    mapping: ArrayView1<u32>,
+    threads: Option<usize>,
+) -> Array2<i64> {
+    assert_eq!(edges.ncols(), 2, "`edges` must have shape (E, 2)");
+    let n_old = mapping.len();
+    for e in edges.rows() {
+        for &v in e {
+            assert!(
+                (v as usize) < n_old,
+                "edge references node {v}, but `mapping` only covers {n_old} nodes"
+            );
+        }
+    }
+
+    let storage = edges.as_standard_layout();
+    let s: &[u32] = storage.as_slice().expect("standard layout is contiguous");
+    let map = mapping.as_standard_layout();
+    let m: &[u32] = map.as_slice().expect("standard layout is contiguous");
+
+    with_pool(threads, || {
+        // Self-loops are dropped *before* the sort, not after: on a contraction that collapses
+        // a mesh down to a skeleton the overwhelming majority of edges are internal to a group,
+        // so this is what keeps the sort off the discarded bulk.
+        let mut keys: Vec<u64> = s
+            .par_chunks_exact(2)
+            .filter_map(|e| {
+                let (a, b) = (m[e[0] as usize], m[e[1] as usize]);
+                (a != b).then(|| edge_key(a, b))
+            })
+            .collect();
+        keys.par_sort_unstable();
+
+        let mut out: Vec<i64> = Vec::new();
+        let mut prev = None;
+        for &k in &keys {
+            if prev != Some(k) {
+                out.push((k & 0xFFFF_FFFF) as i64);
+                out.push((k >> 32) as i64);
+                prev = Some(k);
+            }
+        }
+        let n = out.len() / 2;
+        Array2::from_shape_vec((n, 2), out).unwrap()
+    })
+}
+
+/// Minimum (or maximum) spanning forest of an undirected graph.
+///
+/// Kruskal's algorithm on the same Union-Find as the component search above: sort the edges
+/// by weight, keep the ones that join two different components. Disconnected input is fine —
+/// each component contributes its own tree, so this is really a spanning *forest*, matching
+/// igraph's `spanning_tree()` and scipy's `minimum_spanning_tree`.
+///
+/// Arguments
+/// ---------
+/// - `edges`:    (E, 2) array of edges given as node indices.
+/// - `n_nodes`:  Total number of nodes.
+/// - `weights`:  Weight per edge, or `None` to treat every edge as equal (any spanning
+///   forest, edges preferred in input order). Must be finite; negative weights are allowed.
+/// - `maximize`: Return the *maximum* spanning forest instead. This exists so callers do not
+///   have to pass `1 / weight` to invert the ordering — a transform that both loses precision
+///   and blows up on the zero weights that legitimately occur.
+/// - `threads`:  Size of the thread pool, or `None` for all cores.
+///
+/// Returns
+/// -------
+/// A 1-D i64 array of *row indices into `edges`*, ascending by weight — not the edges
+/// themselves, so the caller can index whatever per-edge data it holds (weights, ids,
+/// attributes) with the same array. Length is `n_nodes - (number of components)`.
+pub fn minimum_spanning_tree(
+    edges: ArrayView2<u32>,
+    n_nodes: usize,
+    weights: Option<&ArrayView1<f32>>,
+    maximize: bool,
+    threads: Option<usize>,
+) -> Array1<i64> {
+    let n_edges = check_edges(edges, n_nodes);
+    if let Some(w) = weights {
+        assert_eq!(
+            w.len(),
+            n_edges,
+            "`weights` must have one entry per edge ({n_edges}), got {}",
+            w.len()
+        );
+        for &x in w {
+            assert!(x.is_finite(), "edge weights must be finite, got {x}");
+        }
+    }
+
+    let order: Vec<u32> = match weights {
+        None => (0..n_edges as u32).collect(),
+        Some(w) => with_pool(threads, || {
+            let mut order: Vec<u32> = (0..n_edges as u32).collect();
+            // `total_cmp` gives a total order over all finite floats including negatives, so
+            // no bit-pattern trick (which would need non-negative weights) and no
+            // `partial_cmp().unwrap()` panic path. Ties break on the edge index, which makes
+            // the chosen tree reproducible across runs and thread counts.
+            order.par_sort_unstable_by(|&a, &b| {
+                w[a as usize]
+                    .total_cmp(&w[b as usize])
+                    .then_with(|| a.cmp(&b))
+            });
+            if maximize {
+                order.reverse();
+            }
+            order
+        }),
+    };
+
+    let mut parent: Vec<u32> = (0..n_nodes as u32).collect();
+    // A spanning forest has at most n_nodes - 1 edges, so this never grows past that.
+    let mut out: Vec<i64> = Vec::with_capacity(n_nodes.saturating_sub(1));
+    for &i in &order {
+        let e = edges.row(i as usize);
+        let (ru, rv) = (find(&mut parent, e[0]), find(&mut parent, e[1]));
+        if ru != rv {
+            if ru < rv {
+                parent[rv as usize] = ru;
+            } else {
+                parent[ru as usize] = rv;
+            }
+            out.push(i as i64);
+            // Every accepted edge merges two components; once we are down to one there is
+            // nothing left to join and the rest of the sorted list is dead weight.
+            if out.len() + 1 == n_nodes {
+                break;
+            }
+        }
+    }
+
     Array1::from_vec(out)
 }
 
@@ -1571,6 +1842,198 @@ mod tests {
         let faces = array![[0u32, 0, 1]];
         let (edges, _, _, _) = unique_edges(faces.view(), None, false, false, None);
         assert_eq!(edges, array![[0i64, 0], [0, 1]]);
+    }
+
+    #[test]
+    fn connected_components_graph_agrees_with_the_mesh_version() {
+        // Whatever the face-based DSU says about a mesh, the edge-based one must say about
+        // that mesh's unique edges — same labels, not merely the same partition.
+        let faces = array![[0u32, 1, 2], [1, 2, 3], [4, 5, 6]];
+        let (edges, _, _, _) = unique_edges(faces.view(), None, false, false, None);
+        let edges: Array2<u32> = edges.mapv(|v| v as u32);
+
+        let from_faces = mesh_connected_components(faces.view(), 8);
+        let from_edges = connected_components_graph(edges.view(), 8);
+
+        assert_eq!(from_edges, from_faces);
+        // Labels are the minimum index of each component; vertex 7 is isolated.
+        assert_eq!(from_edges, vec![0, 0, 0, 0, 4, 4, 4, 7]);
+    }
+
+    #[test]
+    fn level_sets_split_a_ring_that_is_disconnected_at_the_same_level() {
+        // Path 0-1-2-3-4 plus an isolated pair 5-6. Label by "distance parity" so that
+        // level 0 = {0, 2, 4, 6} and level 1 = {1, 3, 5}: no two same-label nodes touch, so
+        // every node must end up in its own component.
+        let edges = array![[0u32, 1], [1, 2], [2, 3], [3, 4], [5, 6]];
+        let labels = array![0i64, 1, 0, 1, 0, 1, 0];
+        let (ids, n) = level_set_components(edges.view(), 7, labels.view());
+        assert_eq!(n, 7);
+        assert_eq!(ids, vec![0, 1, 2, 3, 4, 5, 6]);
+
+        // Now label the path 0,0,0,1,1 — one level-0 run and one level-1 run — while the
+        // pair 5-6 shares level 0 but is *not* adjacent to the path, so it is a third
+        // component even though its label matches the first.
+        let labels = array![0i64, 0, 0, 1, 1, 0, 0];
+        let (ids, n) = level_set_components(edges.view(), 7, labels.view());
+        assert_eq!(n, 3);
+        assert_eq!(ids, vec![0, 0, 0, 1, 1, 2, 2]);
+    }
+
+    #[test]
+    fn negative_labels_are_excluded_not_grouped() {
+        // The unreachable marker `geodesic_matrix_*` emits is -1. Those nodes must not fuse
+        // into one giant phantom level just because they share the sentinel — even when they
+        // are adjacent to each other.
+        let edges = array![[0u32, 1], [1, 2], [2, 3]];
+        let labels = array![-1i64, -1, 5, 5];
+        let (ids, n) = level_set_components(edges.view(), 4, labels.view());
+        assert_eq!(n, 1);
+        assert_eq!(ids, vec![-1, -1, 0, 0]);
+    }
+
+    #[test]
+    fn level_set_components_match_a_per_level_subgraph_search() {
+        // The oracle: do it the slow way — for each distinct label, induce the subgraph on
+        // those nodes and find its components — and check the fused pass agrees.
+        let n = 9;
+        let (faces, _) = grid(n, 1.0);
+        let n_nodes = n * n;
+        let (edges, _, _, _) = unique_edges(faces.view(), None, false, false, None);
+        let edges: Array2<u32> = edges.mapv(|v| v as u32);
+
+        // Hop distance from a corner, which on this grid is max(i, j) — a genuine wavefront.
+        let d = geodesic_matrix_mesh(faces.view(), n_nodes, None, Some(&[0]), None, None, None);
+        let labels: Array1<i64> = d.row(0).iter().map(|&x| x as i64).collect();
+
+        let (ids, n_comp) = level_set_components(edges.view(), n_nodes, labels.view());
+
+        // Oracle: per label, a DSU restricted to that label's induced subgraph.
+        for lvl in 0..n as i64 {
+            let members: Vec<usize> = (0..n_nodes).filter(|&i| labels[i] == lvl).collect();
+            let mut parent: Vec<u32> = (0..n_nodes as u32).collect();
+            for e in edges.rows() {
+                if labels[e[0] as usize] == lvl && labels[e[1] as usize] == lvl {
+                    union(&mut parent, e[0], e[1]);
+                }
+            }
+            for (a, b) in members.iter().zip(members.iter().skip(1)) {
+                let same_oracle = find(&mut parent, *a as u32) == find(&mut parent, *b as u32);
+                assert_eq!(
+                    same_oracle,
+                    ids[*a] == ids[*b],
+                    "level {lvl}: nodes {a} and {b} disagree"
+                );
+            }
+        }
+
+        // Every node is reachable here, so every node is assigned, and ids are dense.
+        assert!(ids.iter().all(|&x| x >= 0));
+        assert_eq!(ids.iter().max().unwrap(), &(n_comp as i32 - 1));
+    }
+
+    #[test]
+    fn contract_vertices_drops_self_loops_and_dedups() {
+        // Square 0-1-2-3 with a diagonal. Collapse {0,1} -> 0 and {2,3} -> 1.
+        let edges = array![[0u32, 1], [1, 2], [2, 3], [3, 0], [0, 2]];
+        let mapping = array![0u32, 0, 1, 1];
+        let out = contract_vertices(edges.view(), mapping.view(), None);
+
+        // 0-1 and 2-3 became self-loops and vanished; the remaining three all became 0-1 and
+        // collapsed to one edge.
+        assert_eq!(out, array![[0i64, 1]]);
+    }
+
+    #[test]
+    fn contract_vertices_identity_is_unique_edges() {
+        // Contracting through the identity map must reproduce exactly the deduplicated edge
+        // list — same rows, same (max, min) order.
+        let faces = array![[0u32, 1, 2], [1, 2, 3]];
+        let (unique, _, _, _) = unique_edges(faces.view(), None, false, false, None);
+        let edges: Array2<u32> = unique.mapv(|v| v as u32);
+        let mapping: Array1<u32> = (0..4u32).collect();
+
+        let out = contract_vertices(edges.view(), mapping.view(), None);
+        assert_eq!(out, unique);
+    }
+
+    #[test]
+    fn mst_picks_the_cheap_edges_and_maximize_inverts_it() {
+        // Triangle 0-1-2 with weights 1, 2, 3 (edges 0-1, 1-2, 0-2).
+        let edges = array![[0u32, 1], [1, 2], [0, 2]];
+        let w = array![1.0f32, 2.0, 3.0];
+
+        // Minimum: take 1 and 2, reject the 3 that would close the cycle.
+        let mst = minimum_spanning_tree(edges.view(), 3, Some(&w.view()), false, None);
+        assert_eq!(mst.to_vec(), vec![0i64, 1]);
+
+        // Maximum: take 3 and 2. Returned ascending by weight *as sorted*, i.e. heaviest
+        // first for maximize.
+        let mst = minimum_spanning_tree(edges.view(), 3, Some(&w.view()), true, None);
+        assert_eq!(mst.to_vec(), vec![2i64, 1]);
+    }
+
+    #[test]
+    fn mst_of_a_disconnected_graph_is_a_forest() {
+        // Two triangles, no edge between them: n_nodes - n_components = 6 - 2 = 4 edges.
+        let edges = array![[0u32, 1], [1, 2], [0, 2], [3, 4], [4, 5], [3, 5]];
+        let w = array![1.0f32, 2.0, 3.0, 1.0, 2.0, 3.0];
+        let mst = minimum_spanning_tree(edges.view(), 6, Some(&w.view()), false, None);
+        assert_eq!(mst.len(), 4);
+        assert_eq!(mst.to_vec(), vec![0i64, 3, 1, 4]);
+
+        // The result must be acyclic and span both components.
+        let picked: Vec<[u32; 2]> = mst
+            .iter()
+            .map(|&i| [edges[[i as usize, 0]], edges[[i as usize, 1]]])
+            .collect();
+        let flat = Array2::from_shape_vec(
+            (picked.len(), 2),
+            picked.iter().flat_map(|e| e.to_vec()).collect(),
+        )
+        .unwrap();
+        let comps = connected_components_graph(flat.view(), 6);
+        assert_eq!(comps, vec![0, 0, 0, 3, 3, 3]);
+    }
+
+    #[test]
+    fn mst_handles_negative_weights_and_ties() {
+        // Negative weights are legal for Kruskal and must not be rejected (the heap-key bit
+        // trick used elsewhere in this module cannot represent them; `total_cmp` can).
+        let edges = array![[0u32, 1], [1, 2], [0, 2]];
+        let w = array![-5.0f32, -1.0, -3.0];
+        let mst = minimum_spanning_tree(edges.view(), 3, Some(&w.view()), false, None);
+        assert_eq!(mst.to_vec(), vec![0i64, 2]);
+
+        // All-equal weights: ties break on edge index, so the first two independent edges win.
+        let w = array![7.0f32, 7.0, 7.0];
+        let mst = minimum_spanning_tree(edges.view(), 3, Some(&w.view()), false, None);
+        assert_eq!(mst.to_vec(), vec![0i64, 1]);
+
+        // Unweighted behaves the same as all-equal weights.
+        let mst = minimum_spanning_tree(edges.view(), 3, None, false, None);
+        assert_eq!(mst.to_vec(), vec![0i64, 1]);
+    }
+
+    #[test]
+    fn graph_primitives_handle_empty_input() {
+        let edges = Array2::<u32>::zeros((0, 2));
+        assert_eq!(connected_components_graph(edges.view(), 3), vec![0, 1, 2]);
+
+        let labels = array![0i64, 0, -1];
+        let (ids, n) = level_set_components(edges.view(), 3, labels.view());
+        assert_eq!((ids, n), (vec![0, 1, -1], 2));
+
+        let mapping = array![0u32, 0, 1];
+        assert_eq!(
+            contract_vertices(edges.view(), mapping.view(), None).shape(),
+            &[0, 2]
+        );
+
+        assert_eq!(
+            minimum_spanning_tree(edges.view(), 3, None, false, None).len(),
+            0
+        );
     }
 
     #[test]

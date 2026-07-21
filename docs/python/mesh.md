@@ -94,3 +94,65 @@ fastcore.geodesic_matrix_graph(edges, 3, weights=weights)
 ```
 
 ::: navis_fastcore.geodesic_matrix_graph
+
+## Graph primitives
+
+The handful of traversal operations that mesh algorithms actually need, taken straight
+off an edge list. These exist because reaching for a general-purpose graph library means
+paying to *build* a graph object first — on a 41k-vertex mesh that construction alone
+costs more than every query you then run against it.
+
+```python
+import navis_fastcore as fastcore
+import numpy as np
+
+# A path 0-1-2, a lone edge 3-4, and an isolated node 5
+edges = np.array([[0, 1], [1, 2], [3, 4]], dtype=np.uint32)
+
+fastcore.connected_components_graph(edges, n_nodes=6)
+# array([0, 0, 0, 3, 3, 5], dtype=uint32)
+```
+
+::: navis_fastcore.connected_components_graph
+
+### Level sets
+
+[`level_set_components`](#navis_fastcore.level_set_components) is the one worth knowing
+about. Given a label per node it finds the connected components of *every* label's
+induced subgraph in one pass — which is the inner loop of wavefront-style mesh
+skeletonization, where the label is a binned geodesic distance and each component is one
+ring around the structure.
+
+Done conventionally that loop costs one subgraph construction plus one component search
+per distinct level. Here it is a single sweep over the edges, unioning an edge only when
+its endpoints agree:
+
+```python
+import navis_fastcore as fastcore
+import numpy as np
+
+faces = ...      # your mesh
+edges = fastcore.unique_edges(faces).astype(np.uint32)
+n = len(vertices)
+
+# Cast a wave from vertex 0 and collapse each ring
+dist = fastcore.geodesic_matrix_mesh(faces, n_vertices=n, sources=[0])[0]
+rings, n_rings = fastcore.level_set_components(edges, n, dist.astype(np.int64))
+
+# Ring ids are contiguous, so aggregating is a plain bincount
+sizes = np.bincount(rings[rings >= 0], minlength=n_rings)
+```
+
+Note that `dist` is `-1` where the search could not reach, and negative labels are
+*excluded* rather than grouped — so an unreachable region does not become one bogus
+level.
+
+On a 41k-vertex mesh with ~200 levels this runs in ~0.3 ms against ~12 ms for the
+per-level-subgraph equivalent, on top of the ~28 ms of graph construction it avoids
+entirely.
+
+::: navis_fastcore.level_set_components
+
+::: navis_fastcore.contract_vertices
+
+::: navis_fastcore.minimum_spanning_tree

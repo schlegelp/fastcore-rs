@@ -3,8 +3,9 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use fastcore::mesh::{
-    geodesic_farthest_mesh, geodesic_matrix_graph, geodesic_matrix_mesh, geodesic_nearest_mesh,
-    mesh_connected_components, unique_edges,
+    connected_components_graph, contract_vertices, geodesic_farthest_mesh, geodesic_matrix_graph,
+    geodesic_matrix_mesh, geodesic_nearest_mesh, level_set_components, mesh_connected_components,
+    minimum_spanning_tree, unique_edges,
 };
 
 /// Borrow an index array as a contiguous slice.
@@ -236,6 +237,114 @@ pub fn geodesic_nearest_mesh_py<'py>(
         threads,
     );
     Ok((dists.into_pyarray(py), nodes.into_pyarray(py)))
+}
+
+/// Connected components of an undirected graph given as an edge list.
+///
+/// The edge-list counterpart of `mesh_connected_components`.
+///
+/// Arguments
+/// ---------
+/// - `edges`:   (E, 2) uint32 array of undirected edges (node indices).
+/// - `n_nodes`: Total number of nodes.
+///
+/// Returns
+/// -------
+/// A 1-D uint32 array holding, per node, the smallest node index in its component.
+#[pyfunction]
+#[pyo3(name = "connected_components_graph")]
+pub fn connected_components_graph_py<'py>(
+    py: Python<'py>,
+    edges: PyReadonlyArray2<u32>,
+    n_nodes: usize,
+) -> Bound<'py, PyArray1<u32>> {
+    connected_components_graph(edges.as_array(), n_nodes).into_pyarray(py)
+}
+
+/// Connected components of every level set at once.
+///
+/// Finds the connected components of each subgraph induced by the nodes sharing a label, for
+/// all labels in one `O(E)` pass — no per-level subgraph construction.
+///
+/// Arguments
+/// ---------
+/// - `edges`:   (E, 2) uint32 array of undirected edges (node indices).
+/// - `n_nodes`: Total number of nodes.
+/// - `labels`:  (n_nodes, ) int64 label per node. Negative labels mark excluded nodes,
+///   which join no component and come back as `-1`.
+///
+/// Returns
+/// -------
+/// `(ids, n_components)`: `ids` is a 1-D int32 array of contiguous component ids in
+/// `[0, n_components)`, or `-1` for excluded nodes.
+#[pyfunction]
+#[pyo3(name = "level_set_components")]
+pub fn level_set_components_py<'py>(
+    py: Python<'py>,
+    edges: PyReadonlyArray2<u32>,
+    n_nodes: usize,
+    labels: PyReadonlyArray1<i64>,
+) -> (Bound<'py, PyArray1<i32>>, usize) {
+    let (ids, n) = level_set_components(edges.as_array(), n_nodes, labels.as_array());
+    (ids.into_pyarray(py), n)
+}
+
+/// Contract nodes onto new ids, returning the simplified edge list.
+///
+/// igraph's `contract_vertices()` + `simplify()`, fused: both endpoints are pushed through
+/// `mapping`, self-loops are dropped and the rest deduplicated.
+///
+/// Arguments
+/// ---------
+/// - `edges`:   (E, 2) uint32 array of undirected edges (node indices).
+/// - `mapping`: (n_old, ) uint32 new id per old node.
+/// - `threads`: Size of the thread pool, or `None` for all cores.
+///
+/// Returns
+/// -------
+/// An (n_unique, 2) int64 array of `[min, max]` rows, ordered as `unique_edges`.
+#[pyfunction]
+#[pyo3(name = "contract_vertices", signature = (edges, mapping, threads=None))]
+pub fn contract_vertices_py<'py>(
+    py: Python<'py>,
+    edges: PyReadonlyArray2<u32>,
+    mapping: PyReadonlyArray1<u32>,
+    threads: Option<usize>,
+) -> Bound<'py, PyArray2<i64>> {
+    contract_vertices(edges.as_array(), mapping.as_array(), threads).into_pyarray(py)
+}
+
+/// Minimum (or maximum) spanning forest of an undirected graph.
+///
+/// Kruskal's algorithm. Disconnected input yields one tree per component.
+///
+/// Arguments
+/// ---------
+/// - `edges`:    (E, 2) uint32 array of undirected edges (node indices).
+/// - `n_nodes`:  Total number of nodes.
+/// - `weights`:  (E, ) float32 weights, or `None` to treat every edge as equal. Must be
+///   finite; negative weights are allowed.
+/// - `maximize`: Return the maximum spanning forest instead.
+/// - `threads`:  Size of the thread pool, or `None` for all cores.
+///
+/// Returns
+/// -------
+/// A 1-D int64 array of row indices into `edges`, ordered by weight.
+#[pyfunction]
+#[pyo3(
+    name = "minimum_spanning_tree",
+    signature = (edges, n_nodes, weights=None, maximize=false, threads=None)
+)]
+pub fn minimum_spanning_tree_py<'py>(
+    py: Python<'py>,
+    edges: PyReadonlyArray2<u32>,
+    n_nodes: usize,
+    weights: Option<PyReadonlyArray1<f32>>,
+    maximize: bool,
+    threads: Option<usize>,
+) -> Bound<'py, PyArray1<i64>> {
+    let w = weights.as_ref().map(|w| w.as_array());
+    minimum_spanning_tree(edges.as_array(), n_nodes, w.as_ref(), maximize, threads).into_pyarray(py)
 }
 
 /// For each source, the distance to its farthest target and that target's vertex index.

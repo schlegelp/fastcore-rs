@@ -4,6 +4,10 @@ from . import _fastcore
 
 __all__ = [
     "mesh_connected_components",
+    "connected_components_graph",
+    "level_set_components",
+    "contract_vertices",
+    "minimum_spanning_tree",
     "unique_edges",
     "geodesic_matrix_mesh",
     "geodesic_matrix_graph",
@@ -170,6 +174,272 @@ def unique_edges(
     if vertices is not None:
         out += (lengths,)
     return out
+
+
+def _prep_edges(edges, n_nodes):
+    """Validate and coerce an (E, 2) edge list against a node count."""
+    edges = np.asarray(edges, dtype=np.uint32, order="C")
+    if edges.ndim != 2 or edges.shape[1] != 2:
+        raise ValueError(
+            f"`edges` must be a 2-D array of shape (E, 2), got {edges.shape}"
+        )
+
+    n_nodes = int(n_nodes)
+    if len(edges) and edges.max() >= n_nodes:
+        raise ValueError(
+            f"`edges` references node {edges.max()} but n_nodes = {n_nodes}"
+        )
+    return edges, n_nodes
+
+
+def connected_components_graph(edges, n_nodes):
+    """Find connected components of a graph given as an edge list.
+
+    The edge-list counterpart of :func:`~navis_fastcore.mesh_connected_components`,
+    using the same Union-Find: a single integer array of length ``n_nodes``, no
+    adjacency list. Use this when the graph is not a triangle mesh, or when you
+    already hold the deduplicated edges and would rather not walk the faces again.
+
+    Parameters
+    ----------
+    edges :      (E, 2) array
+                 Edges given as rows of two node indices. Direction is ignored;
+                 self-loops and parallel edges are harmless.
+    n_nodes :    int
+                 Total number of nodes. Nodes not named by any edge form
+                 components of size one.
+
+    Returns
+    -------
+    components : (n_nodes, ) uint32 array
+                 For each node, the smallest node index in its component.
+
+    Examples
+    --------
+    A path 0-1-2, a lone edge 3-4, and an isolated node 5:
+
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> edges = np.array([[0, 1], [1, 2], [3, 4]], dtype=np.uint32)
+    >>> fastcore.connected_components_graph(edges, n_nodes=6)
+    array([0, 0, 0, 3, 3, 5], dtype=uint32)
+
+    """
+    edges, n_nodes = _prep_edges(edges, n_nodes)
+    return _fastcore.connected_components_graph(edges, n_nodes)
+
+
+def level_set_components(edges, n_nodes, labels):
+    """Find the connected components of every level set at once.
+
+    Given a label per node, this finds the connected components of each subgraph
+    induced by the nodes sharing a label — all labels in a single pass, by
+    unioning an edge only when its two endpoints agree.
+
+    This is the primitive behind "which nodes were reached by the same wavefront
+    and are actually touching", where ``labels`` is a (binned) geodesic distance
+    and each component is one ring around the structure.
+
+    The point is that it replaces a *loop*. With a general-purpose graph library
+    the same result costs one induced-subgraph construction plus one component
+    search per distinct label, so a mesh with a thousand levels pays a thousand
+    graph builds; here it is one ``O(E)`` sweep over the edges, and the only
+    allocations are three ``n_nodes``-sized integer arrays.
+
+    Parameters
+    ----------
+    edges :        (E, 2) array
+                   Edges given as rows of two node indices.
+    n_nodes :      int
+                   Total number of nodes.
+    labels :       (n_nodes, ) array
+                   Label per node, convertible to ``int64``. **Negative labels
+                   mark excluded nodes**: they join no component and come back as
+                   ``-1``. That is what lets you feed the output of a search that
+                   could not reach everything straight in — ``geodesic_matrix_*``
+                   returns ``-1`` for unreachable — rather than lumping every
+                   unreachable node into one bogus level.
+
+    Returns
+    -------
+    ids :          (n_nodes, ) int32 array
+                   Component of each node in ``[0, n_components)``, or ``-1`` for
+                   excluded nodes. Ids are contiguous and assigned in order of
+                   first appearance scanning nodes low to high, so they are
+                   deterministic and can index straight into an accumulator — no
+                   separate ``np.unique`` pass needed.
+    n_components : int
+                   Number of components found.
+
+    Examples
+    --------
+    A path 0-1-2-3-4 labelled ``0, 0, 0, 1, 1``: one run per label, so two
+    components.
+
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> edges = np.array([[0, 1], [1, 2], [2, 3], [3, 4]], dtype=np.uint32)
+    >>> ids, n = fastcore.level_set_components(edges, 5, [0, 0, 0, 1, 1])
+    >>> ids
+    array([0, 0, 0, 1, 1], dtype=int32)
+
+    Nodes sharing a label but *not* touching stay separate — here label 0 appears
+    at both ends of the path:
+
+    >>> ids, n = fastcore.level_set_components(edges, 5, [0, 1, 1, 1, 0])
+    >>> ids
+    array([0, 1, 1, 1, 2], dtype=int32)
+
+    Aggregating per component is then a plain ``np.bincount``:
+
+    >>> sizes = np.bincount(ids[ids >= 0], minlength=n)
+    >>> sizes
+    array([1, 3, 1])
+
+    """
+    edges, n_nodes = _prep_edges(edges, n_nodes)
+
+    labels = np.ascontiguousarray(np.asarray(labels, dtype=np.int64).ravel())
+    if len(labels) != n_nodes:
+        raise ValueError(
+            f"`labels` must have one entry per node: got {len(labels)} for "
+            f"{n_nodes} nodes"
+        )
+
+    return _fastcore.level_set_components(edges, n_nodes, labels)
+
+
+def contract_vertices(edges, mapping, threads=None):
+    """Contract nodes onto new ids and return the simplified edge list.
+
+    Both endpoints of every edge are pushed through ``mapping``; edges that end up
+    with both ends on the same new node (self-loops) are dropped, and the rest are
+    deduplicated. This is igraph's ``contract_vertices()`` followed by
+    ``simplify()``, fused — and, unlike igraph's version, it does not rewrite a
+    graph object in place, so contracting does not cost a copy of the graph.
+
+    Parameters
+    ----------
+    edges :   (E, 2) array
+              Edges given as rows of two node indices.
+    mapping : (n_old, ) array
+              New id for each old node, i.e. ``mapping[old] = new``. Ids need not
+              be contiguous, but the output is only as compact as the ids you
+              supply.
+    threads : int, optional
+              Number of threads to use. If ``None`` uses all available cores.
+
+    Returns
+    -------
+    edges :   (n_unique, 2) int64 array
+              The surviving edges as ``[min, max]`` rows, sorted ascending by
+              ``(max, min)`` — the same ordering
+              :func:`~navis_fastcore.unique_edges` produces.
+
+    Examples
+    --------
+    A square 0-1-2-3 with a diagonal, collapsing ``{0, 1} -> 0`` and
+    ``{2, 3} -> 1``. The 0-1 and 2-3 edges become self-loops and vanish; the
+    remaining three all become 0-1 and collapse to a single edge:
+
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> edges = np.array([[0, 1], [1, 2], [2, 3], [3, 0], [0, 2]], dtype=np.uint32)
+    >>> fastcore.contract_vertices(edges, [0, 0, 1, 1])
+    array([[0, 1]])
+
+    """
+    edges = np.asarray(edges, dtype=np.uint32, order="C")
+    if edges.ndim != 2 or edges.shape[1] != 2:
+        raise ValueError(
+            f"`edges` must be a 2-D array of shape (E, 2), got {edges.shape}"
+        )
+
+    mapping = np.ascontiguousarray(np.asarray(mapping, dtype=np.uint32).ravel())
+    if len(edges) and edges.max() >= len(mapping):
+        raise ValueError(
+            f"`edges` references node {edges.max()} but `mapping` only covers "
+            f"{len(mapping)} nodes"
+        )
+
+    return _fastcore.contract_vertices(
+        edges, mapping, None if threads is None else int(threads)
+    )
+
+
+def minimum_spanning_tree(edges, n_nodes, weights=None, maximize=False, threads=None):
+    """Find the minimum (or maximum) spanning forest of a graph.
+
+    Kruskal's algorithm on the same Union-Find as the component search: sort the
+    edges by weight, keep the ones that join two different components.
+    Disconnected input is fine — each component contributes its own tree, so this
+    is really a spanning *forest*, matching igraph's ``spanning_tree()`` and
+    scipy's ``minimum_spanning_tree``.
+
+    Parameters
+    ----------
+    edges :    (E, 2) array
+               Edges given as rows of two node indices.
+    n_nodes :  int
+               Total number of nodes.
+    weights :  (E, ) array, optional
+               Weight per edge. If ``None`` every edge counts as equal (any
+               spanning forest, edges preferred in input order). Must be finite;
+               negative weights are allowed.
+    maximize : bool
+               Return the *maximum* spanning forest instead. This exists so you do
+               not have to pass ``1 / weights`` to invert the ordering — a
+               transform that both loses precision and blows up on the zero
+               weights that legitimately occur.
+    threads :  int, optional
+               Number of threads to use. If ``None`` uses all available cores.
+
+    Returns
+    -------
+    indices :  (n_nodes - n_components, ) int64 array
+               Row indices *into* ``edges``, ordered by weight — not the edges
+               themselves, so you can index whatever per-edge data you hold
+               (weights, ids, attributes) with the same array.
+
+    Examples
+    --------
+    A triangle with weights 1, 2, 3 — the spanning tree takes the two cheap edges
+    and rejects the one that would close the cycle:
+
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> edges = np.array([[0, 1], [1, 2], [0, 2]], dtype=np.uint32)
+    >>> weights = np.array([1, 2, 3], dtype=np.float32)
+    >>> keep = fastcore.minimum_spanning_tree(edges, 3, weights)
+    >>> edges[keep]
+    array([[0, 1],
+           [1, 2]], dtype=uint32)
+
+    Ask for the maximum instead and it takes the two expensive ones:
+
+    >>> keep = fastcore.minimum_spanning_tree(edges, 3, weights, maximize=True)
+    >>> edges[keep]
+    array([[0, 2],
+           [1, 2]], dtype=uint32)
+
+    """
+    edges, n_nodes = _prep_edges(edges, n_nodes)
+
+    if weights is not None:
+        weights = np.ascontiguousarray(np.asarray(weights, dtype=np.float32).ravel())
+        if len(weights) != len(edges):
+            raise ValueError(
+                f"`weights` must have one entry per edge: got {len(weights)} "
+                f"for {len(edges)} edges"
+            )
+
+    return _fastcore.minimum_spanning_tree(
+        edges,
+        n_nodes,
+        weights,
+        bool(maximize),
+        None if threads is None else int(threads),
+    )
 
 
 def _prep_mesh(faces, vertices, n_vertices):

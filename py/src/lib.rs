@@ -146,6 +146,18 @@ mod fastcore {
     use super::unique_edges_py;
 
     #[pymodule_export]
+    use super::connected_components_graph_py;
+
+    #[pymodule_export]
+    use super::level_set_components_py;
+
+    #[pymodule_export]
+    use super::contract_vertices_py;
+
+    #[pymodule_export]
+    use super::minimum_spanning_tree_py;
+
+    #[pymodule_export]
     use super::stitch_fragments_py;
 
     #[pymodule_export]

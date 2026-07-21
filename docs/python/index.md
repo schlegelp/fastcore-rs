@@ -63,6 +63,9 @@ Repairing fragmented skeletons:
 Meshes:
 
 - [`mesh_connected_components`](mesh.md#navis_fastcore.mesh_connected_components): connected components of a triangle mesh
+- [`geodesic_matrix_mesh`](mesh.md#navis_fastcore.geodesic_matrix_mesh): parallel geodesic distances across a mesh
+- [`level_set_components`](mesh.md#navis_fastcore.level_set_components): components of every level set at once (wavefront rings)
+- [`contract_vertices`](mesh.md#navis_fastcore.contract_vertices) / [`minimum_spanning_tree`](mesh.md#navis_fastcore.minimum_spanning_tree): collapse a graph onto new nodes, then span it
 
 [Neuron similarity](../concepts/nblast.md):
 

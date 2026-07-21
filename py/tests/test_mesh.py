@@ -565,3 +565,258 @@ def test_unique_edges_matches_trimesh():
     np.testing.assert_array_equal(inv.reshape(-1, 3), m.faces_unique_edges)
     # trimesh computes the norm through a BLAS dot, so allow float noise.
     np.testing.assert_allclose(lengths, m.edges_unique_length, rtol=1e-14)
+
+
+# -----------------------------------------------------------------------------
+# Graph primitives: components, level sets, contraction, spanning tree
+#
+# The oracle here is igraph, since these exist to replace exactly the igraph
+# calls that skeletor's mesh skeletonization makes.
+# -----------------------------------------------------------------------------
+
+
+def random_graph(n_nodes=200, n_edges=600, seed=0):
+    """A random undirected graph, deduplicated and free of self-loops."""
+    rng = np.random.default_rng(seed)
+    e = rng.integers(0, n_nodes, size=(n_edges, 2))
+    e.sort(axis=1)
+    e = np.unique(e, axis=0)
+    return e[e[:, 0] != e[:, 1]].astype(np.uint32)
+
+
+def as_partition(labels):
+    """Group node indices by label into a comparable set of frozensets."""
+    out = {}
+    for node, lab in enumerate(labels):
+        out.setdefault(lab, set()).add(node)
+    return {frozenset(v) for v in out.values()}
+
+
+def test_connected_components_graph_matches_igraph():
+    ig = pytest.importorskip("igraph")
+
+    edges = random_graph()
+    n = 200
+    ours = fastcore.connected_components_graph(edges, n)
+
+    g = ig.Graph(n=n, edges=edges.tolist(), directed=False)
+    ref = [set(cc) for cc in g.connected_components()]
+
+    assert as_partition(ours) == {frozenset(cc) for cc in ref}
+
+
+def test_connected_components_graph_agrees_with_the_mesh_version():
+    """Same mesh, two entry points — the labels themselves must match, not just
+    the partition."""
+    faces, verts = grid_mesh(n=9)
+    n = len(verts)
+    edges = fastcore.unique_edges(faces).astype(np.uint32)
+
+    np.testing.assert_array_equal(
+        fastcore.connected_components_graph(edges, n),
+        fastcore.mesh_connected_components(faces, n),
+    )
+
+
+def test_level_set_components_matches_the_igraph_subgraph_loop():
+    """The oracle is the loop this function exists to delete: for each level,
+    induce the subgraph on those vertices and find its components."""
+    ig = pytest.importorskip("igraph")
+
+    faces, verts = grid_mesh(n=15)
+    n = len(verts)
+    edges = fastcore.unique_edges(faces).astype(np.uint32)
+
+    # A genuine wavefront: hop distance from a corner, which on this grid is max(i, j).
+    dist = fastcore.geodesic_matrix_mesh(faces, n_vertices=n, sources=[0])[0]
+    labels = dist.astype(np.int64)
+
+    ids, n_comp = fastcore.level_set_components(edges, n, labels)
+
+    # Oracle: igraph, one induced subgraph per level, exactly as skeletor does it.
+    g = ig.Graph(n=n, edges=edges.tolist(), directed=False)
+    ref = set()
+    for lvl in np.unique(labels):
+        ix = np.where(labels == lvl)[0]
+        sg = g.subgraph(ix, implementation="create_from_scratch")
+        for cc in sg.connected_components():
+            ref.add(frozenset(ix[cc].tolist()))
+
+    assert as_partition(ids) == ref
+    assert n_comp == len(ref)
+    # Ids are dense and every vertex is assigned (all are reachable here).
+    assert ids.min() == 0 and ids.max() == n_comp - 1
+
+
+def test_level_set_components_excludes_negative_labels():
+    """`-1` is what geodesic_matrix_* returns for unreachable. Those must be
+    dropped, not fused into one phantom level."""
+    edges = np.array([[0, 1], [1, 2], [2, 3]], dtype=np.uint32)
+
+    ids, n = fastcore.level_set_components(edges, 4, [-1, -1, 5, 5])
+    np.testing.assert_array_equal(ids, [-1, -1, 0, 0])
+    assert n == 1
+
+    # Feeding an unreachable distance row straight in must work: two disjoint
+    # triangles, seeded only in the first.
+    faces = np.array([[0, 1, 2], [3, 4, 5]], dtype=np.uint32)
+    mesh_edges = fastcore.unique_edges(faces).astype(np.uint32)
+    dist = fastcore.geodesic_matrix_mesh(faces, n_vertices=6, sources=[0])[0]
+    assert (dist[3:] == -1).all()
+
+    ids, n = fastcore.level_set_components(mesh_edges, 6, dist.astype(np.int64))
+    np.testing.assert_array_equal(ids[3:], [-1, -1, -1])
+    assert n == 2  # vertex 0 at distance 0; vertices 1, 2 at distance 1
+
+
+def test_level_set_components_all_same_label_is_plain_components():
+    """With one label everywhere it degenerates to connected components."""
+    edges = random_graph()
+    n = 200
+    ids, n_comp = fastcore.level_set_components(edges, n, np.zeros(n, dtype=np.int64))
+    assert as_partition(ids) == as_partition(
+        fastcore.connected_components_graph(edges, n)
+    )
+
+
+def test_contract_vertices_matches_igraph():
+    ig = pytest.importorskip("igraph")
+
+    edges = random_graph()
+    n = 200
+    rng = np.random.default_rng(1)
+    mapping = rng.integers(0, 40, size=n).astype(np.uint32)
+
+    ours = fastcore.contract_vertices(edges, mapping)
+
+    g = ig.Graph(n=n, edges=edges.tolist(), directed=False)
+    g.contract_vertices(mapping.tolist())
+    g = g.simplify()
+    ref = np.array(g.get_edgelist(), dtype=np.int64)
+    ref.sort(axis=1)
+    ref = np.unique(ref, axis=0)
+
+    ours_sorted = ours[np.lexsort((ours[:, 0], ours[:, 1]))]
+    ref_sorted = ref[np.lexsort((ref[:, 0], ref[:, 1]))]
+    np.testing.assert_array_equal(ours_sorted, ref_sorted)
+
+
+def test_contract_vertices_identity_is_unique_edges():
+    faces, verts = grid_mesh(n=9)
+    edges = fastcore.unique_edges(faces)
+    mapping = np.arange(len(verts), dtype=np.uint32)
+
+    np.testing.assert_array_equal(
+        fastcore.contract_vertices(edges.astype(np.uint32), mapping), edges
+    )
+
+
+def test_minimum_spanning_tree_matches_scipy():
+    """Distinct weights make the MST unique, so the edge sets must match exactly."""
+    from scipy.sparse.csgraph import minimum_spanning_tree as scipy_mst
+
+    edges = random_graph(n_nodes=150, n_edges=500, seed=3)
+    n = 150
+    rng = np.random.default_rng(4)
+    # Distinct weights -> unique MST.
+    w = rng.permutation(len(edges)).astype(np.float32) + 1.0
+
+    keep = fastcore.minimum_spanning_tree(edges, n, w)
+    ours = {frozenset(e) for e in edges[keep].tolist()}
+
+    g = csr_matrix((w, (edges[:, 0], edges[:, 1])), shape=(n, n))
+    ref_mat = scipy_mst(g).tocoo()
+    ref = {frozenset((int(a), int(b))) for a, b in zip(ref_mat.row, ref_mat.col)}
+
+    assert ours == ref
+    np.testing.assert_allclose(w[keep].sum(), ref_mat.data.sum(), rtol=1e-6)
+
+
+def test_minimum_spanning_tree_matches_igraph():
+    ig = pytest.importorskip("igraph")
+
+    edges = random_graph(n_nodes=150, n_edges=500, seed=3)
+    n = 150
+    rng = np.random.default_rng(5)
+    w = rng.permutation(len(edges)).astype(np.float32) + 1.0
+
+    keep = fastcore.minimum_spanning_tree(edges, n, w)
+    ours = {frozenset(e) for e in edges[keep].tolist()}
+
+    g = ig.Graph(n=n, edges=edges.tolist(), directed=False)
+    tree = g.spanning_tree(weights=w.tolist())
+    ref = {frozenset(e) for e in tree.get_edgelist()}
+
+    assert ours == ref
+
+
+def test_minimum_spanning_tree_maximize_beats_the_reciprocal_hack():
+    """`maximize=True` must equal what igraph gives for `weights=1/w` -- the trick
+    it exists to replace -- and unlike that trick must survive zero weights."""
+    ig = pytest.importorskip("igraph")
+
+    edges = random_graph(n_nodes=100, n_edges=300, seed=6)
+    n = 100
+    rng = np.random.default_rng(7)
+    w = rng.permutation(len(edges)).astype(np.float32) + 1.0
+
+    keep = fastcore.minimum_spanning_tree(edges, n, w, maximize=True)
+    ours = {frozenset(e) for e in edges[keep].tolist()}
+
+    g = ig.Graph(n=n, edges=edges.tolist(), directed=False)
+    ref = {frozenset(e) for e in g.spanning_tree(weights=(1 / w).tolist()).get_edgelist()}
+    assert ours == ref
+
+    # A zero weight makes 1/w infinite; ours takes it in stride and, being the
+    # *cheapest* edge, it must be in the minimum tree.
+    w0 = w.copy()
+    w0[0] = 0.0
+    keep = fastcore.minimum_spanning_tree(edges, n, w0)
+    assert 0 in keep.tolist()
+
+
+def test_minimum_spanning_tree_of_a_forest():
+    """Disconnected input yields one tree per component: n_nodes - n_components edges."""
+    edges = random_graph(n_nodes=200, n_edges=300, seed=8)
+    n = 200
+    n_comp = len(set(fastcore.connected_components_graph(edges, n).tolist()))
+
+    keep = fastcore.minimum_spanning_tree(edges, n)
+    assert len(keep) == n - n_comp
+
+    # The result must be acyclic and preserve the component structure.
+    assert as_partition(
+        fastcore.connected_components_graph(edges[keep], n)
+    ) == as_partition(fastcore.connected_components_graph(edges, n))
+
+
+def test_graph_primitives_validation():
+    edges = np.array([[0, 1], [1, 2]], dtype=np.uint32)
+
+    with pytest.raises(ValueError):
+        fastcore.connected_components_graph(edges, 2)  # node 2 out of range
+    with pytest.raises(ValueError):
+        fastcore.level_set_components(edges, 3, [0, 0])  # labels too short
+    with pytest.raises(ValueError):
+        fastcore.contract_vertices(edges, [0, 0])  # mapping too short
+    with pytest.raises(ValueError):
+        fastcore.minimum_spanning_tree(edges, 3, [1.0])  # weights too short
+    with pytest.raises(ValueError):
+        fastcore.minimum_spanning_tree(np.zeros((2, 3), dtype=np.uint32), 3)
+
+
+def test_graph_primitives_threads_do_not_change_the_result():
+    edges = random_graph()
+    mapping = (np.arange(200) // 5).astype(np.uint32)
+    rng = np.random.default_rng(9)
+    w = rng.random(len(edges)).astype(np.float32)
+
+    for t in (1, 2, 4):
+        np.testing.assert_array_equal(
+            fastcore.contract_vertices(edges, mapping, threads=t),
+            fastcore.contract_vertices(edges, mapping, threads=1),
+        )
+        np.testing.assert_array_equal(
+            fastcore.minimum_spanning_tree(edges, 200, w, threads=t),
+            fastcore.minimum_spanning_tree(edges, 200, w, threads=1),
+        )

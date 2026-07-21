@@ -12,7 +12,10 @@
 //! - [`topo`] — repairing fragmented skeletons: [`topo::stitch_fragments`] finds
 //!   the minimal-length edges that reconnect the pieces,
 //!   [`topo::reroot_rewire`] re-derives the parent vector afterwards.
-//! - [`mesh`] — connected components of a triangle mesh.
+//! - [`mesh`] — triangle meshes as vertex graphs: connected components, unique edges,
+//!   parallel geodesic search, and the traversal primitives mesh algorithms need
+//!   ([`mesh::level_set_components`], [`mesh::contract_vertices`],
+//!   [`mesh::minimum_spanning_tree`]) without building a graph object first.
 //! - [`nblast`] / [`synblast`] — NBLAST neuron similarity, on skeleton points and
 //!   on synapses respectively.
 //! - [`matches`] — pulling the top matches back out of a score matrix (top-N, an
