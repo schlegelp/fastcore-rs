@@ -39,12 +39,41 @@ _PRECISION = {
 }
 
 
-def _as_clouds(dotprops, want_alpha=False):
-    """Validate dotprops and extract contiguous float64 arrays.
+def _coord_dtype(*dotprop_groups):
+    """The coordinate width to run a call at: float32 only if every input is.
+
+    Coordinates are held at the dtype they arrive as, all the way into the spatial
+    index, so handing in float32 dotprops roughly halves the resident set of a large
+    all-by-all or k-NN. That only works if nothing casts on the way in — a cast would
+    hold a converted copy *alongside* the caller's original, which is worse than
+    never narrowing at all.
+
+    Every array in one call must therefore share a width, so a set that is not
+    uniformly float32 falls back to float64 (the wider, lossless side).
+    """
+    seen = False
+    for dps in dotprop_groups:
+        if dps is None:
+            continue
+        for n in dps:
+            for arr in (getattr(n, "points", None), getattr(n, "vect", None)):
+                if getattr(arr, "dtype", None) != np.float32:
+                    return np.float64
+                seen = True
+    return np.float32 if seen else np.float64
+
+
+def _as_clouds(dotprops, want_alpha=False, dtype=None):
+    """Validate dotprops and extract contiguous coordinate arrays.
 
     Returns ``(points, vects, alphas)`` where ``alphas`` is ``None`` unless
     ``want_alpha`` is set, in which case each dotprop must expose a per-point
-    ``alpha`` array of matching length.
+    ``alpha`` array of matching length. Alpha is a score-side weight rather than a
+    coordinate and stays float64 regardless.
+
+    ``dtype`` fixes the coordinate width; when omitted it is inferred from these
+    dotprops via :func:`_coord_dtype`. Callers with a query *and* a target set must
+    infer once across both and pass it here, so the two sides cannot disagree.
     """
     dps = list(dotprops)
     for n in dps:
@@ -53,8 +82,10 @@ def _as_clouds(dotprops, want_alpha=False):
                 "Expected an iterable of dotprop-likes with `points` and `vect` "
                 "attributes."
             )
-    points = [np.ascontiguousarray(n.points, dtype=np.float64) for n in dps]
-    vects = [np.ascontiguousarray(n.vect, dtype=np.float64) for n in dps]
+    if dtype is None:
+        dtype = _coord_dtype(dps)
+    points = [np.ascontiguousarray(n.points, dtype=dtype) for n in dps]
+    vects = [np.ascontiguousarray(n.vect, dtype=dtype) for n in dps]
 
     alphas = None
     if want_alpha:
@@ -235,6 +266,9 @@ def nblast_allbyall(
     dotprops :   iterable of dotprop-likes
                  Each must expose `points` (N, 3) and unit tangent `vect` (N, 3).
                  When ``use_alpha`` is set, each must also expose `alpha` (N,).
+                 Coordinates are used at the dtype they arrive as: float32
+                 `points`/`vect` build a float32 spatial index and roughly halve
+                 peak memory. Anything else is taken as float64.
     smat :       None | navis Lookup2d | (values, dist_edges, dot_edges)
                  Scoring matrix. ``None`` uses the embedded FCWB matrix.
     normalize :  bool
@@ -338,8 +372,12 @@ def nblast(
                     (n_query, n_target) score matrix; row = query, column = target.
 
     """
-    q_points, q_vects, q_alphas = _as_clouds(query, want_alpha=use_alpha)
-    t_points, t_vects, t_alphas = _as_clouds(target, want_alpha=use_alpha)
+    # Materialise both sides before sniffing, so a generator is not consumed twice,
+    # and pick one coordinate width across the pair.
+    query, target = list(query), list(target)
+    dtype = _coord_dtype(query, target)
+    q_points, q_vects, q_alphas = _as_clouds(query, want_alpha=use_alpha, dtype=dtype)
+    t_points, t_vects, t_alphas = _as_clouds(target, want_alpha=use_alpha, dtype=dtype)
     sv, de, ve = _smat_args(smat)
     limit = _resolve_limit(limit_dist, (sv, de, ve), use_alpha)
     user_bits, rust_bits = _resolve_precision(precision)
@@ -438,6 +476,17 @@ def nblast_knn(
         essentially absent on continuous synthetic data. Compare the two with a
         small tolerance rather than for exact equality.
 
+    .. note::
+
+        Coordinates are held at the dtype they arrive as, so passing float32
+        ``points`` / ``vect`` builds a float32 spatial index and roughly halves peak
+        memory — worth doing at this scale, where every neuron's index is alive at
+        once and they dominate the resident set. Scores shift by ~1e-4 relative
+        (float32 resolves ~1e-4 at millimetre-scale coordinates, which is four
+        orders below the finest distance bin, but it can flip a near-tied nearest
+        neighbour). Both sides of a query/target call must agree; a mix runs at
+        float64. Do not narrow if you need to reproduce an earlier float64 run.
+
     A long run can be interrupted with Ctrl-C / the Jupyter interrupt button.
 
     Parameters
@@ -445,6 +494,7 @@ def nblast_knn(
     dotprops :     iterable of dotprop-likes
                    The queries. Each must expose `points` (N, 3) and unit tangent
                    `vect` (N, 3); also `alpha` (N,) when ``use_alpha`` is set.
+                   float32 arrays select the float32 index (see the note above).
     target :       iterable of dotprop-likes | None
                    If given, neighbours are searched among these instead of among
                    `dotprops`, and the returned `idx` indexes **`target`** — the
@@ -512,13 +562,17 @@ def nblast_knn(
             "'max' or None."
         ) from None
 
-    points, vects, alphas = _as_clouds(dotprops, want_alpha=use_alpha)
+    dotprops = list(dotprops)
+    if target is not None:
+        target = list(target)
+    dtype = _coord_dtype(dotprops, target)
+    points, vects, alphas = _as_clouds(dotprops, want_alpha=use_alpha, dtype=dtype)
     if k < 1:
         raise ValueError(f"k must be >= 1, got {k}.")
 
     t_points = t_vects = t_alphas = None
     if target is not None:
-        t_points, t_vects, t_alphas = _as_clouds(target, want_alpha=use_alpha)
+        t_points, t_vects, t_alphas = _as_clouds(target, want_alpha=use_alpha, dtype=dtype)
 
     if len(points) == 0:
         return (
@@ -698,14 +752,18 @@ def nblast_smart(
         )
 
     aba = target is None
+    query = list(query)
     if aba:
         target = query
+    else:
+        target = list(target)
 
-    q_points, q_vects, q_alphas = _as_clouds(query, want_alpha=use_alpha)
+    dtype = _coord_dtype(query, None if aba else target)
+    q_points, q_vects, q_alphas = _as_clouds(query, want_alpha=use_alpha, dtype=dtype)
     if aba:
         t_points, t_vects, t_alphas = q_points, q_vects, q_alphas
     else:
-        t_points, t_vects, t_alphas = _as_clouds(target, want_alpha=use_alpha)
+        t_points, t_vects, t_alphas = _as_clouds(target, want_alpha=use_alpha, dtype=dtype)
 
     # --- pre-pass: coarse NBLAST on downsampled dotprops ---
     dq_p, dq_v, dq_a = _downsample_clouds(q_points, q_vects, q_alphas, downsample)

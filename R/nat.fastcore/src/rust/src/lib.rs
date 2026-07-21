@@ -1175,11 +1175,11 @@ pub fn nblast_allbyall(
     };
 
     let flat: Vec<f64> = match precision {
-        32 => fastcore::nblast::nblast_allbyall::<f32>(clouds, vecs, alpha_vecs, opts)
+        32 => fastcore::nblast::nblast_allbyall::<f32, f64>(clouds, vecs, alpha_vecs, opts)
             .into_iter()
             .map(|x| x as f64)
             .collect(),
-        64 => fastcore::nblast::nblast_allbyall::<f64>(clouds, vecs, alpha_vecs, opts),
+        64 => fastcore::nblast::nblast_allbyall::<f64, f64>(clouds, vecs, alpha_vecs, opts),
         _ => panic!("`precision` must be 32 or 64"),
     };
     flat_to_rmatrix(&flat, n, n)
@@ -1243,11 +1243,11 @@ pub fn nblast(
     };
 
     let flat: Vec<f64> = match precision {
-        32 => fastcore::nblast::nblast_query_target::<f32>(qp, qv, qa, tp, tv, ta, opts)
+        32 => fastcore::nblast::nblast_query_target::<f32, f64>(qp, qv, qa, tp, tv, ta, opts)
             .into_iter()
             .map(|x| x as f64)
             .collect(),
-        64 => fastcore::nblast::nblast_query_target::<f64>(qp, qv, qa, tp, tv, ta, opts),
+        64 => fastcore::nblast::nblast_query_target::<f64, f64>(qp, qv, qa, tp, tv, ta, opts),
         _ => panic!("`precision` must be 32 or 64"),
     };
     flat_to_rmatrix(&flat, nq, nt)
@@ -1325,11 +1325,11 @@ pub fn nblast_pairs(
     };
 
     match precision {
-        32 => fastcore::nblast::nblast_pairs::<f32>(qp, qv, qa, tp, tv, ta, pairs, opts)
+        32 => fastcore::nblast::nblast_pairs::<f32, f64>(qp, qv, qa, tp, tv, ta, pairs, opts)
             .into_iter()
             .map(|x| x as f64)
             .collect(),
-        64 => fastcore::nblast::nblast_pairs::<f64>(qp, qv, qa, tp, tv, ta, pairs, opts),
+        64 => fastcore::nblast::nblast_pairs::<f64, f64>(qp, qv, qa, tp, tv, ta, pairs, opts),
         _ => panic!("`precision` must be 32 or 64"),
     }
 }
@@ -1477,20 +1477,20 @@ pub fn nblast_knn_raw(
 
     let (idx, scores): (Vec<i64>, Vec<f64>) = match (precision, targets) {
         (32, Some((tp, tv, ta))) => {
-            let (i, s) = fastcore::nblast_knn::nblast_knn_query_target::<f32>(
+            let (i, s) = fastcore::nblast_knn::nblast_knn_query_target::<f32, f64>(
                 clouds, vecs, alpha_vecs, tp, tv, ta, opts,
             );
             (i, s.into_iter().map(|x| x as f64).collect())
         }
-        (64, Some((tp, tv, ta))) => fastcore::nblast_knn::nblast_knn_query_target::<f64>(
+        (64, Some((tp, tv, ta))) => fastcore::nblast_knn::nblast_knn_query_target::<f64, f64>(
             clouds, vecs, alpha_vecs, tp, tv, ta, opts,
         ),
         (32, None) => {
             let (i, s) =
-                fastcore::nblast_knn::nblast_knn::<f32>(clouds, vecs, alpha_vecs, opts);
+                fastcore::nblast_knn::nblast_knn::<f32, f64>(clouds, vecs, alpha_vecs, opts);
             (i, s.into_iter().map(|x| x as f64).collect())
         }
-        (64, None) => fastcore::nblast_knn::nblast_knn::<f64>(clouds, vecs, alpha_vecs, opts),
+        (64, None) => fastcore::nblast_knn::nblast_knn::<f64, f64>(clouds, vecs, alpha_vecs, opts),
         _ => panic!("`precision` must be 32 or 64"),
     };
     knn_to_r(&idx, &scores, nq, k)
@@ -1542,11 +1542,11 @@ pub fn synblast_allbyall(
     };
 
     let flat: Vec<f64> = match precision {
-        32 => fastcore::synblast::synblast_allbyall::<f32>(clouds, tys, opts)
+        32 => fastcore::synblast::synblast_allbyall::<f32, f64>(clouds, tys, opts)
             .into_iter()
             .map(|x| x as f64)
             .collect(),
-        64 => fastcore::synblast::synblast_allbyall::<f64>(clouds, tys, opts),
+        64 => fastcore::synblast::synblast_allbyall::<f64, f64>(clouds, tys, opts),
         _ => panic!("`precision` must be 32 or 64"),
     };
     flat_to_rmatrix(&flat, n, n)
@@ -1603,11 +1603,11 @@ pub fn synblast(
     };
 
     let flat: Vec<f64> = match precision {
-        32 => fastcore::synblast::synblast_query_target::<f32>(qp, qt, tp, tt, opts)
+        32 => fastcore::synblast::synblast_query_target::<f32, f64>(qp, qt, tp, tt, opts)
             .into_iter()
             .map(|x| x as f64)
             .collect(),
-        64 => fastcore::synblast::synblast_query_target::<f64>(qp, qt, tp, tt, opts),
+        64 => fastcore::synblast::synblast_query_target::<f64, f64>(qp, qt, tp, tt, opts),
         _ => panic!("`precision` must be 32 or 64"),
     };
     flat_to_rmatrix(&flat, nq, nt)

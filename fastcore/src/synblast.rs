@@ -18,11 +18,10 @@
 //! Like the NBLAST entry points this builds each neuron's per-type index once and
 //! scores under `rayon`, releasing peak memory per pair rather than `O(n^2)`.
 
-use aann::PreparedF64;
 use rayon::prelude::*;
 
 use crate::nblast::{
-    build_index, index_bar, is_cancelled, run_scoring, with_pool, Opts, ScoreOut, Smat,
+    build_index, index_bar, is_cancelled, run_scoring, with_pool, Coord, Opts, ScoreOut, Smat,
 };
 
 /// Group a neuron's connector points by (integer) `type`, building one `aann`
@@ -33,8 +32,8 @@ use crate::nblast::{
 /// group's points are triangulated by [`build_index`] exactly like an NBLAST
 /// neuron, so tiny groups (fewer than 5 points) fall back to a complete graph and
 /// remain exact.
-fn build_groups(points: &[[f64; 3]], types: &[i64]) -> Vec<(i64, PreparedF64)> {
-    let mut grouped: Vec<(i64, Vec<[f64; 3]>)> = Vec::new();
+fn build_groups<C: Coord>(points: &[[C; 3]], types: &[i64]) -> Vec<(i64, C::Prepared)> {
+    let mut grouped: Vec<(i64, Vec<[C; 3]>)> = Vec::new();
     for (p, &ty) in points.iter().zip(types.iter()) {
         match grouped.iter_mut().find(|(g, _)| *g == ty) {
             Some((_, pts)) => pts.push(*p),
@@ -55,9 +54,9 @@ fn build_groups(points: &[[f64; 3]], types: &[i64]) -> Vec<(i64, PreparedF64)> {
 /// `1` ([`Smat::syn_score`]); the contributions are summed. Query connectors whose
 /// type is absent in the target are each scored at `syn_score(inf)` — the worst,
 /// farthest bin — reproducing navis' intended behaviour for an unmatched type.
-fn syn_score_pair(
-    q_groups: &[(i64, PreparedF64)],
-    t_groups: &[(i64, PreparedF64)],
+fn syn_score_pair<C: Coord>(
+    q_groups: &[(i64, C::Prepared)],
+    t_groups: &[(i64, C::Prepared)],
     smat: &Smat,
 ) -> f64 {
     let mut raw = 0.0;
@@ -65,14 +64,14 @@ fn syn_score_pair(
         match t_groups.iter().find(|(t_ty, _)| t_ty == ty) {
             Some((_, t_prep)) => {
                 // Nearest target-of-same-type distance for every query point.
-                let (d, _ix) = t_prep.query_prepared(q_prep, None);
+                let (d, _ix) = C::query_prepared(t_prep, q_prep, None);
                 for &dist in d.as_slice().unwrap() {
-                    raw += smat.syn_score(dist);
+                    raw += smat.syn_score(dist.to_f64());
                 }
             }
             None => {
                 // No target connectors of this type: worst score per query point.
-                raw += smat.syn_score(f64::INFINITY) * q_prep.n() as f64;
+                raw += smat.syn_score(f64::INFINITY) * C::n_points(q_prep) as f64;
             }
         }
     }
@@ -94,8 +93,8 @@ fn self_hit(smat: &Smat, n_connectors: usize) -> f64 {
 /// is the score of query `i` against target `j`; with `opts.normalize` the
 /// diagonal is `1.0`. `opts.limit_dist` is not used by syNBLAST. The element type
 /// `T` selects the output precision.
-pub fn synblast_allbyall<T: ScoreOut>(
-    points: Vec<Vec<[f64; 3]>>,
+pub fn synblast_allbyall<T: ScoreOut, C: Coord>(
+    points: Vec<Vec<[C; 3]>>,
     types: Vec<Vec<i64>>,
     opts: Opts,
 ) -> Vec<T> {
@@ -113,7 +112,7 @@ pub fn synblast_allbyall<T: ScoreOut>(
 
         // Build every neuron's per-type indices once, in parallel.
         let idx_bar = progress.then(|| index_bar(n as u64));
-        let neurons: Option<Vec<Vec<(i64, PreparedF64)>>> = match &idx_bar {
+        let neurons: Option<Vec<Vec<(i64, C::Prepared)>>> = match &idx_bar {
             Some(bar) => points
                 .par_iter()
                 .zip(types.par_iter())
@@ -158,7 +157,9 @@ pub fn synblast_allbyall<T: ScoreOut>(
                     self_hits[i]
                 }
             } else {
-                let raw = syn_score_pair(&neurons[i], &neurons[j], smat);
+                // Turbofished: `C::Prepared` is an associated type, so it cannot be
+                // inferred back to `C` from the argument types alone.
+                let raw = syn_score_pair::<C>(&neurons[i], &neurons[j], smat);
                 if normalize {
                     raw / self_hits[i]
                 } else {
@@ -180,10 +181,10 @@ pub fn synblast_allbyall<T: ScoreOut>(
 /// the all-by-all entry point there is no diagonal short-cut: query and target are
 /// distinct neuron sets. The element type `T` selects the output precision.
 #[allow(clippy::too_many_arguments)]
-pub fn synblast_query_target<T: ScoreOut>(
-    q_points: Vec<Vec<[f64; 3]>>,
+pub fn synblast_query_target<T: ScoreOut, C: Coord>(
+    q_points: Vec<Vec<[C; 3]>>,
     q_types: Vec<Vec<i64>>,
-    t_points: Vec<Vec<[f64; 3]>>,
+    t_points: Vec<Vec<[C; 3]>>,
     t_types: Vec<Vec<i64>>,
     opts: Opts,
 ) -> Vec<T> {
@@ -203,7 +204,7 @@ pub fn synblast_query_target<T: ScoreOut>(
         // One shared bar spanning both index builds so it reads as a single phase.
         let idx_bar = progress.then(|| index_bar((nq + nt) as u64));
         let build_all =
-            |pts: &[Vec<[f64; 3]>], tys: &[Vec<i64>]| -> Option<Vec<Vec<(i64, PreparedF64)>>> {
+            |pts: &[Vec<[C; 3]>], tys: &[Vec<i64>]| -> Option<Vec<Vec<(i64, C::Prepared)>>> {
                 match &idx_bar {
                     Some(bar) => pts
                         .par_iter()
@@ -245,7 +246,7 @@ pub fn synblast_query_target<T: ScoreOut>(
         let compute = |(k, out): (usize, &mut T)| {
             let qi = k / nt;
             let tj = k % nt;
-            let raw = syn_score_pair(&q_neurons[qi], &t_neurons[tj], smat);
+            let raw = syn_score_pair::<C>(&q_neurons[qi], &t_neurons[tj], smat);
             *out = T::from_f64(if normalize {
                 raw / self_hits[qi]
             } else {

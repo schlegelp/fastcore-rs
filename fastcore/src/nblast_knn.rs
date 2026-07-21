@@ -37,13 +37,12 @@
 //! Measured on 163,976 zebrafish neurons: recall@20 = 0.990 at `n_candidates=200`,
 //! scoring 0.16% of pairs.
 
-use aann::{GroupedQueriesF64, PreparedF64};
 use rayon::prelude::*;
 use std::sync::atomic::AtomicBool;
 
 use crate::nblast::{
-    build_indices, index_bar, is_cancelled, score_pair, scoring_bar, with_pool, Opts, ScoreOut,
-    GROUP_BLOCK,
+    build_indices, index_bar, is_cancelled, score_pair, scoring_bar, with_pool, Coord, Opts,
+    ScoreOut, GROUP_BLOCK,
 };
 
 // ---------------------------------------------------------------------------
@@ -209,7 +208,7 @@ pub struct SigGrid {
 
 impl SigGrid {
     /// A grid spanning every cloud in every supplied set.
-    pub fn spanning(sets: &[&[Vec<[f64; 3]>]], voxel: f64, n_dirs: usize) -> SigGrid {
+    pub fn spanning<C: Coord>(sets: &[&[Vec<[C; 3]>]], voxel: f64, n_dirs: usize) -> SigGrid {
         assert!(voxel > 0.0, "voxel must be positive");
         let mut lo = [f64::INFINITY; 3];
         let mut hi = [f64::NEG_INFINITY; 3];
@@ -217,8 +216,8 @@ impl SigGrid {
             for cloud in set.iter() {
                 for p in cloud {
                     for d in 0..3 {
-                        lo[d] = lo[d].min(p[d]);
-                        hi[d] = hi[d].max(p[d]);
+                        lo[d] = lo[d].min(p[d].to_f64());
+                        hi[d] = hi[d].max(p[d].to_f64());
                     }
                 }
             }
@@ -250,9 +249,9 @@ impl SigGrid {
 ///
 /// Weights are `sqrt`-damped before normalising so that a dense arbor crossing one
 /// voxel many times cannot dominate the cosine.
-pub fn build_signatures(
-    points: &[Vec<[f64; 3]>],
-    vects: &[Vec<[f64; 3]>],
+pub fn build_signatures<C: Coord>(
+    points: &[Vec<[C; 3]>],
+    vects: &[Vec<[C; 3]>],
     voxel: f64,
     n_dirs: usize,
     splat: bool,
@@ -263,9 +262,9 @@ pub fn build_signatures(
 
 /// [`build_signatures`] against a caller-supplied grid, so two sets can be made
 /// comparable.
-pub fn build_signatures_on(
-    points: &[Vec<[f64; 3]>],
-    vects: &[Vec<[f64; 3]>],
+pub fn build_signatures_on<C: Coord>(
+    points: &[Vec<[C; 3]>],
+    vects: &[Vec<[C; 3]>],
     grid: &SigGrid,
     splat: bool,
 ) -> Signatures {
@@ -289,10 +288,17 @@ pub fn build_signatures_on(
             let (pts, vs) = (&points[i], &vects[i]);
             let mut buf: Vec<(u32, f32)> = Vec::with_capacity(pts.len() * offsets.len());
             for (p, v) in pts.iter().zip(vs.iter()) {
-                let g: [f64; 3] = std::array::from_fn(|d| (p[d] - origin[d]) / voxel);
+                // The grid itself stays f64 whatever `C` is, so which voxel a point
+                // lands in - and hence the candidate shortlist - is decided the same
+                // way at both widths.
+                let g: [f64; 3] = std::array::from_fn(|d| (p[d].to_f64() - origin[d]) / voxel);
                 let base: [i64; 3] = std::array::from_fn(|d| g[d].floor() as i64);
                 let frac: [f64; 3] = std::array::from_fn(|d| g[d] - base[d] as f64);
-                let db = dir_bin(v, n_dirs, codebook.as_deref());
+                let db = dir_bin(
+                    &std::array::from_fn(|d| v[d].to_f64()),
+                    n_dirs,
+                    codebook.as_deref(),
+                );
                 for off in offsets {
                     let mut w = 1.0f64;
                     if splat {
@@ -500,7 +506,7 @@ pub fn candidate_pairs(
 /// Cost is `O(n_short * n)` with a 3-flop inner loop, so it is free in the normal
 /// case and merely cheap in the pathological one (a voxel so fine that nothing
 /// overlaps).
-fn backfill_short_rows(pairs: &mut Vec<u64>, points: &[Vec<[f64; 3]>], k: usize) -> usize {
+fn backfill_short_rows<C: Coord>(pairs: &mut Vec<u64>, points: &[Vec<[C; 3]>], k: usize) -> usize {
     let n = points.len();
     let mut counts = vec![0usize; n];
     for &p in pairs.iter() {
@@ -521,7 +527,7 @@ fn backfill_short_rows(pairs: &mut Vec<u64>, points: &[Vec<[f64; 3]>], k: usize)
             let mut m = [0.0; 3];
             for p in c {
                 for d in 0..3 {
-                    m[d] += p[d];
+                    m[d] += p[d].to_f64();
                 }
             }
             for d in 0..3 {
@@ -626,9 +632,9 @@ fn group_by_target(pairs: &[u64], n: usize) -> (Vec<usize>, Vec<u32>, Vec<u32>) 
 /// target, which is the main structural saving over calling `nblast_pairs` twice:
 /// that path builds separate query and target index sets per call, so the two
 /// directions cost four full index builds instead of one.
-pub fn nblast_knn<T: ScoreOut>(
-    points: Vec<Vec<[f64; 3]>>,
-    vects: Vec<Vec<[f64; 3]>>,
+pub fn nblast_knn<T: ScoreOut, C: Coord>(
+    points: Vec<Vec<[C; 3]>>,
+    vects: Vec<Vec<[C; 3]>>,
     alphas: Option<Vec<Vec<f64>>>,
     opts: KnnOpts,
 ) -> (Vec<i64>, Vec<T>) {
@@ -673,8 +679,11 @@ pub fn nblast_knn<T: ScoreOut>(
         backfill_short_rows(&mut pairs, &points, k);
 
         // --- stage 3: exact NBLAST on the survivors -----------------------
+        // `build_indices` consumes the clouds so each is freed as its index appears;
+        // the self-hits only need the counts, so take those first.
+        let n_pts: Vec<usize> = points.iter().map(|c| c.len()).collect();
         let idx_bar = progress.then(|| index_bar(n as u64));
-        let Some(indices) = build_indices(&points, idx_bar.as_ref(), cancel) else {
+        let Some(indices) = build_indices(points, idx_bar.as_ref(), cancel) else {
             return empty();
         };
         if let Some(bar) = idx_bar {
@@ -684,7 +693,7 @@ pub fn nblast_knn<T: ScoreOut>(
         let self_hits: Vec<f64> = (0..n)
             .map(|i| match &alphas {
                 Some(a) => smat.self_hit_alpha(&a[i]),
-                None => smat.self_hit(points[i].len()),
+                None => smat.self_hit(n_pts[i]),
             })
             .collect();
 
@@ -701,13 +710,12 @@ pub fn nblast_knn<T: ScoreOut>(
                     return Vec::new();
                 }
                 let qs = &grp_query[a..b];
-                let subset: Vec<&PreparedF64> =
+                let subset: Vec<&C::Prepared> =
                     qs.iter().map(|&qi| &indices[qi as usize]).collect();
                 let no_perms: Vec<Option<&[i64]>> = vec![None; subset.len()];
-                let gq = GroupedQueriesF64::prepare(&subset, &no_perms);
-                let offs = gq.offsets();
-                let (d, ix) =
-                    indices[tj].query_grouped(&gq, None, GROUP_BLOCK, limit_dist, true);
+                let gq = C::prepare_group(&subset, &no_perms);
+                let offs = C::group_offsets(&gq);
+                let (d, ix) = C::query_grouped(&indices[tj], &gq, GROUP_BLOCK, limit_dist);
                 let d = d.as_slice().unwrap();
                 let ix = ix.as_slice().unwrap();
                 let out: Vec<(u32, f64)> = qs
@@ -889,10 +897,10 @@ fn candidate_pairs_rect(
 
 /// Top up query rows with fewer than `k` candidates, using nearest target
 /// centroids. See [`backfill_short_rows`] for why this exists.
-fn backfill_short_rows_rect(
+fn backfill_short_rows_rect<C: Coord>(
     pairs: &mut Vec<u64>,
-    q_points: &[Vec<[f64; 3]>],
-    t_points: &[Vec<[f64; 3]>],
+    q_points: &[Vec<[C; 3]>],
+    t_points: &[Vec<[C; 3]>],
     k: usize,
 ) -> usize {
     let (nq, nt) = (q_points.len(), t_points.len());
@@ -906,14 +914,14 @@ fn backfill_short_rows_rect(
         return 0;
     }
 
-    let centroid = |c: &Vec<[f64; 3]>| -> [f64; 3] {
+    let centroid = |c: &Vec<[C; 3]>| -> [f64; 3] {
         if c.is_empty() {
             return [0.0; 3];
         }
         let mut m = [0.0; 3];
         for p in c {
             for d in 0..3 {
-                m[d] += p[d];
+                m[d] += p[d].to_f64();
             }
         }
         for d in 0..3 {
@@ -1016,16 +1024,16 @@ fn group_rect(
 /// tangents lead), `t_*` the side being descended into — so the reverse pass just
 /// swaps the two argument sets.
 #[allow(clippy::too_many_arguments)]
-fn score_groups(
+fn score_groups<C: Coord>(
     indptr: &[usize],
     others: &[u32],
     slots: &[u32],
-    q_idx: &[PreparedF64],
-    q_vects: &[Vec<[f64; 3]>],
+    q_idx: &[C::Prepared],
+    q_vects: &[Vec<[C; 3]>],
     q_alphas: &Option<Vec<Vec<f64>>>,
     q_self_hits: &[f64],
-    t_idx: &[PreparedF64],
-    t_vects: &[Vec<[f64; 3]>],
+    t_idx: &[C::Prepared],
+    t_vects: &[Vec<[C; 3]>],
     t_alphas: &Option<Vec<Vec<f64>>>,
     normalize: bool,
     limit_dist: Option<f64>,
@@ -1042,11 +1050,11 @@ fn score_groups(
                 return Vec::new();
             }
             let qs = &others[a..b];
-            let subset: Vec<&PreparedF64> = qs.iter().map(|&qi| &q_idx[qi as usize]).collect();
+            let subset: Vec<&C::Prepared> = qs.iter().map(|&qi| &q_idx[qi as usize]).collect();
             let no_perms: Vec<Option<&[i64]>> = vec![None; subset.len()];
-            let gq = GroupedQueriesF64::prepare(&subset, &no_perms);
-            let offs = gq.offsets();
-            let (d, ix) = t_idx[tj].query_grouped(&gq, None, GROUP_BLOCK, limit_dist, true);
+            let gq = C::prepare_group(&subset, &no_perms);
+            let offs = C::group_offsets(&gq);
+            let (d, ix) = C::query_grouped(&t_idx[tj], &gq, GROUP_BLOCK, limit_dist);
             let d = d.as_slice().unwrap();
             let ix = ix.as_slice().unwrap();
             let out: Vec<(u32, f64)> = qs
@@ -1093,12 +1101,12 @@ fn score_groups(
 /// `nblast_query_target`), and there is no symmetric closure of the candidate set
 /// (see [`candidate_pairs_rect`]).
 #[allow(clippy::too_many_arguments)]
-pub fn nblast_knn_query_target<T: ScoreOut>(
-    q_points: Vec<Vec<[f64; 3]>>,
-    q_vects: Vec<Vec<[f64; 3]>>,
+pub fn nblast_knn_query_target<T: ScoreOut, C: Coord>(
+    q_points: Vec<Vec<[C; 3]>>,
+    q_vects: Vec<Vec<[C; 3]>>,
     q_alphas: Option<Vec<Vec<f64>>>,
-    t_points: Vec<Vec<[f64; 3]>>,
-    t_vects: Vec<Vec<[f64; 3]>>,
+    t_points: Vec<Vec<[C; 3]>>,
+    t_vects: Vec<Vec<[C; 3]>>,
     t_alphas: Option<Vec<Vec<f64>>>,
     opts: KnnOpts,
 ) -> (Vec<i64>, Vec<T>) {
@@ -1145,10 +1153,13 @@ pub fn nblast_knn_query_target<T: ScoreOut>(
         }
         backfill_short_rows_rect(&mut pairs, &q_points, &t_points, k);
 
+        // Both cloud sets are consumed by the build; take the counts first.
+        let q_n_pts: Vec<usize> = q_points.iter().map(|c| c.len()).collect();
+        let t_n_pts: Vec<usize> = t_points.iter().map(|c| c.len()).collect();
         let idx_bar = progress.then(|| index_bar((nq + nt) as u64));
         let (Some(q_idx), Some(t_idx)) = (
-            build_indices(&q_points, idx_bar.as_ref(), cancel),
-            build_indices(&t_points, idx_bar.as_ref(), cancel),
+            build_indices(q_points, idx_bar.as_ref(), cancel),
+            build_indices(t_points, idx_bar.as_ref(), cancel),
         ) else {
             return empty();
         };
@@ -1159,13 +1170,13 @@ pub fn nblast_knn_query_target<T: ScoreOut>(
         let q_self: Vec<f64> = (0..nq)
             .map(|i| match &q_alphas {
                 Some(a) => smat.self_hit_alpha(&a[i]),
-                None => smat.self_hit(q_points[i].len()),
+                None => smat.self_hit(q_n_pts[i]),
             })
             .collect();
         let t_self: Vec<f64> = (0..nt)
             .map(|i| match &t_alphas {
                 Some(a) => smat.self_hit_alpha(&a[i]),
-                None => smat.self_hit(t_points[i].len()),
+                None => smat.self_hit(t_n_pts[i]),
             })
             .collect();
 
@@ -1567,8 +1578,55 @@ mod tests {
     fn empty_input_returns_empty() {
         let smat = load_smat();
         let (idx, sc): (Vec<i64>, Vec<f64>) =
-            nblast_knn(Vec::new(), Vec::new(), None, knn_opts(&smat, 5, 10));
+            nblast_knn::<f64, f64>(Vec::new(), Vec::new(), None, knn_opts(&smat, 5, 10));
         assert!(idx.is_empty() && sc.is_empty());
+    }
+
+    #[test]
+    fn coord_f32_knn_matches_coord_f64() {
+        // The k-NN graph is built from the same candidate shortlist at either width
+        // - the signature grid stays f64 - so only the exact rerank scores can move,
+        // and only by the f32 coordinate resolution. Neighbour *sets* should be
+        // essentially identical; ordering within a near-tie may swap.
+        let smat = load_smat();
+        let (points, vects) = population(6, 5, 120, 42);
+        let n = points.len();
+        let (k, nc) = (5usize, 12usize);
+
+        let narrow = |cs: &[Vec<[f64; 3]>]| -> Vec<Vec<[f32; 3]>> {
+            cs.iter()
+                .map(|c| c.iter().map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]).collect())
+                .collect()
+        };
+
+        let (i64_idx, s64): (Vec<i64>, Vec<f64>) = nblast_knn(
+            points.clone(),
+            vects.clone(),
+            None,
+            knn_opts(&smat, k, nc),
+        );
+        let (i32_idx, s32): (Vec<i64>, Vec<f64>) =
+            nblast_knn(narrow(&points), narrow(&vects), None, knn_opts(&smat, k, nc));
+
+        assert_eq!(i32_idx.len(), n * k);
+        // Row-wise: the two neighbour sets must overlap in all but at most one slot.
+        for i in 0..n {
+            let a: std::collections::HashSet<i64> =
+                i64_idx[i * k..(i + 1) * k].iter().copied().collect();
+            let b: std::collections::HashSet<i64> =
+                i32_idx[i * k..(i + 1) * k].iter().copied().collect();
+            assert!(
+                a.intersection(&b).count() >= k - 1,
+                "row {i}: f64 {a:?} vs f32 {b:?}"
+            );
+        }
+        // And the score columns agree: slot j is the j-th best either way.
+        for (a, b) in s32.iter().zip(s64.iter()) {
+            assert!(
+                (a - b).abs() <= 1e-3 * b.abs().max(1.0),
+                "f32 coords gave {a}, f64 gave {b}"
+            );
+        }
     }
 }
 

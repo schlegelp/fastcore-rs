@@ -10,36 +10,19 @@ use std::time::Instant;
 
 use aann::{graph_from_simplices, PreparedF32, PreparedF64};
 use fastcore::nblast::{build_index, load_smat, score_pair};
-use ndarray_017::{Array1, Array2};
+use ndarray_017::Array2;
 use rayon::prelude::*;
 use shull::delaunay4d;
 
-/// f32 twin of `build_index` (coordinates packed at half the footprint).
+/// f32 twin of `build_index`, kept only to narrow the f64 dump this profiler reads.
+/// The index build itself is now `build_index::<f32>` — `Coord` covers both widths,
+/// so there is no longer a hand-rolled duplicate of the CSR construction here.
 fn build_index_f32(points: &[[f64; 3]]) -> PreparedF32 {
-    let n = points.len();
-    let flat: Vec<f32> = points.iter().flatten().map(|&v| v as f32).collect();
-    let arr = Array2::from_shape_vec((n, 3), flat).unwrap();
-    let (indptr, indices): (Array1<usize>, Array1<usize>) = match delaunay4d(arr.view()) {
-        Ok((tets, _, _)) => {
-            let sf: Vec<u64> = tets.iter().flatten().map(|&v| v as u64).collect();
-            let simp = Array2::from_shape_vec((tets.len(), 4), sf).unwrap();
-            graph_from_simplices(simp.view(), n)
-        }
-        Err(_) => {
-            let mut ip = vec![0usize];
-            let mut ix = Vec::new();
-            for k in 0..n {
-                for j in 0..n {
-                    if j != k {
-                        ix.push(j);
-                    }
-                }
-                ip.push(ix.len());
-            }
-            (Array1::from(ip), Array1::from(ix))
-        }
-    };
-    PreparedF32::new(arr.view(), indptr.view(), indices.view())
+    let narrowed: Vec<[f32; 3]> = points
+        .iter()
+        .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+        .collect();
+    build_index::<f32>(&narrowed)
 }
 
 /// Spread the low 21 bits of `x` so each occupies every 3rd bit (Morton/Z-order).

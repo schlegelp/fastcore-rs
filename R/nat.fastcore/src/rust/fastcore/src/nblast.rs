@@ -22,10 +22,12 @@
 //!   * `precision` — the output matrix element type (`f32` / `f64`), chosen by
 //!     the [`ScoreOut`] type parameter; the scoring math always runs in `f64`.
 
-use aann::{graph_from_simplices, GroupedQueriesF64, PreparedF64};
+use aann::{
+    graph_from_simplices, GroupedQueriesF32, GroupedQueriesF64, PreparedF32, PreparedF64,
+};
 use console::Term;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use ndarray_017::{Array1, Array2};
+use ndarray_017::{Array1, Array2, ArrayView2};
 use rayon::prelude::*;
 use shull::delaunay4d;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -60,6 +62,135 @@ impl ScoreOut for f64 {
         x
     }
 }
+
+// ---------------------------------------------------------------------------
+// Coordinate storage width
+// ---------------------------------------------------------------------------
+
+/// Element type that points and tangent vectors are *stored* at.
+///
+/// Orthogonal to [`ScoreOut`]: that picks the width the finished score is written
+/// at, this picks the width the geometry is held at. All scoring arithmetic still
+/// runs in `f64` — [`score_pair`] widens on read — so `Smat` lookups are
+/// unaffected; only storage and the descent's own distance comparisons narrow.
+///
+/// `f32` roughly halves the resident set of a large all-by-all or k-NN, where
+/// every neuron's index is alive at once and the packed points dominate. The cost
+/// is coordinate resolution: ~1.2e-4 at a magnitude of 1e3, which is four orders
+/// below the finest `Smat` distance bin, but it does perturb which of two nearly
+/// equidistant target points wins a nearest-neighbour tie. Prefer it for large
+/// runs on brain-scale coordinates; keep `f64` when exact agreement with a
+/// previous `f64` run matters.
+///
+/// `aann` exposes its two widths as separate macro-generated concrete types
+/// rather than one generic type, so the associated types select the matching
+/// pair.
+pub trait Coord: Copy + Send + Sync + 'static {
+    /// `aann`'s owned, SIMD-packed index at this width.
+    type Prepared: Send + Sync;
+    /// `aann`'s Morton-sorted grouped query set at this width. Prepared once per
+    /// call and shared across the rayon workers that descend each target, hence
+    /// `Sync`.
+    type Grouped: Send + Sync;
+
+    fn from_f64(x: f64) -> Self;
+    fn to_f64(self) -> f64;
+
+    /// Delaunay-graph index for one cloud; see [`build_index`].
+    fn build_index(points: &[[Self; 3]]) -> Self::Prepared;
+
+    fn prepare_group(queries: &[&Self::Prepared], perms: &[Option<&[i64]>]) -> Self::Grouped;
+    fn group_offsets(group: &Self::Grouped) -> &[usize];
+
+    /// Blocked grouped descent of `group` against `target`.
+    ///
+    /// `ub` is a true (unsquared) distance in `f64`; implementations narrow it to
+    /// their own width. Narrowing either way is safe: `aann` marks a pruned point
+    /// as infinitely distant, and [`score_pair`] re-checks every returned distance
+    /// against the original `f64` bound, so that check stays authoritative.
+    fn query_grouped(
+        target: &Self::Prepared,
+        group: &Self::Grouped,
+        block: usize,
+        ub: Option<f64>,
+    ) -> (Array1<Self>, Array1<usize>);
+
+    /// Descent of one prepared cloud against another (used by `synblast`, which
+    /// compares small connector clouds pairwise rather than in groups).
+    fn query_prepared(
+        target: &Self::Prepared,
+        query: &Self::Prepared,
+        ub: Option<f64>,
+    ) -> (Array1<Self>, Array1<usize>);
+
+    fn n_points(prepared: &Self::Prepared) -> usize;
+}
+
+macro_rules! impl_coord {
+    ($t:ty, $prepared:ty, $grouped:ty) => {
+        // The `x as $t` casts are identities in the f64 expansion.
+        #[allow(clippy::unnecessary_cast)]
+        impl Coord for $t {
+            type Prepared = $prepared;
+            type Grouped = $grouped;
+
+            #[inline]
+            fn from_f64(x: f64) -> Self {
+                x as $t
+            }
+
+            #[inline]
+            fn to_f64(self) -> f64 {
+                self as f64
+            }
+
+            fn build_index(points: &[[Self; 3]]) -> Self::Prepared {
+                let n = points.len();
+                let flat: Vec<$t> = points.iter().flatten().copied().collect();
+                let arr: Array2<$t> = Array2::from_shape_vec((n, 3), flat).unwrap();
+                let (indptr, indices) = delaunay_csr(arr.view());
+                <$prepared>::new(arr.view(), indptr.view(), indices.view())
+            }
+
+            fn prepare_group(
+                queries: &[&Self::Prepared],
+                perms: &[Option<&[i64]>],
+            ) -> Self::Grouped {
+                <$grouped>::prepare(queries, perms)
+            }
+
+            #[inline]
+            fn group_offsets(group: &Self::Grouped) -> &[usize] {
+                group.offsets()
+            }
+
+            fn query_grouped(
+                target: &Self::Prepared,
+                group: &Self::Grouped,
+                block: usize,
+                ub: Option<f64>,
+            ) -> (Array1<Self>, Array1<usize>) {
+                target.query_grouped(group, None, block, ub.map(|u| u as $t), true)
+            }
+
+            fn query_prepared(
+                target: &Self::Prepared,
+                query: &Self::Prepared,
+                ub: Option<f64>,
+            ) -> (Array1<Self>, Array1<usize>) {
+                target.query_prepared(query, ub.map(|u| u as $t))
+            }
+
+            #[inline]
+            fn n_points(prepared: &Self::Prepared) -> usize {
+                prepared.n()
+            }
+        }
+    };
+}
+
+impl_coord!(f64, PreparedF64, GroupedQueriesF64);
+impl_coord!(f32, PreparedF32, GroupedQueriesF32);
 
 // ---------------------------------------------------------------------------
 // Per-call options (parity knobs)
@@ -301,12 +432,19 @@ fn parse_smat(data: &[u8]) -> Smat {
 /// tangent-vector array. Degenerate inputs (fewer than 5 points, or coplanar /
 /// cospherical clouds that have no 3D triangulation) fall back to a complete
 /// graph, over which graph descent is still exact.
-pub fn build_index(points: &[[f64; 3]]) -> PreparedF64 {
-    let n = points.len();
-    let flat: Vec<f64> = points.iter().flatten().copied().collect();
-    let arr: Array2<f64> = Array2::from_shape_vec((n, 3), flat).unwrap();
+pub fn build_index<C: Coord>(points: &[[C; 3]]) -> C::Prepared {
+    C::build_index(points)
+}
 
-    let (indptr, indices) = match delaunay4d(arr.view()) {
+/// CSR adjacency of `points`' Delaunay 1-skeleton, or of the complete graph when
+/// the cloud has no 3D triangulation.
+///
+/// Shared by both [`Coord`] widths: `delaunay4d` is generic over the coordinate
+/// type and widens to `f64` internally, so the triangulation an `f32` cloud gets
+/// is the one its exactly-widened `f64` coordinates would have produced.
+fn delaunay_csr<T: Copy + Into<f64>>(arr: ArrayView2<T>) -> (Array1<u32>, Array1<u32>) {
+    let n = arr.nrows();
+    match delaunay4d(arr) {
         Ok((tets, _neighbors, _duplicates)) => {
             let simplices_flat: Vec<u64> = tets.iter().flatten().map(|&v| v as u64).collect();
             let simplices: Array2<u64> =
@@ -315,24 +453,27 @@ pub fn build_index(points: &[[f64; 3]]) -> PreparedF64 {
         }
         // Rare for real (3D) neurons; keep the pipeline robust rather than panic.
         Err(_) => complete_graph_csr(n),
-    };
-
-    PreparedF64::new(arr.view(), indptr.view(), indices.view())
+    }
 }
 
 /// CSR adjacency of a complete graph on `n` vertices (each vertex adjacent to
 /// all others). Used as the fallback when Delaunay triangulation is undefined.
-fn complete_graph_csr(n: usize) -> (Array1<usize>, Array1<usize>) {
-    let mut indptr: Vec<usize> = Vec::with_capacity(n + 1);
-    let mut indices: Vec<usize> = Vec::with_capacity(n.saturating_mul(n.saturating_sub(1)));
+///
+/// `u32` to match `aann`'s CSR. Only reached for clouds too small or too degenerate
+/// to triangulate, which are far below the `u32` vertex limit `graph_from_simplices`
+/// asserts on the normal path — but the edge count is `n * (n - 1)`, so this is also
+/// the arm where `n` is necessarily tiny.
+fn complete_graph_csr(n: usize) -> (Array1<u32>, Array1<u32>) {
+    let mut indptr: Vec<u32> = Vec::with_capacity(n + 1);
+    let mut indices: Vec<u32> = Vec::with_capacity(n.saturating_mul(n.saturating_sub(1)));
     indptr.push(0);
     for k in 0..n {
         for j in 0..n {
             if j != k {
-                indices.push(j);
+                indices.push(j as u32);
             }
         }
-        indptr.push(indices.len());
+        indptr.push(indices.len() as u32);
     }
     (Array1::from(indptr), Array1::from(indices))
 }
@@ -354,12 +495,16 @@ fn complete_graph_csr(n: usize) -> (Array1<usize>, Array1<usize>) {
 ///   alpha for such "no match within bound" points). Because `aann` returns the
 ///   true global nearest neighbour, `dists[p] > lim` is equivalent to navis'
 ///   `distance_upper_bound` finding no neighbour.
+///
+/// Coordinates arrive at whatever width [`Coord`] selected and are widened here,
+/// so the accumulator, the dot product and every `Smat` lookup run in `f64`
+/// regardless of storage width.
 #[allow(clippy::too_many_arguments)]
-pub fn score_pair(
-    dists: &[f64],
+pub fn score_pair<C: Coord>(
+    dists: &[C],
     idx: &[usize],
-    q_vect: &[[f64; 3]],
-    t_vect: &[[f64; 3]],
+    q_vect: &[[C; 3]],
+    t_vect: &[[C; 3]],
     q_alpha: Option<&[f64]>,
     t_alpha: Option<&[f64]>,
     limit_dist: Option<f64>,
@@ -367,7 +512,7 @@ pub fn score_pair(
 ) -> f64 {
     let mut raw = 0.0;
     for p in 0..dists.len() {
-        let d = dists[p];
+        let d = dists[p].to_f64();
         // Over-limit: cap the distance at the bound and treat the dot product as
         // zero (navis zeroes both the dot product and, if used, alpha).
         if let Some(lim) = limit_dist {
@@ -377,10 +522,11 @@ pub fn score_pair(
             }
         }
         let j = idx[p];
-        let mut dp = (q_vect[p][0] * t_vect[j][0]
-            + q_vect[p][1] * t_vect[j][1]
-            + q_vect[p][2] * t_vect[j][2])
-            .abs();
+        let (q, t) = (&q_vect[p], &t_vect[j]);
+        let mut dp = (q[0].to_f64() * t[0].to_f64()
+            + q[1].to_f64() * t[1].to_f64()
+            + q[2].to_f64() * t[2].to_f64())
+        .abs();
         if let (Some(qa), Some(ta)) = (q_alpha, t_alpha) {
             dp *= (qa[p] * ta[j]).sqrt();
         }
@@ -431,30 +577,41 @@ pub(crate) fn make_bar(label: &str, total: u64) -> ProgressBar {
 ///
 /// Returns `None` if `cancel` is observed set mid-build (the parallel map
 /// short-circuits); the caller treats that as an interrupted call and bails.
-pub(crate) fn build_indices(
-    clouds: &[Vec<[f64; 3]>],
+///
+/// Takes `clouds` **by value** and drops each one the moment its index exists. The
+/// index owns a packed copy of the coordinates, so from that point the input cloud
+/// is dead weight — and this build is where peak memory actually sits (the indices
+/// are the largest thing an all-by-all or k-NN holds, and they only grow), so
+/// carrying the whole input alongside them to the end costs the full cloud set at
+/// exactly the worst moment. Callers that still need per-cloud point counts should
+/// collect them before handing ownership over.
+pub(crate) fn build_indices<C: Coord>(
+    clouds: Vec<Vec<[C; 3]>>,
     bar: Option<&ProgressBar>,
     cancel: Option<&AtomicBool>,
-) -> Option<Vec<PreparedF64>> {
+) -> Option<Vec<C::Prepared>> {
     match bar {
         Some(bar) => clouds
-            .par_iter()
+            .into_par_iter()
             .map(|p| {
                 if is_cancelled(cancel) {
                     return None;
                 }
-                let idx = build_index(p);
+                let idx = build_index(&p);
+                drop(p); // release this cloud before the next index is allocated
                 bar.inc(1);
                 Some(idx)
             })
             .collect(),
         None => clouds
-            .par_iter()
+            .into_par_iter()
             .map(|p| {
                 if is_cancelled(cancel) {
                     return None;
                 }
-                Some(build_index(p))
+                let idx = build_index(&p);
+                drop(p);
+                Some(idx)
             })
             .collect(),
     }
@@ -518,9 +675,9 @@ pub(crate) fn run_scoring<T, F>(
 /// `[i * n + j]` is the score of query `i` against target `j`. With
 /// `opts.normalize`, the diagonal is 1.0. The element type `T` selects the output
 /// precision.
-pub fn nblast_allbyall<T: ScoreOut>(
-    points: Vec<Vec<[f64; 3]>>,
-    vects: Vec<Vec<[f64; 3]>>,
+pub fn nblast_allbyall<T: ScoreOut, C: Coord>(
+    points: Vec<Vec<[C; 3]>>,
+    vects: Vec<Vec<[C; 3]>>,
     alphas: Option<Vec<Vec<f64>>>,
     opts: Opts,
 ) -> Vec<T> {
@@ -537,8 +694,11 @@ pub fn nblast_allbyall<T: ScoreOut>(
         let n = points.len();
 
         // Build every index once, in parallel; reused across all pairs it appears in.
+        // `build_indices` consumes the clouds, so the point counts the self-hits need
+        // are taken first.
+        let n_pts: Vec<usize> = points.iter().map(|c| c.len()).collect();
         let idx_bar = progress.then(|| index_bar(n as u64));
-        let Some(indices) = build_indices(&points, idx_bar.as_ref(), cancel) else {
+        let Some(indices) = build_indices(points, idx_bar.as_ref(), cancel) else {
             return Vec::new(); // interrupted mid-build; caller discards the result
         };
         if let Some(bar) = idx_bar {
@@ -547,7 +707,7 @@ pub fn nblast_allbyall<T: ScoreOut>(
         let self_hits: Vec<f64> = (0..n)
             .map(|i| match &alphas {
                 Some(a) => smat.self_hit_alpha(&a[i]),
-                None => smat.self_hit(points[i].len()),
+                None => smat.self_hit(n_pts[i]),
             })
             .collect();
 
@@ -557,10 +717,10 @@ pub fn nblast_allbyall<T: ScoreOut>(
         // shares each target-vertex gather across spatially-adjacent query points
         // (~2x on the descent). `offsets[i]..offsets[i+1]` slices query i's result —
         // finalised back to original point order — out of each target's column.
-        let query_refs: Vec<&PreparedF64> = indices.iter().collect();
+        let query_refs: Vec<&C::Prepared> = indices.iter().collect();
         let no_perms: Vec<Option<&[i64]>> = vec![None; n];
-        let gq = GroupedQueriesF64::prepare(&query_refs, &no_perms);
-        let offsets = gq.offsets();
+        let gq = C::prepare_group(&query_refs, &no_perms);
+        let offsets = C::group_offsets(&gq);
 
         // Target-major scoring. Each target `j` owns a contiguous column of the
         // column-major buffer `cm` (`cm[j * n + i]` = score of query i vs target j),
@@ -576,7 +736,7 @@ pub fn nblast_allbyall<T: ScoreOut>(
             // returns the miss marker (inf, |target|) for over-bound points, which
             // `score_pair` caps at the far corner. `finalize = true` returns results
             // in concatenated per-cloud original order, ready to slice per query.
-            let (d, ix) = indices[j].query_grouped(&gq, None, GROUP_BLOCK, limit_dist, true);
+            let (d, ix) = C::query_grouped(&indices[j], &gq, GROUP_BLOCK, limit_dist);
             let d = d.as_slice().unwrap();
             let ix = ix.as_slice().unwrap();
             for i in 0..n {
@@ -636,12 +796,12 @@ pub fn nblast_allbyall<T: ScoreOut>(
 /// `[qi * n_target + tj]` is the score of query `qi` against target `tj`. The
 /// element type `T` selects the output precision.
 #[allow(clippy::too_many_arguments)]
-pub fn nblast_query_target<T: ScoreOut>(
-    q_points: Vec<Vec<[f64; 3]>>,
-    q_vects: Vec<Vec<[f64; 3]>>,
+pub fn nblast_query_target<T: ScoreOut, C: Coord>(
+    q_points: Vec<Vec<[C; 3]>>,
+    q_vects: Vec<Vec<[C; 3]>>,
     q_alphas: Option<Vec<Vec<f64>>>,
-    t_points: Vec<Vec<[f64; 3]>>,
-    t_vects: Vec<Vec<[f64; 3]>>,
+    t_points: Vec<Vec<[C; 3]>>,
+    t_vects: Vec<Vec<[C; 3]>>,
     t_alphas: Option<Vec<Vec<f64>>>,
     opts: Opts,
 ) -> Vec<T> {
@@ -659,10 +819,12 @@ pub fn nblast_query_target<T: ScoreOut>(
         let nt = t_points.len();
 
         // One shared bar spanning both index builds so it reads as a single phase.
+        // Both cloud sets are consumed by the build; take the counts first.
+        let q_n_pts: Vec<usize> = q_points.iter().map(|c| c.len()).collect();
         let idx_bar = progress.then(|| index_bar((nq + nt) as u64));
         let (Some(q_idx), Some(t_idx)) = (
-            build_indices(&q_points, idx_bar.as_ref(), cancel),
-            build_indices(&t_points, idx_bar.as_ref(), cancel),
+            build_indices(q_points, idx_bar.as_ref(), cancel),
+            build_indices(t_points, idx_bar.as_ref(), cancel),
         ) else {
             return Vec::new(); // interrupted mid-build; caller discards the result
         };
@@ -672,17 +834,17 @@ pub fn nblast_query_target<T: ScoreOut>(
         let self_hits: Vec<f64> = (0..nq)
             .map(|i| match &q_alphas {
                 Some(a) => smat.self_hit_alpha(&a[i]),
-                None => smat.self_hit(q_points[i].len()),
+                None => smat.self_hit(q_n_pts[i]),
             })
             .collect();
 
         // Prepare the grouped query set ONCE and descend each target against it (see
         // `nblast_allbyall`). Column `tj` of the column-major buffer holds every
         // query's score against target `tj`; `offsets` slices each query out.
-        let query_refs: Vec<&PreparedF64> = q_idx.iter().collect();
+        let query_refs: Vec<&C::Prepared> = q_idx.iter().collect();
         let no_perms: Vec<Option<&[i64]>> = vec![None; nq];
-        let gq = GroupedQueriesF64::prepare(&query_refs, &no_perms);
-        let offsets = gq.offsets();
+        let gq = C::prepare_group(&query_refs, &no_perms);
+        let offsets = C::group_offsets(&gq);
 
         let mut cm: Vec<T> = vec![T::from_f64(0.0); nq * nt];
         let score_bar = progress.then(|| scoring_bar(nt as u64));
@@ -690,7 +852,7 @@ pub fn nblast_query_target<T: ScoreOut>(
             if is_cancelled(cancel) {
                 return;
             }
-            let (d, ix) = t_idx[tj].query_grouped(&gq, None, GROUP_BLOCK, limit_dist, true);
+            let (d, ix) = C::query_grouped(&t_idx[tj], &gq, GROUP_BLOCK, limit_dist);
             let d = d.as_slice().unwrap();
             let ix = ix.as_slice().unwrap();
             for qi in 0..nq {
@@ -748,12 +910,12 @@ pub fn nblast_query_target<T: ScoreOut>(
 /// descent (and equidistant tie-breaking) as `nblast_query_target`: a target whose
 /// full query set is selected reproduces that target's dense column exactly.
 #[allow(clippy::too_many_arguments)]
-pub fn nblast_pairs<T: ScoreOut>(
-    q_points: Vec<Vec<[f64; 3]>>,
-    q_vects: Vec<Vec<[f64; 3]>>,
+pub fn nblast_pairs<T: ScoreOut, C: Coord>(
+    q_points: Vec<Vec<[C; 3]>>,
+    q_vects: Vec<Vec<[C; 3]>>,
     q_alphas: Option<Vec<Vec<f64>>>,
-    t_points: Vec<Vec<[f64; 3]>>,
-    t_vects: Vec<Vec<[f64; 3]>>,
+    t_points: Vec<Vec<[C; 3]>>,
+    t_vects: Vec<Vec<[C; 3]>>,
     t_alphas: Option<Vec<Vec<f64>>>,
     pairs: Vec<(usize, usize)>,
     opts: Opts,
@@ -769,27 +931,29 @@ pub fn nblast_pairs<T: ScoreOut>(
 
     with_pool(threads, move || {
         // One shared bar spanning both index builds so it reads as a single phase.
-        let idx_bar = progress.then(|| index_bar((q_points.len() + t_points.len()) as u64));
+        // Both cloud sets are consumed by the build; take the counts first.
+        let (nq, nt) = (q_points.len(), t_points.len());
+        let q_n_pts: Vec<usize> = q_points.iter().map(|c| c.len()).collect();
+        let idx_bar = progress.then(|| index_bar((nq + nt) as u64));
         let (Some(q_idx), Some(t_idx)) = (
-            build_indices(&q_points, idx_bar.as_ref(), cancel),
-            build_indices(&t_points, idx_bar.as_ref(), cancel),
+            build_indices(q_points, idx_bar.as_ref(), cancel),
+            build_indices(t_points, idx_bar.as_ref(), cancel),
         ) else {
             return Vec::new(); // interrupted mid-build; caller discards the result
         };
         if let Some(bar) = idx_bar {
             bar.finish();
         }
-        let self_hits: Vec<f64> = (0..q_points.len())
+        let self_hits: Vec<f64> = (0..nq)
             .map(|i| match &q_alphas {
                 Some(a) => smat.self_hit_alpha(&a[i]),
-                None => smat.self_hit(q_points[i].len()),
+                None => smat.self_hit(q_n_pts[i]),
             })
             .collect();
 
         // Group the requested pairs by target so each target is descended once, via
         // the same grouped blocked descent as the dense paths. `by_target[tj]` lists
         // `(pair index, query index)` for every requested pair against target `tj`.
-        let nt = t_points.len();
         let mut by_target: Vec<Vec<(usize, usize)>> = vec![Vec::new(); nt];
         for (k, &(qi, tj)) in pairs.iter().enumerate() {
             by_target[tj].push((k, qi));
@@ -806,12 +970,12 @@ pub fn nblast_pairs<T: ScoreOut>(
                 if group.is_empty() || is_cancelled(cancel) {
                     return Vec::new();
                 }
-                let subset: Vec<&PreparedF64> =
+                let subset: Vec<&C::Prepared> =
                     group.iter().map(|&(_, qi)| &q_idx[qi]).collect();
                 let no_perms: Vec<Option<&[i64]>> = vec![None; subset.len()];
-                let gq = GroupedQueriesF64::prepare(&subset, &no_perms);
-                let offsets = gq.offsets();
-                let (d, ix) = t_idx[tj].query_grouped(&gq, None, GROUP_BLOCK, limit_dist, true);
+                let gq = C::prepare_group(&subset, &no_perms);
+                let offsets = C::group_offsets(&gq);
+                let (d, ix) = C::query_grouped(&t_idx[tj], &gq, GROUP_BLOCK, limit_dist);
                 let d = d.as_slice().unwrap();
                 let ix = ix.as_slice().unwrap();
                 let out: Vec<(usize, T)> = group
@@ -989,13 +1153,22 @@ mod tests {
             [0.0, 0.0, 1.0],
             [0.25, 0.25, 0.25],
         ];
-        let idx = build_index(&tetra);
+        let idx = build_index::<f64>(&tetra);
         assert_eq!(idx.n(), 5);
 
         // 3 points -> degenerate for shull -> complete-graph fallback, still valid.
         let tri = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
-        let idx = build_index(&tri);
+        let idx = build_index::<f64>(&tri);
         assert_eq!(idx.n(), 3);
+
+        // Both Delaunay and the fallback are width-agnostic: `delaunay4d` widens to
+        // f64 internally, so an f32 cloud gets the same graph over the same points.
+        let tetra32: Vec<[f32; 3]> =
+            tetra.iter().map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]).collect();
+        assert_eq!(build_index::<f32>(&tetra32).n(), 5);
+        let tri32: Vec<[f32; 3]> =
+            tri.iter().map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]).collect();
+        assert_eq!(build_index::<f32>(&tri32).n(), 3);
     }
 
     #[test]
@@ -1053,6 +1226,95 @@ mod tests {
         for (a, b) in m32.iter().zip(m64.iter()) {
             assert!((*a as f64 - *b).abs() < 1e-5, "{a} vs {b}");
         }
+    }
+
+    /// Deterministic pseudo-random walk, so the f32/f64 comparison runs on clouds
+    /// with the branching, non-degenerate geometry real neurons have rather than
+    /// on a handful of exactly-representable lattice points.
+    fn walk(n: usize, seed: u64) -> (Vec<[f64; 3]>, Vec<[f64; 3]>) {
+        let mut s = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let mut next = || {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((s >> 11) as f64 / (1u64 << 53) as f64) - 0.5
+        };
+        let (mut pts, mut vecs) = (Vec::with_capacity(n), Vec::with_capacity(n));
+        let mut cur = [0.0f64; 3];
+        for _ in 0..n {
+            for d in 0..3 {
+                cur[d] += next() * 4.0;
+            }
+            pts.push(cur);
+            let v: [f64; 3] = std::array::from_fn(|_| next());
+            let norm = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-12);
+            vecs.push([v[0] / norm, v[1] / norm, v[2] / norm]);
+        }
+        (pts, vecs)
+    }
+
+    fn narrow(c: &[[f64; 3]]) -> Vec<[f32; 3]> {
+        c.iter().map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]).collect()
+    }
+
+    #[test]
+    fn coord_f32_matches_coord_f64() {
+        // Coordinate width is orthogonal to output precision: both runs below write
+        // f64 scores, and differ only in what the index stores. f32 coordinates
+        // resolve ~1e-7 relative, far inside a distance bin, so the scores agree to
+        // a tolerance - but not bit-for-bit, because narrowing can flip which of two
+        // near-equidistant target points wins a nearest-neighbour tie.
+        let (pa, va) = walk(200, 1);
+        let (pb, vb) = walk(200, 2);
+        let smat = load_smat();
+
+        let m64: Vec<f64> = nblast_allbyall(
+            vec![pa.clone(), pb.clone()],
+            vec![va.clone(), vb.clone()],
+            None,
+            test_opts(&smat),
+        );
+        let m32: Vec<f64> = nblast_allbyall(
+            vec![narrow(&pa), narrow(&pb)],
+            vec![narrow(&va), narrow(&vb)],
+            None,
+            test_opts(&smat),
+        );
+
+        assert_eq!(m32.len(), m64.len());
+        for (a, b) in m32.iter().zip(m64.iter()) {
+            assert!(
+                (a - b).abs() <= 1e-4 * b.abs().max(1.0),
+                "f32 coords gave {a}, f64 gave {b}"
+            );
+        }
+        // Normalisation is width-independent: a self-comparison is exactly 1.
+        assert!((m32[0] - 1.0).abs() < 1e-9 && (m32[3] - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn coord_f32_query_target_matches_allbyall() {
+        // The rectangular path must stay internally consistent at f32 too: query vs
+        // target over the same two clouds reproduces the all-by-all's off-diagonal.
+        let (pa, va) = walk(150, 7);
+        let (pb, vb) = walk(150, 8);
+        let smat = load_smat();
+
+        let aba: Vec<f64> = nblast_allbyall(
+            vec![narrow(&pa), narrow(&pb)],
+            vec![narrow(&va), narrow(&vb)],
+            None,
+            test_opts(&smat),
+        );
+        let qt: Vec<f64> = nblast_query_target(
+            vec![narrow(&pa)],
+            vec![narrow(&va)],
+            None,
+            vec![narrow(&pb)],
+            vec![narrow(&vb)],
+            None,
+            test_opts(&smat),
+        );
+        assert_eq!(qt.len(), 1);
+        assert!((qt[0] - aba[1]).abs() < 1e-12, "{} vs {}", qt[0], aba[1]);
     }
 
     #[test]

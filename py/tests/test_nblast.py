@@ -295,6 +295,118 @@ def test_n_cores_invariant(dotprops):
     assert np.array_equal(M, M1)
 
 
+# --- float32 coordinates ---------------------------------------------------
+#
+# Coordinates are used at the dtype they arrive as: float32 dotprops build a
+# float32 spatial index, which roughly halves the resident set of a large run.
+#
+# Scores stay equivalent but not identical. A score is a sum of lookups from a
+# coarsely binned matrix, so most of the ~1e-7 relative shift in the distances
+# changes nothing at all; what does move the total is the handful of points whose
+# nearest neighbour flips, or whose distance crosses a bin edge. On these two
+# neurons (4.3k/4.7k points, coordinates up to ~37) that comes to 8.5e-5 relative
+# without alpha and 1.3e-4 with it, so 1e-3 leaves roughly an order of margin.
+F32_RTOL, F32_ATOL = 1e-3, 1e-5
+
+
+def _as32(dps):
+    return [
+        Dotprop(
+            np.ascontiguousarray(d.points, dtype=np.float32),
+            np.ascontiguousarray(d.vect, dtype=np.float32),
+            None if d.alpha is None else d.alpha,
+        )
+        for d in dps
+    ]
+
+
+def _widen(dps):
+    """Explicitly float64 copies - the coordinates a float32 input falls back to."""
+    return [
+        Dotprop(
+            np.ascontiguousarray(d.points, dtype=np.float64),
+            np.ascontiguousarray(d.vect, dtype=np.float64),
+            None if d.alpha is None else d.alpha,
+        )
+        for d in dps
+    ]
+
+
+def test_f32_coords_reach_rust_unconverted(dotprops):
+    """The whole point: nothing upcasts on the way in."""
+    from navis_fastcore.nblast import _as_clouds, _coord_dtype
+
+    dps32 = _as32(dotprops)
+    assert _coord_dtype(dps32) == np.float32
+    assert _coord_dtype(dotprops) == np.float64
+    points, vects, _ = _as_clouds(dps32)
+    assert points[0].dtype == np.float32 and vects[0].dtype == np.float32
+    # And the buffer is the caller's, not a converted copy - a copy would cost the
+    # memory the narrow width was chosen to save.
+    assert points[0] is dps32[0].points
+
+
+def test_f32_coords_match_f64(dotprops):
+    M64 = np.asarray(fastcore.nblast_allbyall(dotprops, precision=64))
+    M32 = np.asarray(fastcore.nblast_allbyall(_as32(dotprops), precision=64))
+    assert M32.shape == M64.shape
+    assert np.allclose(M32, M64, rtol=F32_RTOL, atol=F32_ATOL)
+    # Normalisation is width-independent, so the diagonal is exactly 1 either way.
+    assert np.allclose(np.diag(M32), 1.0, atol=1e-12)
+
+
+def test_f32_coords_match_f64_query_target(dotprops):
+    Q64 = np.asarray(fastcore.nblast(dotprops, dotprops, precision=64))
+    Q32 = np.asarray(fastcore.nblast(_as32(dotprops), _as32(dotprops), precision=64))
+    assert np.allclose(Q32, Q64, rtol=F32_RTOL, atol=F32_ATOL)
+
+
+def test_f32_coords_match_f64_knn(dotprops):
+    dps = dotprops * 4  # 8 neurons, so k=3 has something to choose between
+    i64, s64 = fastcore.nblast_knn(dps, k=3, n_candidates=8, precision=64)
+    i32, s32 = fastcore.nblast_knn(_as32(dps), k=3, n_candidates=8, precision=64)
+    assert i32.shape == i64.shape
+    for r64, r32 in zip(i64, i32):
+        assert len(set(r64) & set(r32)) >= len(r64) - 1
+    assert np.allclose(s32, s64, rtol=F32_RTOL, atol=F32_ATOL)
+
+
+def test_f32_coords_use_alpha(dotprops):
+    """Alpha is a score-side weight and stays float64 even at float32 coordinates."""
+    M64 = fastcore.nblast_allbyall(dotprops, use_alpha=True, precision=64)
+    M32 = fastcore.nblast_allbyall(_as32(dotprops), use_alpha=True, precision=64)
+    assert np.allclose(np.asarray(M32), np.asarray(M64), rtol=F32_RTOL, atol=F32_ATOL)
+
+
+def test_f32_coords_limit_dist(dotprops):
+    """`limit_dist` compares against the bound in float64 whatever the storage is."""
+    M64 = fastcore.nblast_allbyall(dotprops, limit_dist="auto", precision=64)
+    M32 = fastcore.nblast_allbyall(_as32(dotprops), limit_dist="auto", precision=64)
+    assert np.allclose(np.asarray(M32), np.asarray(M64), rtol=F32_RTOL, atol=F32_ATOL)
+
+
+def test_mixed_coord_dtypes_fall_back_to_f64(dotprops):
+    """A half-float32 set must not error, and must run wholly at float64.
+
+    Widening the float32 side is the right call: the two sides have to agree on a
+    width, and widening is lossless where narrowing is not. Note the comparison is
+    against *explicitly widened* clouds rather than the originals - the float32 side
+    has already lost precision, and running it at float64 does not restore it.
+    """
+    mixed = [_as32(dotprops)[0], dotprops[1]]
+    got = np.asarray(fastcore.nblast_allbyall(mixed, precision=64))
+    want = np.asarray(fastcore.nblast_allbyall(_widen(mixed), precision=64))
+    assert np.array_equal(got, want)
+
+
+def test_f32_coords_across_query_and_target_agree(dotprops):
+    """float32 query against float64 target: one width is chosen for both sides."""
+    q32 = _as32(dotprops)
+    got = np.asarray(fastcore.nblast(q32, dotprops, precision=64))
+    want = np.asarray(fastcore.nblast(_widen(q32), dotprops, precision=64))
+    assert np.array_equal(got, want)
+
+
 def test_navis_lookup2d_smat(dotprops):
     """A navis Lookup2d passed as `smat` must round-trip to the default path."""
     navis = pytest.importorskip("navis")

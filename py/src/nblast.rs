@@ -53,9 +53,61 @@ where
     })
 }
 
-// Convert a list of (N, 3) numpy arrays into owned point clouds. Done under the
-// GIL, before any GIL-releasing call, so no numpy borrow is held across threads.
-fn to_clouds(arrays: &[PyReadonlyArray2<f64>]) -> Vec<Vec<[f64; 3]>> {
+// Convert a list of (N, 3) numpy arrays into owned point clouds at the caller's
+// coordinate width. Done under the GIL, before any GIL-releasing call, so no numpy
+// borrow is held across threads.
+fn to_clouds<T: numpy::Element + Copy>(
+    arrays: &[Bound<'_, PyAny>],
+) -> PyResult<Vec<Vec<[T; 3]>>> {
+    arrays
+        .iter()
+        .map(|a| {
+            let arr = a.extract::<PyReadonlyArray2<T>>()?;
+            Ok(arr
+                .as_array()
+                .rows()
+                .into_iter()
+                .map(|r| [r[0], r[1], r[2]])
+                .collect())
+        })
+        .collect()
+}
+
+// Which width to run the whole call at: `true` for float32.
+//
+// Coordinates are used at the dtype they arrive as, all the way into the index
+// (see `fastcore::nblast::Coord`) — casting here would defeat the point, since it
+// would hold a converted copy alongside the caller's original. Every cloud in one
+// call must therefore agree; the Python wrapper normalises them, so a mix reaching
+// here is a bug in it rather than something to paper over.
+fn coords_are_f32(groups: &[&[Bound<'_, PyAny>]]) -> PyResult<bool> {
+    let mut width: Option<bool> = None;
+    for group in groups {
+        for a in group.iter() {
+            let is_f32 = a.extract::<PyReadonlyArray2<f32>>().is_ok();
+            if !is_f32 && a.extract::<PyReadonlyArray2<f64>>().is_err() {
+                return Err(pyo3::exceptions::PyTypeError::new_err(
+                    "point and tangent arrays must be C-contiguous (N, 3) float32 or float64",
+                ));
+            }
+            match width {
+                None => width = Some(is_f32),
+                Some(prev) if prev != is_f32 => {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "all point and tangent arrays in one call must share a dtype; \
+                         got a mix of float32 and float64",
+                    ))
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(width.unwrap_or(false))
+}
+
+// syNBLAST's connector clouds are thousands of points, not the tens of millions an
+// all-by-all NBLAST holds, so they stay f64 and skip the width dispatch above.
+fn to_clouds_f64(arrays: &[PyReadonlyArray2<f64>]) -> Vec<Vec<[f64; 3]>> {
     arrays
         .iter()
         .map(|a| {
@@ -132,8 +184,8 @@ pub fn smat_auto_limit_py(
 #[allow(clippy::too_many_arguments)]
 pub fn nblast_allbyall_py<'py>(
     py: Python<'py>,
-    points: Vec<PyReadonlyArray2<f64>>,
-    vects: Vec<PyReadonlyArray2<f64>>,
+    points: Vec<Bound<'py, PyAny>>,
+    vects: Vec<Bound<'py, PyAny>>,
     alphas: Option<Vec<PyReadonlyArray1<f64>>>,
     smat_values: Option<PyReadonlyArray2<f64>>,
     dist_edges: Option<PyReadonlyArray1<f64>>,
@@ -144,11 +196,10 @@ pub fn nblast_allbyall_py<'py>(
     precision: u8,
     progress: bool,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let clouds = to_clouds(&points);
-    let vecs = to_clouds(&vects);
     let alpha_vecs = to_alphas(alphas);
     let smat = build_smat(smat_values, dist_edges, dot_edges, alpha_vecs.is_some());
-    let n = clouds.len();
+    let n = points.len();
+    let coord32 = coords_are_f32(&[&points, &vects])?;
     let cancel = AtomicBool::new(false);
     let opts = Opts {
         smat: &smat,
@@ -159,23 +210,28 @@ pub fn nblast_allbyall_py<'py>(
         cancel: Some(&cancel),
     };
 
-    let out = match precision {
-        32 => {
-            let scores: Vec<f32> =
-                run_interruptible(py, &cancel, move || nblast_allbyall(clouds, vecs, alpha_vecs, opts))?;
+    // Score width (`precision`) and coordinate width (the input dtype) are
+    // independent, so both are dispatched here. Only one arm runs, so each may move
+    // `alpha_vecs` / `opts`.
+    macro_rules! run {
+        ($score:ty, $coord:ty) => {{
+            let clouds = to_clouds::<$coord>(&points)?;
+            let vecs = to_clouds::<$coord>(&vects)?;
+            let scores: Vec<$score> = run_interruptible(py, &cancel, move || {
+                nblast_allbyall(clouds, vecs, alpha_vecs, opts)
+            })?;
             Array2::from_shape_vec((n, n), scores)
                 .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
                 .into_pyarray(py)
                 .into_any()
-        }
-        64 => {
-            let scores: Vec<f64> =
-                run_interruptible(py, &cancel, move || nblast_allbyall(clouds, vecs, alpha_vecs, opts))?;
-            Array2::from_shape_vec((n, n), scores)
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
-                .into_pyarray(py)
-                .into_any()
-        }
+        }};
+    }
+
+    let out = match (precision, coord32) {
+        (32, true) => run!(f32, f32),
+        (32, false) => run!(f32, f64),
+        (64, true) => run!(f64, f32),
+        (64, false) => run!(f64, f64),
         _ => {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "precision must be 32 or 64",
@@ -201,10 +257,10 @@ pub fn nblast_allbyall_py<'py>(
 #[allow(clippy::too_many_arguments)]
 pub fn nblast_pairs_py<'py>(
     py: Python<'py>,
-    q_points: Vec<PyReadonlyArray2<f64>>,
-    q_vects: Vec<PyReadonlyArray2<f64>>,
-    t_points: Vec<PyReadonlyArray2<f64>>,
-    t_vects: Vec<PyReadonlyArray2<f64>>,
+    q_points: Vec<Bound<'py, PyAny>>,
+    q_vects: Vec<Bound<'py, PyAny>>,
+    t_points: Vec<Bound<'py, PyAny>>,
+    t_vects: Vec<Bound<'py, PyAny>>,
     q_idx: PyReadonlyArray1<i64>,
     t_idx: PyReadonlyArray1<i64>,
     q_alphas: Option<Vec<PyReadonlyArray1<f64>>>,
@@ -218,13 +274,10 @@ pub fn nblast_pairs_py<'py>(
     precision: u8,
     progress: bool,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let qp = to_clouds(&q_points);
-    let qv = to_clouds(&q_vects);
-    let tp = to_clouds(&t_points);
-    let tv = to_clouds(&t_vects);
     let qa = to_alphas(q_alphas);
     let ta = to_alphas(t_alphas);
     let smat = build_smat(smat_values, dist_edges, dot_edges, qa.is_some());
+    let coord32 = coords_are_f32(&[&q_points, &q_vects, &t_points, &t_vects])?;
 
     // Zip the parallel index arrays into (query, target) pairs under the GIL.
     let qi = q_idx.as_array();
@@ -250,17 +303,24 @@ pub fn nblast_pairs_py<'py>(
         cancel: Some(&cancel),
     };
 
-    let out = match precision {
-        32 => {
-            let scores: Vec<f32> =
-                run_interruptible(py, &cancel, move || nblast_pairs(qp, qv, qa, tp, tv, ta, pairs, opts))?;
+    macro_rules! run {
+        ($score:ty, $coord:ty) => {{
+            let qp = to_clouds::<$coord>(&q_points)?;
+            let qv = to_clouds::<$coord>(&q_vects)?;
+            let tp = to_clouds::<$coord>(&t_points)?;
+            let tv = to_clouds::<$coord>(&t_vects)?;
+            let scores: Vec<$score> = run_interruptible(py, &cancel, move || {
+                nblast_pairs(qp, qv, qa, tp, tv, ta, pairs, opts)
+            })?;
             scores.into_pyarray(py).into_any()
-        }
-        64 => {
-            let scores: Vec<f64> =
-                run_interruptible(py, &cancel, move || nblast_pairs(qp, qv, qa, tp, tv, ta, pairs, opts))?;
-            scores.into_pyarray(py).into_any()
-        }
+        }};
+    }
+
+    let out = match (precision, coord32) {
+        (32, true) => run!(f32, f32),
+        (32, false) => run!(f32, f64),
+        (64, true) => run!(f64, f32),
+        (64, false) => run!(f64, f64),
         _ => {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "precision must be 32 or 64",
@@ -295,7 +355,7 @@ pub fn synblast_allbyall_py<'py>(
     precision: u8,
     progress: bool,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let clouds = to_clouds(&points);
+    let clouds = to_clouds_f64(&points);
     let tys = to_types(&types);
     // syNBLAST never uses alpha; the plain FCWB matrix is navis' `smat="auto"`.
     let smat = build_smat(smat_values, dist_edges, dot_edges, false);
@@ -362,9 +422,9 @@ pub fn synblast_py<'py>(
     precision: u8,
     progress: bool,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let qp = to_clouds(&q_points);
+    let qp = to_clouds_f64(&q_points);
     let qt = to_types(&q_types);
-    let tp = to_clouds(&t_points);
+    let tp = to_clouds_f64(&t_points);
     let tt = to_types(&t_types);
     let smat = build_smat(smat_values, dist_edges, dot_edges, false);
     let (nq, nt) = (qp.len(), tp.len());
@@ -419,10 +479,10 @@ pub fn synblast_py<'py>(
 #[allow(clippy::too_many_arguments)]
 pub fn nblast_py<'py>(
     py: Python<'py>,
-    q_points: Vec<PyReadonlyArray2<f64>>,
-    q_vects: Vec<PyReadonlyArray2<f64>>,
-    t_points: Vec<PyReadonlyArray2<f64>>,
-    t_vects: Vec<PyReadonlyArray2<f64>>,
+    q_points: Vec<Bound<'py, PyAny>>,
+    q_vects: Vec<Bound<'py, PyAny>>,
+    t_points: Vec<Bound<'py, PyAny>>,
+    t_vects: Vec<Bound<'py, PyAny>>,
     q_alphas: Option<Vec<PyReadonlyArray1<f64>>>,
     t_alphas: Option<Vec<PyReadonlyArray1<f64>>>,
     smat_values: Option<PyReadonlyArray2<f64>>,
@@ -434,14 +494,11 @@ pub fn nblast_py<'py>(
     precision: u8,
     progress: bool,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let qp = to_clouds(&q_points);
-    let qv = to_clouds(&q_vects);
-    let tp = to_clouds(&t_points);
-    let tv = to_clouds(&t_vects);
     let qa = to_alphas(q_alphas);
     let ta = to_alphas(t_alphas);
     let smat = build_smat(smat_values, dist_edges, dot_edges, qa.is_some());
-    let (nq, nt) = (qp.len(), tp.len());
+    let (nq, nt) = (q_points.len(), t_points.len());
+    let coord32 = coords_are_f32(&[&q_points, &q_vects, &t_points, &t_vects])?;
     let cancel = AtomicBool::new(false);
     let opts = Opts {
         smat: &smat,
@@ -452,23 +509,27 @@ pub fn nblast_py<'py>(
         cancel: Some(&cancel),
     };
 
-    let out = match precision {
-        32 => {
-            let scores: Vec<f32> =
-                run_interruptible(py, &cancel, move || nblast_query_target(qp, qv, qa, tp, tv, ta, opts))?;
+    macro_rules! run {
+        ($score:ty, $coord:ty) => {{
+            let qp = to_clouds::<$coord>(&q_points)?;
+            let qv = to_clouds::<$coord>(&q_vects)?;
+            let tp = to_clouds::<$coord>(&t_points)?;
+            let tv = to_clouds::<$coord>(&t_vects)?;
+            let scores: Vec<$score> = run_interruptible(py, &cancel, move || {
+                nblast_query_target(qp, qv, qa, tp, tv, ta, opts)
+            })?;
             Array2::from_shape_vec((nq, nt), scores)
                 .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
                 .into_pyarray(py)
                 .into_any()
-        }
-        64 => {
-            let scores: Vec<f64> =
-                run_interruptible(py, &cancel, move || nblast_query_target(qp, qv, qa, tp, tv, ta, opts))?;
-            Array2::from_shape_vec((nq, nt), scores)
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
-                .into_pyarray(py)
-                .into_any()
-        }
+        }};
+    }
+
+    let out = match (precision, coord32) {
+        (32, true) => run!(f32, f32),
+        (32, false) => run!(f32, f64),
+        (64, true) => run!(f64, f32),
+        (64, false) => run!(f64, f64),
         _ => {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "precision must be 32 or 64",
@@ -513,11 +574,11 @@ fn parse_symmetry(name: &str) -> PyResult<Symmetry> {
 #[allow(clippy::too_many_arguments)]
 pub fn nblast_knn_py<'py>(
     py: Python<'py>,
-    points: Vec<PyReadonlyArray2<f64>>,
-    vects: Vec<PyReadonlyArray2<f64>>,
+    points: Vec<Bound<'py, PyAny>>,
+    vects: Vec<Bound<'py, PyAny>>,
     alphas: Option<Vec<PyReadonlyArray1<f64>>>,
-    t_points: Option<Vec<PyReadonlyArray2<f64>>>,
-    t_vects: Option<Vec<PyReadonlyArray2<f64>>>,
+    t_points: Option<Vec<Bound<'py, PyAny>>>,
+    t_vects: Option<Vec<Bound<'py, PyAny>>>,
     t_alphas: Option<Vec<PyReadonlyArray1<f64>>>,
     k: usize,
     n_candidates: usize,
@@ -560,14 +621,18 @@ pub fn nblast_knn_py<'py>(
         }
     }
     let sym = parse_symmetry(symmetry)?;
-    let clouds = to_clouds(&points);
-    let vecs = to_clouds(&vects);
     let alpha_vecs = to_alphas(alphas);
-    let targets = t_points
-        .as_ref()
-        .map(|tp| (to_clouds(tp), to_clouds(t_vects.as_ref().unwrap()), to_alphas(t_alphas)));
+    let t_alpha_vecs = to_alphas(t_alphas);
     let smat = build_smat(smat_values, dist_edges, dot_edges, alpha_vecs.is_some());
-    let nq = clouds.len();
+    let nq = points.len();
+    // Query and target sides must agree on a width, so they are sniffed together.
+    let mut groups: Vec<&[Bound<'py, PyAny>]> = vec![&points, &vects];
+    if let (Some(tp), Some(tv)) = (&t_points, &t_vects) {
+        groups.push(tp);
+        groups.push(tv);
+    }
+    let coord32 = coords_are_f32(&groups)?;
+    drop(groups);
     let cancel = AtomicBool::new(false);
     let opts = KnnOpts {
         nblast: Opts {
@@ -586,43 +651,60 @@ pub fn nblast_knn_py<'py>(
         symmetry: sym,
     };
 
-    // One closure per precision, dispatching square vs rectangular inside, so the
-    // GIL-releasing call happens exactly once either way.
+    // One closure per (precision, coordinate width), dispatching square vs
+    // rectangular inside, so the GIL-releasing call happens exactly once either way.
     macro_rules! run {
-        ($ty:ty) => {{
-            let (i, s): (Vec<i64>, Vec<$ty>) = run_interruptible(py, &cancel, move || {
-                match targets {
+        ($score:ty, $coord:ty) => {{
+            let clouds = to_clouds::<$coord>(&points)?;
+            let vecs = to_clouds::<$coord>(&vects)?;
+            let targets = match (&t_points, &t_vects) {
+                (Some(tp), Some(tv)) => Some((
+                    to_clouds::<$coord>(tp)?,
+                    to_clouds::<$coord>(tv)?,
+                    t_alpha_vecs,
+                )),
+                _ => None,
+            };
+            let (i, s): (Vec<i64>, Vec<$score>) =
+                run_interruptible(py, &cancel, move || match targets {
                     Some((tp, tv, ta)) => {
                         nblast_knn_query_target(clouds, vecs, alpha_vecs, tp, tv, ta, opts)
                     }
                     None => nblast_knn(clouds, vecs, alpha_vecs, opts),
-                }
-            })?;
+                })?;
             (i, s)
         }};
     }
 
     let shape_err = |e: ndarray::ShapeError| pyo3::exceptions::PyValueError::new_err(e.to_string());
-    let (idx, scores) = match precision {
-        32 => {
-            let (i, s) = run!(f32);
+    macro_rules! finish {
+        ($i:expr, $s:expr) => {{
             (
-                Array2::from_shape_vec((nq, k), i).map_err(shape_err)?,
-                Array2::from_shape_vec((nq, k), s)
+                Array2::from_shape_vec((nq, k), $i).map_err(shape_err)?,
+                Array2::from_shape_vec((nq, k), $s)
                     .map_err(shape_err)?
                     .into_pyarray(py)
                     .into_any(),
             )
+        }};
+    }
+
+    let (idx, scores) = match (precision, coord32) {
+        (32, true) => {
+            let (i, s) = run!(f32, f32);
+            finish!(i, s)
         }
-        64 => {
-            let (i, s) = run!(f64);
-            (
-                Array2::from_shape_vec((nq, k), i).map_err(shape_err)?,
-                Array2::from_shape_vec((nq, k), s)
-                    .map_err(shape_err)?
-                    .into_pyarray(py)
-                    .into_any(),
-            )
+        (32, false) => {
+            let (i, s) = run!(f32, f64);
+            finish!(i, s)
+        }
+        (64, true) => {
+            let (i, s) = run!(f64, f32);
+            finish!(i, s)
+        }
+        (64, false) => {
+            let (i, s) = run!(f64, f64);
+            finish!(i, s)
         }
         _ => {
             return Err(pyo3::exceptions::PyValueError::new_err(
