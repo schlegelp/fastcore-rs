@@ -237,6 +237,17 @@ where
     R: Send,
     F: FnOnce() -> R + Send,
 {
+    // Emscripten (Pyodide/WebAssembly) cannot spawn threads at all, so there is no
+    // pool to build — `ThreadPoolBuilder::build` fails with `ENOSYS`. Honour the
+    // call by running serially rather than panicking on a thread count we cannot
+    // satisfy; rayon's implicit pool already degrades to the calling thread there.
+    #[cfg(target_os = "emscripten")]
+    {
+        let _ = threads;
+        return f();
+    }
+
+    #[cfg(not(target_os = "emscripten"))]
     match threads {
         Some(n) if n >= 1 => rayon::ThreadPoolBuilder::new()
             .num_threads(n)
@@ -567,6 +578,10 @@ pub(crate) fn make_bar(label: &str, total: u64) -> ProgressBar {
         .progress_chars("=>-"),
     );
     // Keep the readout advancing even when ticks arrive sparsely (e.g. Jupyter).
+    // Skipped on Emscripten (Pyodide/WebAssembly): the steady tick runs on a
+    // background thread, and `thread::spawn` fails with `ENOSYS` there. The bar
+    // still draws, it just only advances when the caller ticks it.
+    #[cfg(not(target_os = "emscripten"))]
     pb.enable_steady_tick(std::time::Duration::from_millis(250));
     pb
 }

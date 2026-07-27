@@ -94,6 +94,89 @@ jobs:
           name: wheels-macos-${{ matrix.target }}
           path: py/dist
 
+  # Pyodide / JupyterLite wheel (wasm32-unknown-emscripten).
+  #
+  # Not part of the `target` matrices above: an Emscripten wheel is cross-compiled
+  # against *Pyodide's* CPython, so it is pinned to a Pyodide release rather than to
+  # a python-version list, and it is built through `pyodide build` (which wraps
+  # maturin with the right cross-compilation environment) rather than maturin-action.
+  #
+  # `pyodide-build` resolves and downloads everything version-specific — the
+  # cross-build environment, the matching emsdk, and the Rust toolchain version — so
+  # the only thing pinned here is the host Python, which has to match the Python that
+  # Pyodide itself ships (currently 3.14). If a Pyodide release bumps that, this
+  # `python-version` has to move with it; `pyodide config get python_version` prints
+  # what the installed cross-build environment expects.
+  emscripten:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    env:
+      # Where `pyodide-build` puts the cross-build environment and the emsdk it
+      # downloads. Pinned so the cache step below has a stable path to key on.
+      PYODIDE_XBUILDENV_PATH: ${{ github.workspace }}/.pyodide-xbuildenv
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          # Must match Pyodide's bundled CPython minor version — see comment above.
+          python-version: '3.14'
+      # `pyodide venv` runs the test suite on Pyodide under Node.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install pyodide-build
+        id: pyodide-build
+        run: |
+          pip install pyodide-build
+          echo "version=$(pip show pyodide-build | awk '/^Version:/{print $2}')" >> "$GITHUB_OUTPUT"
+      - name: Cache the Pyodide cross-build environment
+        # The cross-build environment plus the emsdk it pulls in is ~2 GB, and both
+        # are re-downloaded from scratch otherwise. Which versions get downloaded is
+        # decided by pyodide-build, hence the key.
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.PYODIDE_XBUILDENV_PATH }}
+          key: pyodide-xbuildenv-${{ runner.os }}-${{ steps.pyodide-build.outputs.version }}
+      - name: Install the cross-build environment
+        run: pyodide xbuildenv install
+      - name: Resolve the Rust toolchain Pyodide expects
+        id: pyodide
+        run: echo "rust-toolchain=$(pyodide config get rust_toolchain)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.pyodide.outputs.rust-toolchain }}
+          targets: wasm32-unknown-emscripten
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: emscripten
+      - name: Build wheel
+        run: pyodide build py --outdir dist
+        env:
+          RUSTUP_TOOLCHAIN: ${{ steps.pyodide.outputs.rust-toolchain }}
+      # Emscripten has no threads: NBLAST and the transforms run serially there and
+      # are not interruptible (see `run_interruptible` in py/src/nblast.rs). Run the
+      # suite under Pyodide so that stays a documented degradation rather than a
+      # runtime panic.
+      #
+      # Run from the repo root, not from `py/`: under Pyodide the working directory
+      # lands on `sys.path`, so `py/navis_fastcore/` would shadow the installed wheel.
+      - name: Test wheel under Pyodide
+        run: |
+          pyodide venv .venv-pyodide
+          .venv-pyodide/bin/pip install dist/*.whl pytest pandas scipy
+          .venv-pyodide/bin/pytest py/tests --verbose
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          # `wheels-*` is the pattern the release job publishes to PyPI. PyPI accepts
+          # the `pyemscripten_*_wasm32` platform tag under PEP 783 (accepted; support
+          # landed in Warehouse in April 2026), so this ships alongside the native
+          # wheels rather than being a build-only check.
+          name: wheels-emscripten
+          path: dist
+
   sdist:
     runs-on: ubuntu-latest
     steps:
@@ -114,7 +197,10 @@ jobs:
     name: Release
     runs-on: ubuntu-latest
     if: "startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'"
-    needs: [linux, windows, macos, sdist]
+    # `emscripten` gates the release too: a Pyodide wheel that fails its own test
+    # run must not reach PyPI, and `maturin upload` needs maturin >= 1.14 to accept
+    # the PEP 783 platform tag (maturin-action installs the latest by default).
+    needs: [linux, windows, macos, emscripten, sdist]
     steps:
       - uses: actions/download-artifact@v4
         with:

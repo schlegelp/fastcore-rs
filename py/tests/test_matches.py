@@ -231,7 +231,10 @@ def test_long_format_recipe():
     )
     offsets, indices, values = fastcore.matches_above(scores, threshold=0.5)
 
-    counts = np.diff(offsets)
+    # `offsets` is int64; `np.repeat` needs its repeat counts to cast safely to
+    # `intp`, which is 32-bit on 32-bit platforms (notably wasm32/Pyodide). The
+    # explicit cast is what makes this recipe portable.
+    counts = np.diff(offsets).astype(np.intp)
     query = np.repeat(np.arange(len(counts)), counts)
     rank = np.arange(len(indices)) - np.repeat(offsets[:-1], counts)
 

@@ -2,8 +2,12 @@ use ndarray::Array2;
 use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
 use pyo3::prelude::{PyResult, Python};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+#[cfg(not(target_os = "emscripten"))]
+use std::sync::atomic::Ordering;
+#[cfg(not(target_os = "emscripten"))]
 use std::sync::mpsc::{channel, RecvTimeoutError};
+#[cfg(not(target_os = "emscripten"))]
 use std::time::Duration;
 
 use fastcore::nblast::{
@@ -21,6 +25,7 @@ use fastcore::synblast::{synblast_allbyall, synblast_query_target};
 /// thread, so the compute has to run off it. On an interrupt we flip `cancel` (which
 /// the NBLAST loops poll and short-circuit) and re-raise the caught exception; the
 /// worker's partially-filled, discarded result never reaches Python.
+#[cfg(not(target_os = "emscripten"))]
 pub(crate) fn run_interruptible<T, F>(py: Python<'_>, cancel: &AtomicBool, compute: F) -> PyResult<T>
 where
     T: Send,
@@ -51,6 +56,27 @@ where
             None => Ok(result),
         }
     })
+}
+
+/// Emscripten (Pyodide/WebAssembly) has no worker threads: `thread::spawn` fails
+/// with `ENOSYS`, so the polling scheme above cannot be used — it would panic
+/// before the compute ever starts. There is nothing to poll for either, since the
+/// browser/Node runtime delivers no signals to a synchronously running wasm call.
+/// So run the compute inline; on this platform it is simply not interruptible.
+///
+/// `cancel` is still threaded through (the NBLAST loops poll it), it just never
+/// gets set here.
+#[cfg(target_os = "emscripten")]
+pub(crate) fn run_interruptible<T, F>(
+    py: Python<'_>,
+    _cancel: &AtomicBool,
+    compute: F,
+) -> PyResult<T>
+where
+    T: Send,
+    F: FnOnce() -> T + Send,
+{
+    Ok(py.detach(compute))
 }
 
 // Convert a list of (N, 3) numpy arrays into owned point clouds at the caller's
