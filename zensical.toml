@@ -29,6 +29,7 @@ nav = [
   ] },
   { "R (nat.fastcore)" = "r/index.md" },
   { "Rust (fastcore crate)" = "rust/index.md" },
+  { "Changelog" = "changelog.md" },
 ]
 
 # ----------------------------------------------------------------------------
