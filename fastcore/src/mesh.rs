@@ -535,6 +535,10 @@ pub struct Adjacency {
     nbrs: Vec<u32>,
     /// Length of each arc, parallel to `nbrs`. `None` => unit weights.
     weights: Option<Vec<f32>>,
+    /// Whether an edge was stored as one arc or two. Recorded because the searches are not the
+    /// only thing that cares: re-weighting an undirected edge has to move *both* of its arcs to
+    /// keep the adjacency symmetric, and only the builder knows there are two.
+    directed: bool,
 }
 
 impl Adjacency {
@@ -546,6 +550,47 @@ impl Adjacency {
     #[inline]
     fn row(&self, v: u32) -> std::ops::Range<usize> {
         self.offsets[v as usize] as usize..self.offsets[v as usize + 1] as usize
+    }
+
+    /// Overwrite the weight of the edge between `u` and `v`, reporting whether it exists.
+    ///
+    /// An *edge*, not an arc: on an undirected graph both stored arcs have to move, or the
+    /// adjacency stops being symmetric and `d(u, v)` quietly stops equalling `d(v, u)`. That
+    /// rule lives here, next to the invariant it protects, rather than in whichever caller
+    /// happens to re-weight next — which is also why `directed` is a field of this struct.
+    ///
+    /// Cannot *add* an edge: growing the CSR would mean rebuilding it, which is exactly the
+    /// cost re-weighting in place exists to avoid.
+    fn set_edge(&mut self, u: u32, v: u32, w: f32) -> bool {
+        // `&&` short-circuits, so the reverse arc is only touched once the forward one is known
+        // to exist — a missing edge cannot leave a half-applied edit behind.
+        self.set_arc(u, v, w) && (self.directed || self.set_arc(v, u, w))
+    }
+
+    /// Overwrite the weight of the arc `u -> v`, reporting whether that arc exists.
+    ///
+    /// A binary search, not a scan: `compact` leaves every row sorted by neighbour, which is
+    /// what makes re-weighting an edge O(log valence) rather than a pass over the edge list.
+    /// That is the difference between an algorithm that re-weights as it goes — TEASAR zeroing
+    /// each path it extracts so the next one may re-traverse it for free — costing O(path) per
+    /// step and O(E) per step.
+    ///
+    /// Returns `false` for an arc that is not present, including every arc of an unweighted
+    /// graph: there is no weight array to write into, and inventing one would silently turn a
+    /// BFS graph into a Dijkstra one.
+    fn set_arc(&mut self, u: u32, v: u32, w: f32) -> bool {
+        let r = self.row(u);
+        let Adjacency { nbrs, weights, .. } = self;
+        let Some(weights) = weights.as_mut() else {
+            return false;
+        };
+        match nbrs[r.clone()].binary_search(&v) {
+            Ok(k) => {
+                weights[r.start + k] = w;
+                true
+            }
+            Err(_) => false,
+        }
     }
 
     /// Sort each row, drop duplicates and self-loops, and compact in place.
@@ -672,6 +717,7 @@ impl Adjacency {
             offsets,
             nbrs,
             weights,
+            directed: false, // every face contributes both arcs of each of its edges
         }
     }
 
@@ -766,6 +812,66 @@ impl Adjacency {
             offsets,
             nbrs,
             weights,
+            directed,
+        }
+    }
+
+    /// The subgraph induced on `keep`, renumbered so new node `i` is old node `keep[i]`.
+    ///
+    /// Arcs with an endpoint outside `keep` are dropped and the rest carry their weights over.
+    /// Rows come out sorted, exactly as `compact` leaves them, so the result is
+    /// indistinguishable from an adjacency built afresh from the surviving edges — including
+    /// in the order the kernels visit neighbours, which is what makes tie-breaking, and
+    /// therefore every result, identical either way.
+    ///
+    fn induced(&self, keep: &[u32]) -> Adjacency {
+        let n_old = self.n_nodes();
+        let mut new_id: Vec<u32> = vec![u32::MAX; n_old];
+        for (i, &v) in keep.iter().enumerate() {
+            assert!(
+                (v as usize) < n_old,
+                "`nodes` contains node {v}, but n_nodes = {n_old}"
+            );
+            assert!(
+                new_id[v as usize] == u32::MAX,
+                "`nodes` contains node {v} more than once"
+            );
+            new_id[v as usize] = i as u32;
+        }
+
+        // Packed (neighbour, weight-bits) rows, as in `from_edges`, so one sort per row orders
+        // by the *new* index while keeping each arc's weight welded to it.
+        let mut offsets: Vec<u32> = vec![0; keep.len() + 1];
+        let mut packed: Vec<u64> = Vec::new();
+        for (i, &v) in keep.iter().enumerate() {
+            let r = self.row(v);
+            let start = packed.len();
+            for (k, &n) in self.nbrs[r.clone()].iter().enumerate() {
+                let m = new_id[n as usize];
+                if m != u32::MAX {
+                    let bits = self
+                        .weights
+                        .as_ref()
+                        .map_or(0, |w| w[r.start + k].to_bits());
+                    packed.push(((m as u64) << 32) | bits as u64);
+                }
+            }
+            packed[start..].sort_unstable();
+            offsets[i + 1] = packed.len() as u32;
+        }
+        // No dedup or self-loop pass: the source rows have neither, and `new_id` is injective,
+        // so neither can appear here.
+        let nbrs: Vec<u32> = packed.iter().map(|&p| (p >> 32) as u32).collect();
+        let weights = self
+            .weights
+            .as_ref()
+            .map(|_| packed.iter().map(|&p| f32::from_bits(p as u32)).collect());
+
+        Adjacency {
+            offsets,
+            nbrs,
+            weights,
+            directed: self.directed,
         }
     }
 }
@@ -809,6 +915,11 @@ struct Scratch {
     /// the distance-only drivers pay nothing for it.
     /// Invariant: all-[`NO_PRED`] on entry to and exit from every search.
     pred: Vec<u32>,
+    /// Nearest source per node, for the multi-source searches that report one. Written as a
+    /// node settles, from the value its predecessor already carries, so it is never read before
+    /// it is written within a search and needs no reset. Empty unless a caller asked, as
+    /// `pred` is.
+    src: Vec<u32>,
     /// Nodes whose `dist` is finite, so the reset walks only what we actually touched.
     touched: Vec<u32>,
     heap: BinaryHeap<Reverse<HeapEntry>>,
@@ -823,6 +934,7 @@ impl Scratch {
         Scratch {
             dist: vec![f32::INFINITY; n_nodes],
             pred: Vec::new(),
+            src: Vec::new(),
             touched: Vec::new(),
             heap: BinaryHeap::new(),
             cur: Vec::new(),
@@ -836,6 +948,42 @@ impl Scratch {
             pred: vec![NO_PRED; n_nodes],
             ..Scratch::new(n_nodes)
         }
+    }
+
+    /// Make room for `PRED = true` and for [`resolve_sources`](Self::resolve_sources).
+    ///
+    /// Idempotent, so a reused scratch pays for the two arrays once rather than per search —
+    /// which is the point of holding one at all.
+    fn enable_sources(&mut self, n_nodes: usize) {
+        if self.pred.is_empty() {
+            self.pred = vec![NO_PRED; n_nodes];
+        }
+        if self.src.is_empty() {
+            self.src = vec![0; n_nodes];
+        }
+    }
+
+    /// Label each of `nodes` with the source its shortest path came from.
+    ///
+    /// `nodes` must be in settle order, as a [`Collect`] visitor records it. That is what makes
+    /// this one forward pass rather than a chain-walk per node: a node's predecessor always
+    /// settles before the node, so `src[pred[v]]` is already correct by the time we reach `v`.
+    /// A node with no predecessor is a source and is its own.
+    ///
+    /// `src` needs no reset for the same reason — nothing is read before it is written.
+    fn resolve_sources(&mut self, nodes: &[u32]) -> Vec<u32> {
+        let mut out: Vec<u32> = Vec::with_capacity(nodes.len());
+        for &v in nodes {
+            let p = self.pred[v as usize];
+            let s = if p == NO_PRED {
+                v
+            } else {
+                self.src[p as usize]
+            };
+            self.src[v as usize] = s;
+            out.push(s);
+        }
+        out
     }
 
     /// Restore the all-`INFINITY` invariant.
@@ -868,6 +1016,34 @@ impl Scratch {
     }
 }
 
+/// What a search should do with a node it has just settled.
+///
+/// The third state is what makes this an enum rather than the `bool` it replaced: a *wall* is
+/// a node the search may look at but must not expand through. Bounded growth needs it — a node
+/// whose every item some earlier fragment already claimed must not conduct, or fragments would
+/// leak into each other across territory that is no longer theirs to cross.
+#[derive(Copy, Clone)]
+enum Visit {
+    /// Relax this node's neighbours and carry on.
+    Expand,
+    /// Do not expand this node; carry on with whatever else is on the frontier.
+    Wall,
+    /// The search has its answer — return immediately.
+    Stop,
+}
+
+/// The per-node callback a search kernel invokes as it settles nodes, in increasing distance
+/// order.
+///
+/// A trait rather than a closure so the kernels monomorphise over it: [`Targets`] (stop once
+/// the interesting nodes have settled) and [`Grow`] (collect items until a budget is spent)
+/// each compile to their own specialised loop with the dispatch folded away — the same reason
+/// `PRED` is a const parameter rather than a flag.
+trait Visitor {
+    /// Note that `node` has settled at distance `d`, and say how the search should proceed.
+    fn settle(&mut self, node: u32, d: f32) -> Visit;
+}
+
 /// Which targets a search is waiting on, and what it learned when it settled them.
 ///
 /// Shared by the matrix, nearest and farthest drivers, because all three want the same thing
@@ -888,64 +1064,73 @@ struct Targets<'a> {
     last: Option<(u32, f32)>,
 }
 
-impl<'a> Targets<'a> {
-    /// Note a settled node. Returns `true` if the search can stop.
+/// Targets never wall: a target is something to *find*, not something to route around, so
+/// every settled node is expanded until the search is done.
+impl Visitor for Targets<'_> {
     #[inline]
-    fn settle(&mut self, node: u32, d: f32) -> bool {
+    fn settle(&mut self, node: u32, d: f32) -> Visit {
         let is_target = match self.mask {
             Some(m) => m[node as usize],
             None => true,
         };
         if !is_target || node == self.exclude {
-            return false;
+            return Visit::Expand;
         }
         if self.first.is_none() {
             self.first = Some((node, d));
             if self.stop_at_first {
-                return true;
+                return Visit::Stop;
             }
         }
         self.last = Some((node, d));
         self.remaining = self.remaining.saturating_sub(1);
-        self.remaining == 0
+        if self.remaining == 0 {
+            Visit::Stop
+        } else {
+            Visit::Expand
+        }
     }
 }
 
-/// Single-source Dijkstra over `adj`, leaving distances in `scratch.dist`.
+/// Dijkstra's relaxation loop: pop, settle, relax, repeat until the heap runs dry.
 ///
-/// Two things `scipy.sparse.csgraph.dijkstra` structurally cannot do, both here:
-/// stop once every target has settled (scipy has no notion of targets — it materialises all N
-/// columns and lets you slice afterwards), and prune at *relaxation* on `limit` so the heap
-/// never grows past the ball of radius `limit`.
+/// Takes its arrays loose rather than as a [`Scratch`] because callers need it under different
+/// framing — [`search_from_many`] relaxes into a scratch, the farthest-point fold into its own
+/// persistent field — and a second copy of Dijkstra is not something to keep in step by hand.
+/// Everything that is easy to get wrong, from the stale-entry test to tie-breaking, is written
+/// once.
 ///
-/// `PRED` additionally records each node's predecessor in `scratch.pred`. It is a const
-/// parameter rather than a flag so the branch folds away entirely in the distance-only
-/// instantiation, which is the one every existing driver uses.
-fn dijkstra_from<const PRED: bool>(
+/// Two things `scipy.sparse.csgraph.dijkstra` structurally cannot do, both here: stop once every
+/// target has settled (scipy has no notion of targets — it materialises all N columns and lets
+/// you slice afterwards), and prune at *relaxation* on `limit` so the heap never grows past the
+/// ball of radius `limit`.
+///
+/// `PRED` additionally records each node's predecessor in `pred`. It is a const parameter rather
+/// than a flag so the branch folds away entirely in the distance-only instantiation, which is
+/// the one most drivers use.
+///
+/// `vis` decides, per settled node, whether to expand it, wall it off or stop — see [`Visitor`].
+///
+/// `dist` is neither reset nor assumed empty. A *warm* array whose entries are already valid
+/// distances turns the ordinary `nd < *slot` relaxation test into a prune, which is exactly
+/// what makes the incremental farthest-point fold in [`GeodesicGraph::farthest_seed`] cheap;
+/// see its docs for why warm-starting is sound there and not in general.
+///
+/// `reached` collects every node whose distance goes finite for the first time — the nodes a
+/// caller must later reset, and equally the nodes that have just become reachable.
+fn dijkstra_drain<const PRED: bool, V: Visitor>(
     adj: &Adjacency,
-    source: u32,
+    dist: &mut [f32],
+    pred: &mut [u32],
+    reached: &mut Vec<u32>,
+    heap: &mut BinaryHeap<Reverse<HeapEntry>>,
     limit: f32,
-    tgt: &mut Targets,
-    scratch: &mut Scratch,
+    vis: &mut V,
 ) {
-    let Scratch {
-        dist,
-        pred,
-        touched,
-        heap,
-        ..
-    } = scratch;
     let weights = adj
         .weights
         .as_deref()
-        .expect("dijkstra_from requires a weighted adjacency");
-
-    dist[source as usize] = 0.0;
-    touched.push(source);
-    heap.push(Reverse(HeapEntry {
-        dist_bits: 0,
-        node: source,
-    }));
+        .expect("dijkstra_drain requires a weighted adjacency");
 
     while let Some(Reverse(HeapEntry { dist_bits, node: u })) = heap.pop() {
         // Stale entry: `u` was relaxed again after this was pushed and has already settled at a
@@ -958,8 +1143,12 @@ fn dijkstra_from<const PRED: bool>(
         }
         let du = f32::from_bits(dist_bits);
 
-        if tgt.settle(u, du) {
-            return;
+        match vis.settle(u, du) {
+            Visit::Stop => return,
+            // Settled, but not conducting: leave its neighbours alone and pop the next node.
+            // The node keeps its distance and stays in `touched`, so the reset still finds it.
+            Visit::Wall => continue,
+            Visit::Expand => {}
         }
 
         let r = adj.row(u);
@@ -973,7 +1162,7 @@ fn dijkstra_from<const PRED: bool>(
             let slot = &mut dist[v as usize];
             if nd < *slot {
                 if slot.is_infinite() {
-                    touched.push(v);
+                    reached.push(v);
                 }
                 *slot = nd;
                 // Only on a *strict* improvement, never on a tie. Equal-length paths are
@@ -996,44 +1185,37 @@ fn dijkstra_from<const PRED: bool>(
     }
 }
 
-/// Single-source BFS — the unweighted (hop-count) path.
+/// BFS's frontier loop — [`dijkstra_drain`]'s unweighted (hop-count) twin, loose arrays and all,
+/// and split out for the same reason. `cur` arrives holding the level-0 frontier, however the
+/// caller chose to seed it.
 ///
 /// Unit weights make the frontier monotone by construction, so this needs no priority queue at
 /// all: two ping-pong frontiers give O(V + E) with no sift, no stale entries and no float
-/// compares. Routing the unweighted case through `dijkstra_from` would be several times slower
-/// for no reason.
+/// compares. Routing the unweighted case through `dijkstra_drain` would be several times slower
+/// for no reason. Hop counts are integers and exact in f32 up to 2^24; no mesh has a 16M-hop
+/// path.
 ///
-/// Hop counts are integers and exact in f32 up to 2^24; no mesh has a 16M-hop path.
+/// `PRED` as there. A node is claimed by whichever frontier member reaches it first, so ties
+/// within a level resolve in frontier order — deterministic, and acyclic for free because `dist`
+/// strictly increases along the chain.
 ///
-/// `PRED` as in `dijkstra_from`. A node is claimed by whichever frontier member reaches it
-/// first, so ties within a level resolve in frontier order — deterministic, and acyclic for
-/// free because `dist` strictly increases along the chain.
-fn bfs_from<const PRED: bool>(
+/// As there, `dist` may be warm: the guard is `level < *slot` rather than "unvisited", which on
+/// a cold array (everything `INFINITY`) is the same test and on a warm one keeps only genuine
+/// improvements. `reached` collects the nodes that go finite for the first time.
+#[allow(clippy::too_many_arguments)]
+fn bfs_drain<const PRED: bool, V: Visitor>(
     adj: &Adjacency,
-    source: u32,
+    dist: &mut [f32],
+    pred: &mut [u32],
+    reached: &mut Vec<u32>,
+    cur: &mut Vec<u32>,
+    next: &mut Vec<u32>,
     limit: f32,
-    tgt: &mut Targets,
-    scratch: &mut Scratch,
+    vis: &mut V,
 ) {
-    let Scratch {
-        dist,
-        pred,
-        touched,
-        cur,
-        next,
-        ..
-    } = scratch;
-
-    dist[source as usize] = 0.0;
-    touched.push(source);
-    cur.push(source);
-    if tgt.settle(source, 0.0) {
-        return;
-    }
-
     // `level` is the depth we are about to emit, so guarding *before* the increment keeps a
     // node at distance exactly `limit` and drops one at `limit + 1` — the same inclusive
-    // boundary `dijkstra_from` has, and the same one scipy has.
+    // boundary `dijkstra_drain` has, and the same one scipy has.
     let mut level: f32 = 0.0;
     while !cur.is_empty() && level < limit {
         level += 1.0;
@@ -1041,15 +1223,18 @@ fn bfs_from<const PRED: bool>(
             let r = adj.row(u);
             for &v in &adj.nbrs[r] {
                 let slot = &mut dist[v as usize];
-                if slot.is_infinite() {
+                if level < *slot {
+                    if slot.is_infinite() {
+                        reached.push(v);
+                    }
                     *slot = level;
                     if PRED {
                         pred[v as usize] = u;
                     }
-                    touched.push(v);
-                    next.push(v);
-                    if tgt.settle(v, level) {
-                        return;
+                    match vis.settle(v, level) {
+                        Visit::Stop => return,
+                        Visit::Wall => {}
+                        Visit::Expand => next.push(v),
                     }
                 }
             }
@@ -1059,18 +1244,114 @@ fn bfs_from<const PRED: bool>(
     }
 }
 
+/// Observes nothing and never stops — for searches whose entire output is the distance array
+/// they leave behind. Monomorphisation erases it completely.
+struct NoVisitor;
+
+impl Visitor for NoVisitor {
+    #[inline]
+    fn settle(&mut self, _node: u32, _d: f32) -> Visit {
+        Visit::Expand
+    }
+}
+
+/// Records every node the search settles, in settle order — i.e. by increasing distance.
+///
+/// The order is not incidental. It is what lets [`GeodesicGraph::ball`] resolve each node's
+/// *nearest source* in one forward pass over the output: a node's predecessor always settles
+/// before the node itself, so by the time we reach a node its predecessor's source is already
+/// known. Scanning `pred` chains per node instead would be O(depth) apiece.
+struct Collect<'a> {
+    nodes: &'a mut Vec<u32>,
+    dists: &'a mut Vec<f32>,
+}
+
+impl Visitor for Collect<'_> {
+    #[inline]
+    fn settle(&mut self, node: u32, d: f32) -> Visit {
+        self.nodes.push(node);
+        self.dists.push(d);
+        Visit::Expand
+    }
+}
+
+/// Search outwards from one source — the single-source case of [`search_from_many`].
 #[inline]
-fn search_from<const PRED: bool>(
+fn search_from<const PRED: bool, V: Visitor>(
     adj: &Adjacency,
     source: u32,
     limit: f32,
-    tgt: &mut Targets,
+    vis: &mut V,
     scratch: &mut Scratch,
 ) {
-    if adj.weights.is_some() {
-        dijkstra_from::<PRED>(adj, source, limit, tgt, scratch);
+    search_from_many::<PRED, V>(adj, std::slice::from_ref(&source), limit, vis, scratch);
+}
+
+/// Seed a search from a set of sources, giving each node its distance to the *nearest* of them.
+///
+/// Not the same thing as a search per source: one frontier holding all of them settles each
+/// node once, at its distance to whichever source is closest, for the cost of a single search.
+/// That is the query `scipy.sparse.csgraph.dijkstra(..., min_only=True)` answers, and the
+/// reason it is worth having is that a great many "how far is everything from this *set*"
+/// questions — a region and its surroundings, an invalidation radius around a path — are
+/// phrased against a set that is far cheaper to sweep from than to iterate over.
+///
+/// Sources may repeat; the duplicates are dropped rather than seeding a second frontier entry.
+/// That guard is also what lets [`search_from`] be this function with a one-element slice rather
+/// than a second pair of kernels: seeding is the only thing a single-source search does
+/// differently, and it does it in the degenerate case of this loop.
+///
+/// `scratch` must arrive clean, and the caller resets it afterwards — including when `vis` stops
+/// the search early and leaves the frontier holding entries.
+fn search_from_many<const PRED: bool, V: Visitor>(
+    adj: &Adjacency,
+    sources: &[u32],
+    limit: f32,
+    vis: &mut V,
+    scratch: &mut Scratch,
+) {
+    let weighted = adj.weights.is_some();
+    let Scratch {
+        dist,
+        pred,
+        touched,
+        heap,
+        cur,
+        next,
+        ..
+    } = scratch;
+
+    for &s in sources {
+        let slot = &mut dist[s as usize];
+        if *slot == 0.0 {
+            continue; // a repeated source; it is already on the frontier
+        }
+        debug_assert!(slot.is_infinite(), "scratch was not clean");
+        *slot = 0.0;
+        touched.push(s);
+        if weighted {
+            heap.push(Reverse(HeapEntry {
+                dist_bits: 0,
+                node: s,
+            }));
+        } else {
+            // The two kernels differ in who settles the level-0 frontier: Dijkstra settles on
+            // pop, so the sources go through `vis` inside the drain, whereas `bfs_drain` only
+            // ever settles nodes it *discovers*. So settle them here — and note the frontier is
+            // seeded *after* the visit, which is what gives `Wall` its meaning: a walled source
+            // never enters `cur`, so it does not conduct.
+            match vis.settle(s, 0.0) {
+                Visit::Stop => return,
+                Visit::Wall => {}
+                Visit::Expand => cur.push(s),
+            }
+        }
+    }
+
+    if weighted {
+        dijkstra_drain::<PRED, V>(adj, dist, pred, touched, heap, limit, vis);
     } else {
-        bfs_from::<PRED>(adj, source, limit, tgt, scratch);
+        bfs_drain::<PRED, V>(adj, dist, pred, touched, cur, next, limit, vis);
     }
 }
 
@@ -1166,7 +1447,7 @@ fn geodesic_matrix_impl(
                         first: None,
                         last: None,
                     };
-                    search_from::<false>(adj, s, limit, &mut tgt, &mut scratch);
+                    search_from::<false, _>(adj, s, limit, &mut tgt, &mut scratch);
 
                     // Gather at the end rather than writing cells as targets settle: this
                     // preserves the caller's `targets` order exactly and handles duplicate
@@ -1260,7 +1541,7 @@ fn geodesic_extreme_impl(
                         first: None,
                         last: None,
                     };
-                    search_from::<false>(adj, s, limit, &mut tgt, &mut scratch);
+                    search_from::<false, _>(adj, s, limit, &mut tgt, &mut scratch);
 
                     if let Some((node, d)) = if farthest { tgt.last } else { tgt.first } {
                         *dcell = d;
@@ -1331,7 +1612,7 @@ fn geodesic_predecessors_impl(
                         first: None,
                         last: None,
                     };
-                    search_from::<true>(adj, s, limit, &mut tgt, &mut scratch);
+                    search_from::<true, _>(adj, s, limit, &mut tgt, &mut scratch);
 
                     for (cell, &d) in drow.iter_mut().zip(scratch.dist.iter()) {
                         *cell = if d.is_finite() { d } else { -1.0 };
@@ -1492,7 +1773,7 @@ pub fn geodesic_farthest_mesh(
 /// Among equal-length paths the predecessor is the one that was reached first, in the kernel's
 /// own deterministic order — reproducible run to run and independent of `threads`, since each
 /// source is searched in isolation. It is deliberately *not* the lowest-index predecessor: see
-/// `dijkstra_from` for why rewriting on a tie is unsound once zero-weight edges are in play.
+/// `dijkstra_drain` for why rewriting on a tie is unsound once zero-weight edges are in play.
 pub fn geodesic_predecessors_graph(
     edges: ArrayView2<u32>,
     n_nodes: usize,
@@ -1525,11 +1806,17 @@ pub fn geodesic_path_graph(
     source: u32,
     targets: &[u32],
 ) -> Vec<Vec<u32>> {
+    let adj = Adjacency::from_edges(edges, n_nodes, weights, directed);
+    geodesic_path_impl(&adj, source, targets)
+}
+
+/// `geodesic_path_graph` over a prebuilt adjacency.
+fn geodesic_path_impl(adj: &Adjacency, source: u32, targets: &[u32]) -> Vec<Vec<u32>> {
+    let n_nodes = adj.n_nodes();
     assert!(
         (source as usize) < n_nodes,
         "`source` is node {source}, but n_nodes = {n_nodes}"
     );
-    let adj = Adjacency::from_edges(edges, n_nodes, weights, directed);
     for &t in targets {
         assert!(
             (t as usize) < n_nodes,
@@ -1550,7 +1837,7 @@ pub fn geodesic_path_graph(
         first: None,
         last: None,
     };
-    search_from::<true>(&adj, source, f32::INFINITY, &mut tgt, &mut scratch);
+    search_from::<true, _>(adj, source, f32::INFINITY, &mut tgt, &mut scratch);
 
     targets
         .iter()
@@ -1617,6 +1904,20 @@ pub fn geodesic_clusters(
     weights: Option<&ArrayView1<f32>>,
     seeds: Option<&[u32]>,
 ) -> (Vec<i32>, usize) {
+    let adj = Adjacency::from_edges(edges, n_nodes, weights, false);
+    geodesic_clusters_impl(&adj, max_dist, seeds)
+}
+
+/// `geodesic_clusters` over a prebuilt adjacency.
+///
+/// Unlike the free function this inherits the adjacency's direction: given a directed one it
+/// grows out-balls, which is a different (if equally well-defined) partition.
+fn geodesic_clusters_impl(
+    adj: &Adjacency,
+    max_dist: f32,
+    seeds: Option<&[u32]>,
+) -> (Vec<i32>, usize) {
+    let n_nodes = adj.n_nodes();
     assert!(
         max_dist >= 0.0 && max_dist.is_finite(),
         "`max_dist` must be finite and non-negative, got {max_dist}"
@@ -1634,7 +1935,6 @@ pub fn geodesic_clusters(
         return (labels, 0);
     }
 
-    let adj = Adjacency::from_edges(edges, n_nodes, weights, false);
     let mut scratch = Scratch::new(n_nodes);
     let mut n_clusters = 0usize;
 
@@ -1654,7 +1954,7 @@ pub fn geodesic_clusters(
             first: None,
             last: None,
         };
-        search_from::<false>(&adj, seed, max_dist, &mut tgt, &mut scratch);
+        search_from::<false, _>(adj, seed, max_dist, &mut tgt, &mut scratch);
 
         // `touched` is exactly the ball: a node lands there when its distance first goes
         // finite, and relaxation prunes anything past `max_dist`. So the claim is O(ball),
@@ -1670,6 +1970,936 @@ pub fn geodesic_clusters(
     }
 
     (labels, n_clusters)
+}
+
+// ---------------------------------------------------------------------------
+// Reusable graph handle
+// ---------------------------------------------------------------------------
+
+/// Why the farthest-point fold may warm-start a search, when nothing else may.
+///
+/// [`GeodesicGraph::farthest_seed`] keeps a running "distance to the nearest source" field and
+/// folds each new batch of sources into it by driving [`dijkstra_drain`] / [`bfs_drain`]
+/// directly, with that field in place of `Scratch::dist`. There is no separate kernel and no
+/// trick: warm-starting the distance array with the previous field turns the ordinary
+/// `nd < dist[v]` relaxation test into a *prune*. A node the new sources cannot improve is
+/// never pushed, so the search costs the region those sources actually claim rather than the
+/// whole graph — and the naive alternative, a fresh unpruned multi-source sweep per seed, is
+/// exactly what makes the usual `scipy`-backed implementation quadratic in the seed count.
+///
+/// It is sound only because that particular field obeys the triangle inequality
+/// `min[w] <= min[v] + d(v, w)` — it is a minimum over shortest-path distances from a source
+/// set, and that property is closed under adding sources. So a node that fails to improve
+/// cannot carry an improvement to anything behind it either, which is precisely the licence to
+/// stop expanding it. Warm-start an array *without* that property and the result is silently
+/// wrong, which is why this is documented here rather than offered as a general option.
+///
+/// Max-heap entry for farthest-point *selection*.
+///
+/// Distances only ever decrease as sources accumulate, so a stored key is an upper bound on
+/// the item's current distance. That is what licenses lazy deletion: pop the largest key, and
+/// if it still matches the live value it is genuinely the farthest — every other item's live
+/// value is at most its own key, which is at most this one.
+///
+/// `dist_bits` first so the derived `Ord` orders by distance; `item` wrapped in [`Reverse`] so
+/// that ties — which are everywhere on a symmetric mesh — resolve towards the *lowest* item
+/// index, matching what an `argmax` scan would have returned.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct FpsEntry {
+    dist_bits: u32,
+    item: Reverse<u32>,
+}
+
+/// Collect the items attached to settled nodes until a budget is spent.
+///
+/// The counterpart to [`Targets`]: where that one asks "have I found what I was looking
+/// for?", this one asks "have I gathered enough?" — the difference between a search bounded by
+/// *what* it reaches and one bounded by *how much* it reaches.
+struct Grow<'a> {
+    /// Item CSR: `offsets[v]..offsets[v + 1]` slices `ids` to the items sitting on node `v`.
+    offsets: &'a [u32],
+    ids: &'a [u32],
+    /// Items an earlier fragment already claimed. `None` => nothing is claimed, and therefore
+    /// no walls: growth then explores freely and fragments may overlap.
+    forbidden: Option<&'a [bool]>,
+    /// Items collected so far, in settle order — i.e. by increasing geodesic distance from the
+    /// seed, ties broken by the kernel's own deterministic order.
+    out: &'a mut Vec<u32>,
+    /// Each collected item's distance to the seed's node, parallel to `out`.
+    ///
+    /// The search knows this the moment it settles a node, so recording it is free — and it
+    /// answers a question the indices alone cannot: how far out a patch actually reaches.
+    /// Every item on one node necessarily shares its distance, since an item's position *is*
+    /// its node's.
+    dists: &'a mut Vec<f32>,
+    /// How many items the caller asked for. Never exceeded: a node whose items would overshoot
+    /// contributes only as many as still fit.
+    size: usize,
+    /// The node the search started from. Never a wall, whatever it carries — the caller asked
+    /// to grow from here, so refusing to leave would be perverse.
+    source: u32,
+}
+
+impl Visitor for Grow<'_> {
+    #[inline]
+    fn settle(&mut self, node: u32, d: f32) -> Visit {
+        let r = self.offsets[node as usize] as usize..self.offsets[node as usize + 1] as usize;
+        let carries_items = !r.is_empty();
+        let mut took_any = false;
+        for &i in &self.ids[r] {
+            let claimed = self.forbidden.is_some_and(|f| f[i as usize]);
+            if !claimed {
+                self.out.push(i);
+                self.dists.push(d);
+                took_any = true;
+                if self.out.len() == self.size {
+                    return Visit::Stop;
+                }
+            }
+        }
+        // A node whose every item is already claimed is a *wall*: growth stops at it, which is
+        // what keeps a partition's fragments disjoint *and* connected — without it, growth
+        // would tunnel through a finished fragment and come out somewhere unrelated.
+        //
+        // A node carrying no items at all is the opposite: a pure *conduit*. That asymmetry is
+        // the whole point of the item indirection — on a cloud far sparser than the mesh it
+        // rides on, the empty vertices in between are exactly what keeps a patch connected.
+        if carries_items && !took_any && node != self.source {
+            Visit::Wall
+        } else {
+            Visit::Expand
+        }
+    }
+}
+
+/// Why a [`GeodesicGraph::set_weights`] call could not be applied as asked.
+///
+/// One type for all of it rather than a mix of panics and returns: every variant is reachable
+/// from well-formed input — an edge list that has drifted out of step with the graph, a length
+/// computed from a degenerate triangle, a graph built for hop counts — so all of them are the
+/// caller's to handle, and each carries the value that offended so the caller can say which.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SetWeightsError {
+    /// The graph was built with `weights = None`. There is no weight array to write into, and
+    /// materialising one would quietly turn every later search from a BFS into a Dijkstra.
+    Unweighted,
+    /// `edges` referenced this node, which the graph does not have.
+    NodeOutOfRange(u32),
+    /// A weight was negative or non-finite. Dijkstra has no answer for either.
+    BadWeight(f32),
+    /// These two nodes exist but are not joined by an edge. Adding one would mean rebuilding
+    /// the CSR, which is the cost re-weighting in place exists to avoid.
+    NoSuchEdge(u32, u32),
+}
+
+impl std::fmt::Display for SetWeightsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            SetWeightsError::Unweighted => write!(
+                f,
+                "cannot set weights on a graph built with `weights=None`; \
+                 build it with explicit weights instead"
+            ),
+            SetWeightsError::NodeOutOfRange(v) => {
+                write!(
+                    f,
+                    "`edges` references node {v}, which the graph does not have"
+                )
+            }
+            SetWeightsError::BadWeight(w) => {
+                write!(f, "`weights` must be finite and non-negative, got {w}")
+            }
+            SetWeightsError::NoSuchEdge(u, v) => write!(f, "the graph has no edge {u} - {v}"),
+        }
+    }
+}
+
+impl std::error::Error for SetWeightsError {}
+
+/// A graph prepared once for many geodesic queries.
+///
+/// The free functions above each build an [`Adjacency`] from a raw edge list, answer one
+/// question and throw it away — right for a single all-pairs sweep, wrong for the algorithms
+/// that ask thousands of *small* questions of the same graph. Tiling a neuron into fixed-size
+/// fragments is the motivating case: it calls [`grow`](Self::grow) once per fragment, and a
+/// fragment settles a few hundred nodes while rebuilding the adjacency costs O(E) over the
+/// whole mesh. Done the free-function way, the rebuild dwarfs the work by orders of magnitude.
+///
+/// So this owns the adjacency, the per-search [`Scratch`] and the item index, and every query
+/// method pays only for the ball it actually explores.
+///
+/// Most methods here are the free functions above with the rebuild taken out —
+/// [`distances`](Self::distances), [`nearest`](Self::nearest), [`farthest`](Self::farthest),
+/// [`predecessors`](Self::predecessors), [`path`](Self::path), [`clusters`](Self::clusters) and
+/// [`components`](Self::components) each answer exactly what their counterpart does. The two
+/// that have no counterpart, [`grow`](Self::grow) and [`farthest_seed`](Self::farthest_seed),
+/// are the ones that only make sense against a graph you keep.
+///
+/// # Items
+///
+/// Optionally, each node may carry zero or more **items** — points of a cloud attached to the
+/// graph, one entry of a resampled surface say. By default each node is its own single item
+/// and the distinction vanishes entirely.
+///
+/// The two index spaces split cleanly by method, and the rule is short: `grow`,
+/// `farthest_seed` and `item_components` count and return **items**; everything else speaks in
+/// graph **nodes**, exactly as the free function it mirrors does. So growth follows the graph
+/// but is measured in cloud points — which is what keeps a patch of a cloud far sparser than
+/// its mesh connected, since the empty nodes in between conduct without contributing — while a
+/// distance matrix stays a matrix over the graph. See [`Grow`] for how the two roles interact.
+pub struct GeodesicGraph {
+    adj: Adjacency,
+    /// Item CSR, as consumed by [`Grow`]. Materialised even for the default one-item-per-node
+    /// case so the kernel keeps a single path; it costs 8 bytes per node against an adjacency
+    /// that is an order of magnitude larger.
+    item_offsets: Vec<u32>,
+    item_ids: Vec<u32>,
+    /// The node each item sits on — the CSR's inverse, needed to turn a seed *item* into the
+    /// node a search starts from.
+    item_node: Vec<u32>,
+    /// Reused across queries. This is the allocation the whole type exists to keep: it is
+    /// O(n_nodes) and would otherwise be paid, and zeroed, once per fragment.
+    scratch: Scratch,
+    /// Farthest-point-sampling state: for each *node*, the distance to the nearest source
+    /// folded in so far, `INFINITY` where no source reaches it. Empty until the first
+    /// [`farthest_seed`](Self::farthest_seed) call — callers who only ever `grow` pay nothing.
+    fps_min: Vec<f32>,
+    /// Items already folded into `fps_min` as sources. Parallel to `item_node`.
+    fps_seen: Vec<bool>,
+    /// Selection heap: every item whose node is reachable from some source, keyed by its
+    /// distance at the time it was pushed. Lazily corrected on inspection — see [`FpsEntry`].
+    /// This is what keeps `farthest_seed` off an O(n_items) argmax scan per call, which
+    /// otherwise dominates everything once the fold itself is pruned.
+    fps_heap: BinaryHeap<FpsEntry>,
+    /// Nodes that went from unreachable to reachable during the last fold, i.e. whose items
+    /// need enrolling in `fps_heap`. A field rather than a local so the run does not allocate
+    /// once per seed.
+    fps_newly_finite: Vec<u32>,
+    /// Component label per node: the smallest node index in its component, matching
+    /// [`connected_components_graph`]'s convention. Empty until first needed.
+    comp: Vec<u32>,
+    /// The distinct component labels, ascending. Lets the fallback below reset and scan its
+    /// tallies in O(components) rather than sweeping the whole node-sized label space.
+    comp_labels: Vec<u32>,
+    /// Reusable per-component tallies for the fallback: how many undone items a component
+    /// holds, and the lowest-indexed of them. Both are indexed by label, hence node-sized, but
+    /// only ever touched at the `comp_labels` positions. Kept rather than allocated per call
+    /// because on a mesh with hundreds of disconnected specks the fallback runs hundreds of
+    /// times.
+    comp_counts: Vec<u32>,
+    comp_first: Vec<u32>,
+}
+
+impl GeodesicGraph {
+    /// Prepare a graph for repeated queries.
+    ///
+    /// Arguments
+    /// ---------
+    /// - `edges`: (E, 2) array of edges given as node indices. Always undirected — every query
+    ///   here is about reachability *from* a seed, and a directed graph would make "connected"
+    ///   mean two different things depending on which way you asked.
+    /// - `n_nodes`: Total number of nodes.
+    /// - `weights`: Length of each edge. `None` => unit weights, i.e. distances are hop counts
+    ///   and the searches run as BFS rather than Dijkstra. Must be finite and non-negative;
+    ///   parallel edges collapse to the shortest.
+    /// - `directed`: If `true`, an edge `(u, v)` may only be traversed from `u` to `v`. Every
+    ///   method then follows arc direction, so each becomes its "outward from here" reading:
+    ///   [`grow`](Self::grow) gathers the out-reachable ball, [`farthest_seed`](Self::farthest_seed)
+    ///   measures distance *from* the done set, and [`components`](Self::components) still
+    ///   reports *weakly* connected components, since a search has to start somewhere.
+    /// - `item_nodes`: The node each item is attached to, as an array of length `n_items`.
+    ///   `None` => each node is its own single item, so items and nodes coincide.
+    pub fn new(
+        edges: ArrayView2<u32>,
+        n_nodes: usize,
+        weights: Option<&ArrayView1<f32>>,
+        directed: bool,
+        item_nodes: Option<&[u32]>,
+    ) -> Self {
+        let adj = Adjacency::from_edges(edges, n_nodes, weights, directed);
+        let item_node: Vec<u32> = match item_nodes {
+            Some(v) => {
+                for &n in v {
+                    assert!(
+                        (n as usize) < n_nodes,
+                        "`item_nodes` contains node {n}, but n_nodes = {n_nodes}"
+                    );
+                }
+                v.to_vec()
+            }
+            None => (0..n_nodes as u32).collect(),
+        };
+        Self::from_parts(adj, item_node)
+    }
+
+    /// Assemble from an adjacency and an item-to-node map that are already known good.
+    ///
+    /// The shared tail of [`new`](Self::new) and [`subset`](Self::subset).
+    fn from_parts(adj: Adjacency, item_node: Vec<u32>) -> Self {
+        let n_nodes = adj.n_nodes();
+        assert!(
+            item_node.len() <= u32::MAX as usize,
+            "too many items: the item CSR is indexed by u32"
+        );
+
+        // Counting sort into the CSR. Items stay in ascending index order within each node,
+        // which is what makes `grow`'s output reproducible for a given seed and forbidden set.
+        let mut item_offsets: Vec<u32> = vec![0; n_nodes + 1];
+        for &v in &item_node {
+            item_offsets[v as usize + 1] += 1;
+        }
+        for i in 0..n_nodes {
+            item_offsets[i + 1] += item_offsets[i];
+        }
+        let mut item_ids: Vec<u32> = vec![0; item_node.len()];
+        let mut cursor: Vec<u32> = item_offsets[..n_nodes].to_vec();
+        for (i, &v) in item_node.iter().enumerate() {
+            let slot = &mut cursor[v as usize];
+            item_ids[*slot as usize] = i as u32;
+            *slot += 1;
+        }
+
+        GeodesicGraph {
+            scratch: Scratch::new(n_nodes),
+            adj,
+            item_offsets,
+            item_ids,
+            item_node,
+            // All of these are built on first use; an empty `Vec`/`BinaryHeap` does not
+            // allocate, so a caller who only ever calls `grow` pays for none of it.
+            fps_min: Vec::new(),
+            fps_seen: Vec::new(),
+            fps_heap: BinaryHeap::new(),
+            fps_newly_finite: Vec::new(),
+            comp: Vec::new(),
+            comp_labels: Vec::new(),
+            comp_counts: Vec::new(),
+            comp_first: Vec::new(),
+        }
+    }
+
+    /// Number of nodes in the graph.
+    pub fn n_nodes(&self) -> usize {
+        self.adj.n_nodes()
+    }
+
+    /// Number of items. Equals `n_nodes` unless `item_nodes` was given.
+    pub fn n_items(&self) -> usize {
+        self.item_node.len()
+    }
+
+    /// The node each item sits on. The identity map unless `item_nodes` was given.
+    pub fn item_nodes(&self) -> &[u32] {
+        &self.item_node
+    }
+
+    /// Pairwise distances between `sources` and `targets`. See [`geodesic_matrix_graph`].
+    pub fn distances(
+        &self,
+        sources: Option<&[u32]>,
+        targets: Option<&[u32]>,
+        limit: Option<f32>,
+        threads: Option<usize>,
+    ) -> Array2<f32> {
+        geodesic_matrix_impl(&self.adj, sources, targets, limit, threads)
+    }
+
+    /// For each source, the distance to its nearest target and that target's index.
+    /// See [`geodesic_nearest_mesh`].
+    pub fn nearest(
+        &self,
+        sources: Option<&[u32]>,
+        targets: Option<&[u32]>,
+        limit: Option<f32>,
+        threads: Option<usize>,
+    ) -> (Array1<f32>, Array1<i32>) {
+        geodesic_extreme_impl(&self.adj, sources, targets, limit, threads, false)
+    }
+
+    /// For each source, the distance to its farthest target and that target's index.
+    /// See [`geodesic_farthest_mesh`].
+    pub fn farthest(
+        &self,
+        sources: Option<&[u32]>,
+        targets: Option<&[u32]>,
+        limit: Option<f32>,
+        threads: Option<usize>,
+    ) -> (Array1<f32>, Array1<i32>) {
+        geodesic_extreme_impl(&self.adj, sources, targets, limit, threads, true)
+    }
+
+    /// Shortest-path trees: distances *and* the route to every node.
+    /// See [`geodesic_predecessors_graph`].
+    pub fn predecessors(
+        &self,
+        sources: Option<&[u32]>,
+        limit: Option<f32>,
+        threads: Option<usize>,
+    ) -> (Array2<f32>, Array2<i32>) {
+        geodesic_predecessors_impl(&self.adj, sources, limit, threads)
+    }
+
+    /// Node sequences of the shortest paths from `source` to each of `targets`.
+    /// See [`geodesic_path_graph`].
+    pub fn path(&self, source: u32, targets: &[u32]) -> Vec<Vec<u32>> {
+        geodesic_path_impl(&self.adj, source, targets)
+    }
+
+    /// Every node within `max_dist` of *any* source, how far it is, and which source is nearest.
+    ///
+    /// One multi-source search, so this costs the ball it returns rather than one sweep per
+    /// source — and the output is the ball, not a node-sized array with the ball buried in it.
+    /// Both halves of that matter for the calling pattern this exists for: an algorithm that
+    /// walks a graph invalidating a neighbourhood at a time asks this question thousands of
+    /// times against radii that cover a fraction of a percent of the graph, and
+    /// `scipy.sparse.csgraph.dijkstra(..., min_only=True, limit=...)` — the closest thing
+    /// elsewhere — allocates and fills three node-sized arrays per call regardless, which for
+    /// a small radius costs more than the search.
+    ///
+    /// Arguments
+    /// ---------
+    /// - `sources`: Node indices. May repeat. Empty gives an empty result.
+    /// - `max_dist`: Radius, inclusive, in the graph's own metric (hop counts when the graph is
+    ///   unweighted). `f32::INFINITY` for no bound, which makes this "nearest source of every
+    ///   reachable node".
+    ///
+    /// Returns `(nodes, distances, sources)`, aligned, in increasing-distance order. Every
+    /// source is in `nodes` at distance 0 and is its own nearest source. Nodes farther than
+    /// `max_dist`, and nodes no source reaches, are simply absent.
+    ///
+    /// Ties — a node equidistant from two sources — go to whichever settled first, which is
+    /// deterministic but otherwise arbitrary, exactly as it is for `min_only` elsewhere.
+    pub fn ball(&mut self, sources: &[u32], max_dist: f32) -> (Vec<u32>, Vec<f32>, Vec<u32>) {
+        let n_nodes = self.n_nodes();
+        for &s in sources {
+            assert!(
+                (s as usize) < n_nodes,
+                "`sources` contains node {s}, but n_nodes = {n_nodes}"
+            );
+        }
+        assert!(
+            max_dist >= 0.0 && !max_dist.is_nan(),
+            "`max_dist` must be non-negative, got {max_dist}"
+        );
+        let mut nodes: Vec<u32> = Vec::new();
+        let mut dists: Vec<f32> = Vec::new();
+        if sources.is_empty() || n_nodes == 0 {
+            return (nodes, dists, Vec::new());
+        }
+
+        // The predecessor chain is how a node learns which source it belongs to, so unlike
+        // `grow` this search needs `PRED` — and, for the same reason, `src`.
+        self.scratch.enable_sources(n_nodes);
+
+        let mut vis = Collect {
+            nodes: &mut nodes,
+            dists: &mut dists,
+        };
+        search_from_many::<true, _>(&self.adj, sources, max_dist, &mut vis, &mut self.scratch);
+
+        let srcs = self.scratch.resolve_sources(&nodes);
+        self.scratch.reset();
+        (nodes, dists, srcs)
+    }
+
+    /// Re-weight edges in place, leaving the adjacency otherwise untouched.
+    ///
+    /// The point is to keep a graph across a run that *changes* it — TEASAR zeroing each path
+    /// it extracts so later paths may re-traverse it for free is the motivating case. Rebuilding
+    /// the graph after each change costs O(E) against an edit of a few hundred edges, and
+    /// undoes the whole reason for holding a prepared graph; this costs O(edits log valence).
+    ///
+    /// Arguments
+    /// ---------
+    /// - `edges`: (K, 2) array of edges to re-weight, as node pairs. Each must be an edge the
+    ///   graph actually has. Order does not matter and repeats are allowed — the last write
+    ///   wins.
+    /// - `weights`: The new weight of each, finite and non-negative.
+    ///
+    /// Every way a caller can get this wrong comes back as an [`SetWeightsError`] rather than a
+    /// panic, because all of them are reachable with well-formed input — an edge list that has
+    /// drifted out of step with the graph, a weight computed from a degenerate triangle — and
+    /// the offending value is what the caller needs to see. They are all detected in the single
+    /// pass over `edges` that the writes themselves need, so nothing is checked twice.
+    ///
+    /// Edits before the first error have been applied. A missing edge is *not* treated as a
+    /// request to add one: growing the CSR would mean rebuilding it, which is the cost this
+    /// method exists to avoid.
+    ///
+    /// # Panics
+    ///
+    /// If the arrays disagree in shape or length — a caller bug rather than bad data, and the
+    /// same thing every other entry point here asserts on.
+    ///
+    /// # Note
+    ///
+    /// Distances change, so the incremental field behind
+    /// [`farthest_seed`](Self::farthest_seed) is discarded here — a min folded under the old
+    /// weights cannot be corrected under the new ones. A `farthest_seed` run interleaved with
+    /// re-weighting therefore pays a cold start after each edit; one that is not, pays nothing.
+    /// Component labels survive, since which edges exist has not changed.
+    pub fn set_weights(
+        &mut self,
+        edges: ArrayView2<u32>,
+        weights: ArrayView1<f32>,
+    ) -> Result<(), SetWeightsError> {
+        assert_eq!(edges.ncols(), 2, "`edges` must have shape (K, 2)");
+        assert_eq!(
+            weights.len(),
+            edges.nrows(),
+            "`weights` must have one entry per edge"
+        );
+        if self.adj.weights.is_none() {
+            return Err(SetWeightsError::Unweighted);
+        }
+
+        // Distances are about to move, so the incremental field is stale whether or not every
+        // edit lands. Discarding it up front keeps an early return from leaving it behind.
+        self.fps_min.clear();
+        self.fps_seen.clear();
+        self.fps_heap.clear();
+        self.fps_newly_finite.clear();
+
+        let n_nodes = self.n_nodes() as u32;
+        for (e, &w) in edges.rows().into_iter().zip(weights) {
+            let (u, v) = (e[0], e[1]);
+            if u >= n_nodes || v >= n_nodes {
+                return Err(SetWeightsError::NodeOutOfRange(u.max(v)));
+            }
+            if !w.is_finite() || w < 0.0 {
+                return Err(SetWeightsError::BadWeight(w));
+            }
+            if !self.adj.set_edge(u, v, w) {
+                return Err(SetWeightsError::NoSuchEdge(u, v));
+            }
+        }
+        Ok(())
+    }
+
+    /// Greedily partition *nodes* into connected clusters of bounded radius.
+    /// See [`geodesic_clusters`], whose distance-bounded ball is the sibling of
+    /// [`grow`](Self::grow)'s count-bounded one.
+    pub fn clusters(&self, max_dist: f32, seeds: Option<&[u32]>) -> (Vec<i32>, usize) {
+        geodesic_clusters_impl(&self.adj, max_dist, seeds)
+    }
+
+    /// Component label of each *node*: the smallest node index in its component, matching
+    /// [`connected_components_graph`]. See [`item_components`](Self::item_components) for the
+    /// per-item view.
+    pub fn components(&mut self) -> Vec<u32> {
+        self.ensure_components();
+        self.comp.clone()
+    }
+
+    /// The subgraph induced on `nodes`, as a graph in its own right.
+    ///
+    /// New node `i` is old node `nodes[i]`, so the caller's array *is* the node map back.
+    /// Edges with an endpoint outside the subset are dropped, and items land wherever their
+    /// node did — an item whose node was dropped goes with it.
+    ///
+    /// Because the adjacency is carved out of the one already built rather than re-derived
+    /// from an edge list, this costs O(V + E) of the *parent* and never returns to the caller's
+    /// original input. Restricting to one connected component is the motivating case:
+    ///
+    /// ```ignore
+    /// let comp = g.components();
+    /// let biggest: Vec<u32> = (0..g.n_nodes() as u32).filter(|&v| comp[v as usize] == label).collect();
+    /// let (sub, kept_items) = g.subset(&biggest);
+    /// ```
+    ///
+    /// Returns the subgraph and the *original* index of each of its items, so results computed
+    /// on the subset can be mapped back. `nodes` may be in any order but must not repeat.
+    ///
+    /// Items are renumbered by walking the new nodes in order and taking each one's items. The
+    /// point of that order rather than the simpler "ascending original index" is that it keeps
+    /// items and nodes in step: subset a graph that never had items attached and you get one
+    /// where item `i` is still node `i`, whatever order `nodes` came in. Sorting by original
+    /// index instead would quietly hand back a graph whose item indices are no longer its node
+    /// indices, and `grow` would return numbers that look like nodes and are not.
+    pub fn subset(&self, nodes: &[u32]) -> (GeodesicGraph, Vec<u32>) {
+        let adj = self.adj.induced(nodes);
+        let mut kept_items: Vec<u32> = Vec::new();
+        let mut item_node: Vec<u32> = Vec::new();
+        for (new, &v) in nodes.iter().enumerate() {
+            let r =
+                self.item_offsets[v as usize] as usize..self.item_offsets[v as usize + 1] as usize;
+            for &i in &self.item_ids[r] {
+                kept_items.push(i);
+                item_node.push(new as u32);
+            }
+        }
+        (Self::from_parts(adj, item_node), kept_items)
+    }
+
+    /// Grow a connected region of up to `size` items outwards from item `seed`.
+    ///
+    /// Dijkstra (or BFS, for unit weights) out from the seed's node, collecting the items on
+    /// each node it settles until `size` of them are gathered. Because nodes settle in
+    /// increasing distance order, the region is the geodesic *ball* around the seed that
+    /// happens to hold `size` items — not whatever a depth-first walk stumbled into — and it
+    /// is connected, since every settled node bar the source is reached through one that
+    /// settled earlier.
+    ///
+    /// This is the count-bounded sibling of [`geodesic_clusters`]'s distance-bounded ball, and
+    /// the reason it cannot share that implementation: a radius is known before the search
+    /// starts and can be pruned at relaxation, whereas a count is only known to be met at the
+    /// moment it is met, so the region has to be recorded in settle order as the search runs.
+    ///
+    /// Arguments
+    /// ---------
+    /// - `seed`: Item to grow from.
+    /// - `size`: How many items to gather. Fewer come back only when the reachable region runs
+    ///   out of eligible items.
+    /// - `forbidden`: One flag per item, marking those an earlier fragment already claimed.
+    ///   Claimed items are never collected, and a node whose items are *all* claimed becomes a
+    ///   wall the growth will not cross — which is what makes repeated calls carve a graph
+    ///   into disjoint *connected* fragments. `None` => nothing is claimed, so successive
+    ///   calls are independent and may overlap.
+    ///
+    /// Returns the items seed-first, in increasing-distance order, together with each one's
+    /// distance to the seed's node.
+    ///
+    /// The distances come free — the search settles nodes in distance order, so it holds the
+    /// number already — and they are what makes a *non-uniform* patch possible: thinning a
+    /// grown region by radius needs to know the radius. Items sharing a node share a distance,
+    /// exactly, since an item's position is its node's.
+    pub fn grow(
+        &mut self,
+        seed: u32,
+        size: usize,
+        forbidden: Option<&[bool]>,
+    ) -> (Vec<u32>, Vec<f32>) {
+        assert!(
+            (seed as usize) < self.item_node.len(),
+            "`seed` is item {seed}, but there are {} items",
+            self.item_node.len()
+        );
+        if let Some(f) = forbidden {
+            assert_eq!(
+                f.len(),
+                self.item_node.len(),
+                "`forbidden` must have one flag per item"
+            );
+        }
+        let mut out: Vec<u32> = Vec::new();
+        let mut dists: Vec<f32> = Vec::new();
+        if size == 0 {
+            return (out, dists);
+        }
+        out.reserve(size);
+        dists.reserve(size);
+
+        let source = self.item_node[seed as usize];
+        let mut vis = Grow {
+            offsets: &self.item_offsets,
+            ids: &self.item_ids,
+            forbidden,
+            out: &mut out,
+            dists: &mut dists,
+            size,
+            source,
+        };
+        // No `limit`: the budget is a count, so there is no radius to prune at. The search is
+        // bounded instead by `Visit::Stop` the moment the budget is spent.
+        search_from::<false, _>(
+            &self.adj,
+            source,
+            f32::INFINITY,
+            &mut vis,
+            &mut self.scratch,
+        );
+        self.scratch.reset();
+        (out, dists)
+    }
+
+    /// The next farthest-point seed: the undone item geodesically farthest from everything
+    /// already done.
+    ///
+    /// Repeatedly calling this with a growing `done` set spreads seeds evenly over the graph —
+    /// farthest-point sampling — which is what you want when placing patches, landmarks or
+    /// cluster centres that should not clump. Pair it with [`grow`](Self::grow): seed, grow,
+    /// mark what you covered, seed again.
+    ///
+    /// # Reachability
+    ///
+    /// Only items *reachable* from something in `done` are candidates. Unreachable ones are
+    /// infinitely far and would otherwise win every time, so a graph with many small
+    /// components would seed every speck before returning to the main body. When the reachable
+    /// frontier is exhausted — or `done` is empty — the search jumps to a fresh component,
+    /// largest first, and takes its lowest-index undone item. Ties go to the lower item index.
+    ///
+    /// # Cost
+    ///
+    /// Two things keep a long run of seeds off a quadratic path. The distance field is
+    /// maintained incrementally — each call folds in only the sources `done` has *gained*, and
+    /// that fold is pruned against the running field (see the note on warm-starting above [`GeodesicGraph`]), so it costs
+    /// the region the new sources actually claim rather than a sweep of the graph. And the
+    /// winner comes off a lazily-corrected heap (see [`FpsEntry`]) rather than an `argmax`
+    /// scan, which matters because once the fold is pruned the scan is what dominates.
+    ///
+    /// What remains per call is one pass over `done` itself, to spot the sources it gained.
+    /// That is the floor for a mask-shaped API — anything cheaper would mean making the caller
+    /// report what changed — and in practice it is the bulk of the cost.
+    ///
+    /// `done` is expected to only ever *grow* between calls. It may shrink — the field is
+    /// rebuilt from scratch when that is detected, so the answer stays correct — but the
+    /// incremental saving is lost for that call.
+    ///
+    /// Returns `None` only when every item is already done.
+    pub fn farthest_seed(&mut self, done: &[bool]) -> Option<u32> {
+        assert_eq!(
+            done.len(),
+            self.item_node.len(),
+            "`done` must have one flag per item"
+        );
+        if done.iter().any(|&d| d) {
+            self.fps_fold(done);
+            if let Some(i) = self.fps_select(done) {
+                return Some(i);
+            }
+        }
+        self.largest_unset(done)
+    }
+
+    /// The farthest reachable undone item, via lazy deletion on [`fps_heap`](Self::fps_heap).
+    ///
+    /// Deliberately *peeks* rather than pops the winner: the answer must be a pure function of
+    /// `done`, so asking twice without marking anything must give the same item twice. Only
+    /// entries that are stale (re-pushed at their current distance) or spent (already done)
+    /// leave the heap.
+    fn fps_select(&mut self, done: &[bool]) -> Option<u32> {
+        let Self {
+            fps_heap,
+            fps_min,
+            item_node,
+            ..
+        } = self;
+        loop {
+            let mut top = fps_heap.peek_mut()?;
+            let i = top.item.0;
+            if done[i as usize] {
+                std::collections::binary_heap::PeekMut::pop(top);
+                continue; // spent: a done item is never a candidate again
+            }
+            let live = fps_min[item_node[i as usize] as usize].to_bits();
+            if live == top.dist_bits {
+                return Some(i);
+            }
+            // Stale: the entry was pushed before some source moved this item closer. Correct
+            // it in place — a `PeekMut` that was mutably dereferenced sifts down once when it
+            // drops, where pop-then-push would sift twice. This terminates because each pass
+            // strictly lowers the key it rewrites, and keys are bounded below by zero.
+            top.dist_bits = live;
+        }
+    }
+
+    /// Component label of each item: the smallest *node* index in its component.
+    ///
+    /// Labels are node indices rather than a contiguous range, matching
+    /// [`connected_components_graph`]. Exposed because the useful thing to do with a component
+    /// is pick from it — a random seed drawn from the largest component, say, which
+    /// [`farthest_seed`](Self::farthest_seed) deliberately does not do for you: it would mean
+    /// owning a random number generator, and a caller who cares about reproducibility wants
+    /// that to be theirs.
+    pub fn item_components(&mut self) -> Vec<u32> {
+        self.ensure_components();
+        self.item_node
+            .iter()
+            .map(|&v| self.comp[v as usize])
+            .collect()
+    }
+
+    /// Fold every source `done` has gained since the last call into `fps_min`.
+    fn fps_fold(&mut self, done: &[bool]) {
+        if self.fps_min.is_empty() {
+            self.fps_min = vec![f32::INFINITY; self.adj.n_nodes()];
+            self.fps_seen = vec![false; self.item_node.len()];
+        }
+
+        let Self {
+            fps_min,
+            fps_seen,
+            fps_newly_finite,
+            fps_heap,
+            item_node,
+            item_offsets,
+            item_ids,
+            scratch,
+            adj,
+            ..
+        } = self;
+        let weighted = adj.weights.is_some();
+        fps_newly_finite.clear();
+
+        // Enrol every source `done` has gained, and notice in the same pass if it has *lost*
+        // one. The incremental field is only valid while `done` grows — a min cannot be
+        // un-folded — so a cleared flag means the field no longer describes `done`. There is
+        // nothing to repair in that case, only to discard: wipe the state and go round again,
+        // which with `fps_seen` all-false cannot trip the check a second time. Skipping the
+        // check altogether would return confidently wrong seeds.
+        let mut any_new = false;
+        'enrol: loop {
+            for (i, &d) in done.iter().enumerate() {
+                if fps_seen[i] {
+                    if d {
+                        continue;
+                    }
+                    fps_min.fill(f32::INFINITY);
+                    fps_seen.fill(false);
+                    fps_newly_finite.clear();
+                    fps_heap.clear();
+                    scratch.heap.clear();
+                    scratch.cur.clear();
+                    scratch.next.clear();
+                    any_new = false;
+                    continue 'enrol;
+                }
+                if !d {
+                    continue;
+                }
+                fps_seen[i] = true;
+                let v = item_node[i];
+                // Several items can share a node, and a node may already be a source from an
+                // earlier fold; either way it is already at distance zero and re-seeding it
+                // would only add a redundant frontier entry.
+                if fps_min[v as usize] != 0.0 {
+                    if fps_min[v as usize].is_infinite() {
+                        fps_newly_finite.push(v);
+                    }
+                    fps_min[v as usize] = 0.0;
+                    if weighted {
+                        scratch.heap.push(Reverse(HeapEntry {
+                            dist_bits: 0,
+                            node: v,
+                        }));
+                    } else {
+                        scratch.cur.push(v);
+                    }
+                    any_new = true;
+                }
+            }
+            break;
+        }
+
+        if !any_new {
+            return;
+        }
+        // The ordinary search kernels, driven over the persistent field instead of `Scratch`'s
+        // — see the note above them on why warm-starting is sound here. `PRED` is off, so the
+        // empty predecessor slice is never indexed.
+        let no_pred: &mut [u32] = &mut [];
+        if weighted {
+            dijkstra_drain::<false, _>(
+                adj,
+                fps_min,
+                no_pred,
+                fps_newly_finite,
+                &mut scratch.heap,
+                f32::INFINITY,
+                &mut NoVisitor,
+            );
+        } else {
+            bfs_drain::<false, _>(
+                adj,
+                fps_min,
+                no_pred,
+                fps_newly_finite,
+                &mut scratch.cur,
+                &mut scratch.next,
+                f32::INFINITY,
+                &mut NoVisitor,
+            );
+        }
+        // Both kernels drain what they were given, so `Scratch` is left as they found it —
+        // `dist` in particular is untouched, since the fold relaxes into `fps_min` instead.
+        debug_assert!(scratch.heap.is_empty() && scratch.cur.is_empty());
+
+        // Enrol the items that have just become candidates. A node contributes its items
+        // exactly once, the first time anything reaches it, so the heap holds one entry per
+        // reachable item over the whole run — never a per-call rebuild.
+        for &v in fps_newly_finite.iter() {
+            let r = item_offsets[v as usize] as usize..item_offsets[v as usize + 1] as usize;
+            let bits = fps_min[v as usize].to_bits();
+            for &i in &item_ids[r] {
+                fps_heap.push(FpsEntry {
+                    dist_bits: bits,
+                    item: Reverse(i),
+                });
+            }
+        }
+    }
+
+    /// Lowest-index undone item of the component holding the most undone items.
+    ///
+    /// One pass over `done` does both halves of the job: count the undone items per component
+    /// and remember the first one seen in each. Because `i` ascends, "first seen" *is* the
+    /// lowest index, so the winner needs no second search. Everything else is keyed on the
+    /// component list rather than the node-sized label space, which matters because this runs
+    /// once per component — a mesh riddled with specks would otherwise pay O(components x
+    /// nodes) to place a handful of seeds.
+    fn largest_unset(&mut self, done: &[bool]) -> Option<u32> {
+        self.ensure_components();
+        for &label in &self.comp_labels {
+            self.comp_counts[label as usize] = 0;
+            self.comp_first[label as usize] = u32::MAX;
+        }
+        for (i, &d) in done.iter().enumerate() {
+            if !d {
+                let label = self.comp[self.item_node[i] as usize] as usize;
+                self.comp_counts[label] += 1;
+                if self.comp_first[label] == u32::MAX {
+                    self.comp_first[label] = i as u32;
+                }
+            }
+        }
+        // `comp_labels` ascends, and `>` keeps the first maximum, so ties go to the lowest
+        // label — the same answer the old full-width scan gave.
+        let mut best: Option<(u32, u32)> = None;
+        for &label in &self.comp_labels {
+            let c = self.comp_counts[label as usize];
+            if c > 0 && best.is_none_or(|(_, b)| c > b) {
+                best = Some((label, c));
+            }
+        }
+        let (label, _) = best?; // every item done => no component has any left
+        Some(self.comp_first[label as usize])
+    }
+
+    /// Label each node with the smallest node index in its component, if not done already.
+    ///
+    /// A plain BFS over the adjacency rather than the union-find in
+    /// [`connected_components_graph`], because the adjacency is already built and walking it
+    /// is cheaper than a second pass over the edge list. Starting nodes are visited in
+    /// ascending order, so the first node of each component *is* its minimum index, which
+    /// reproduces that function's labelling.
+    fn ensure_components(&mut self) {
+        if !self.comp.is_empty() {
+            return;
+        }
+        let n = self.adj.n_nodes();
+        self.comp = vec![u32::MAX; n];
+        self.comp_counts = vec![0; n];
+        self.comp_first = vec![u32::MAX; n];
+        let mut stack: Vec<u32> = Vec::new();
+        for start in 0..n as u32 {
+            if self.comp[start as usize] != u32::MAX {
+                continue;
+            }
+            // Each `start` that survives the check *is* a component label, and they arrive in
+            // ascending order — so the label list falls out of the walk for free.
+            self.comp_labels.push(start);
+            self.comp[start as usize] = start;
+            stack.push(start);
+            while let Some(u) = stack.pop() {
+                for &v in &self.adj.nbrs[self.adj.row(u)] {
+                    if self.comp[v as usize] == u32::MAX {
+                        self.comp[v as usize] = start;
+                        stack.push(v);
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2699,5 +3929,913 @@ mod tests {
         let edges = array![[0u32, 1]];
         let (labels, n) = geodesic_clusters(edges.view(), 4, 10.0, None, None);
         assert_eq!((labels, n), (vec![0, 0, 1, 2], 3));
+    }
+
+    // -----------------------------------------------------------------------
+    // GeodesicGraph::grow
+    // -----------------------------------------------------------------------
+
+    /// A path graph `0-1-...-(n-1)`.
+    fn path_graph(n: u32) -> Array2<u32> {
+        Array2::from_shape_vec(
+            (n as usize - 1, 2),
+            (0..n - 1).flat_map(|i| [i, i + 1]).collect::<Vec<u32>>(),
+        )
+        .unwrap()
+    }
+
+    /// The `grid` mesh as an edge list plus euclidean edge lengths — the general-graph form of
+    /// the same oracle the mesh tests use.
+    fn grid_graph(n: usize, s: f64) -> (Array2<u32>, Array1<f32>) {
+        let (faces, coords) = grid(n, s);
+        let (unique, _, _, lengths) =
+            unique_edges(faces.view(), Some(coords.view()), false, true, None);
+        (
+            unique.mapv(|v| v as u32),
+            lengths.unwrap().mapv(|v| v as f32),
+        )
+    }
+
+    /// Is `nodes` a single connected piece of `edges`? Deliberately a naive flood-fill written
+    /// against the raw edge list, so it shares no machinery with the code under test.
+    fn is_connected(edges: ArrayView2<u32>, nodes: &[u32]) -> bool {
+        let inside: std::collections::HashSet<u32> = nodes.iter().copied().collect();
+        if inside.is_empty() {
+            return true;
+        }
+        let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut stack = vec![nodes[0]];
+        seen.insert(nodes[0]);
+        while let Some(u) = stack.pop() {
+            for e in edges.rows() {
+                for (a, b) in [(e[0], e[1]), (e[1], e[0])] {
+                    if a == u && inside.contains(&b) && seen.insert(b) {
+                        stack.push(b);
+                    }
+                }
+            }
+        }
+        seen.len() == inside.len()
+    }
+
+    /// Partition every item into disjoint connected fragments, the way a tiling driver does:
+    /// seed at the first unclaimed item, grow, mark, repeat. Returns the fragments.
+    fn partition(g: &mut GeodesicGraph, size: usize) -> Vec<Vec<u32>> {
+        let mut claimed = vec![false; g.n_items()];
+        let mut out = Vec::new();
+        while let Some(seed) = claimed.iter().position(|&c| !c) {
+            let frag = g.grow(seed as u32, size, Some(&claimed)).0;
+            assert!(
+                !frag.is_empty(),
+                "growth from an unclaimed seed cannot be empty"
+            );
+            for &i in &frag {
+                claimed[i as usize] = true;
+            }
+            out.push(frag);
+        }
+        out
+    }
+
+    #[test]
+    fn grow_returns_a_ball_in_increasing_distance_order() {
+        // Path 0-1-...-9, seeded in the middle: growth alternates outwards from 5.
+        let edges = path_graph(10);
+        let mut g = GeodesicGraph::new(edges.view(), 10, None, false, None);
+        assert_eq!(g.grow(5, 1, None).0, vec![5]);
+        assert_eq!(g.grow(5, 3, None).0, vec![5, 4, 6]);
+        assert_eq!(g.grow(5, 5, None).0, vec![5, 4, 6, 3, 7]);
+        // Asking for more than exists returns what there is, never pads or repeats.
+        let all = g.grow(5, 100, None).0;
+        assert_eq!(all.len(), 10);
+        let mut sorted = all.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..10u32).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn grow_reports_each_items_distance_to_the_seed() {
+        // Path 0-1-...-9 seeded in the middle: distances follow the alternating walk out.
+        let edges = path_graph(10);
+        let mut g = GeodesicGraph::new(edges.view(), 10, None, false, None);
+        let (idx, d) = g.grow(5, 5, None);
+        assert_eq!(idx, vec![5, 4, 6, 3, 7]);
+        assert_eq!(d, vec![0.0, 1.0, 1.0, 2.0, 2.0]);
+
+        // Weighted, against the distance matrix as an independent oracle.
+        let n = 121;
+        let (edges, w) = grid_graph(11, 1.0);
+        let wv = w.view();
+        let mut g = GeodesicGraph::new(edges.view(), n, Some(&wv), false, None);
+        let (idx, d) = g.grow(60, 40, None);
+        let dm = geodesic_matrix_graph(
+            edges.view(),
+            n,
+            Some(&wv),
+            false,
+            Some(&[60]),
+            None,
+            None,
+            Some(1),
+        );
+        for (&i, &di) in idx.iter().zip(&d) {
+            assert_eq!(di, dm[[0, i as usize]], "item {i}");
+        }
+        assert!(d.windows(2).all(|p| p[0] <= p[1]), "distances ascend");
+    }
+
+    #[test]
+    fn grow_gives_every_item_on_a_node_the_same_distance() {
+        // An item's position *is* its node's, so a node's items must share a distance exactly
+        // — which is what lets a caller thin a patch by radius without the ties drifting.
+        let edges = path_graph(4);
+        let item_nodes = [0u32, 1, 1, 1, 3];
+        let mut g = GeodesicGraph::new(edges.view(), 4, None, false, Some(&item_nodes));
+        let (idx, d) = g.grow(0, 5, None);
+        assert_eq!(idx, vec![0, 1, 2, 3, 4]);
+        assert_eq!(d, vec![0.0, 1.0, 1.0, 1.0, 3.0]);
+
+        // Seeding *on* the crowded node: its three items are all at zero, including the seed.
+        let (idx, d) = g.grow(2, 4, None);
+        assert_eq!(idx, vec![1, 2, 3, 0]);
+        assert_eq!(d, vec![0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn grow_distances_survive_walls_and_a_short_harvest() {
+        // A budget that fills mid-node must not leave `dists` out of step with the indices.
+        let edges = path_graph(4);
+        let item_nodes = [0u32, 1, 1, 1];
+        let mut g = GeodesicGraph::new(edges.view(), 4, None, false, Some(&item_nodes));
+        let (idx, d) = g.grow(0, 3, None);
+        assert_eq!((idx.len(), d.len()), (3, 3));
+        assert_eq!(d, vec![0.0, 1.0, 1.0]);
+
+        // And when growth stops early against a wall.
+        let claimed = [false, true, true, true];
+        let (idx, d) = g.grow(0, 4, Some(&claimed));
+        assert_eq!(idx, vec![0]);
+        assert_eq!(d, vec![0.0]);
+
+        // A budget of zero yields two empty arrays, not one.
+        let (idx, d) = g.grow(0, 0, None);
+        assert!(idx.is_empty() && d.is_empty());
+    }
+
+    #[test]
+    fn grow_follows_edge_weights_not_hop_counts() {
+        // A star: 0 in the middle, spokes at wildly different lengths. Hop-wise every leaf is
+        // one step away, so only the weights can order them.
+        let edges = array![[0u32, 1], [0, 2], [0, 3], [0, 4]];
+        let w: Array1<f32> = array![9.0, 1.0, 5.0, 3.0];
+        let mut g = GeodesicGraph::new(edges.view(), 5, Some(&w.view()), false, None);
+        assert_eq!(g.grow(0, 3, None).0, vec![0, 2, 4]);
+
+        // Unweighted, the same graph settles the spokes in index order instead.
+        let mut hops = GeodesicGraph::new(edges.view(), 5, None, false, None);
+        assert_eq!(hops.grow(0, 3, None).0, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn grow_uses_the_true_geodesic_not_the_traversal_path() {
+        // The `geodesic_clusters` argument, restated for a count bound. On a 5-cycle seeded at
+        // 0, node 3 is 2 hops away the short way (0-4-3). A budget of 4 must therefore take
+        // 0, then {1, 4}, then one of {2, 3} — never wandering the long way round first.
+        let edges = array![[0u32, 1], [1, 2], [2, 3], [3, 4], [4, 0]];
+        let mut g = GeodesicGraph::new(edges.view(), 5, None, false, None);
+        let got = g.grow(0, 4, None).0;
+        assert_eq!(got[0], 0);
+        let mut near = got[1..3].to_vec();
+        near.sort_unstable();
+        assert_eq!(
+            near,
+            vec![1, 4],
+            "both 1-hop neighbours settle before any 2-hop one"
+        );
+    }
+
+    #[test]
+    fn forbidden_items_are_walls_so_fragments_stay_disjoint_and_connected() {
+        // Path of 12, partitioned into fragments of 4: growth from 0 can only run one way, so
+        // the walls make the fragments contiguous blocks.
+        let edges = path_graph(12);
+        let mut g = GeodesicGraph::new(edges.view(), 12, None, false, None);
+        let frags = partition(&mut g, 4);
+        assert_eq!(frags.len(), 3);
+        for (k, frag) in frags.iter().enumerate() {
+            let mut sorted = frag.clone();
+            sorted.sort_unstable();
+            let base = (k * 4) as u32;
+            assert_eq!(sorted, (base..base + 4).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn a_partition_covers_every_item_exactly_once() {
+        // Same driver on a grid mesh, where growth has real freedom to leak if the walls did
+        // not hold. The invariant that matters is exact cover.
+        let n = 144;
+        let (edges, w) = grid_graph(12, 1.0);
+        let mut g = GeodesicGraph::new(edges.view(), n, None, false, None);
+
+        for size in [1usize, 5, 17, 144, 500] {
+            let frags = partition(&mut g, size);
+            let mut seen = vec![0u32; n];
+            for frag in &frags {
+                assert!(frag.len() <= size, "a fragment never exceeds its budget");
+                for &i in frag {
+                    seen[i as usize] += 1;
+                }
+            }
+            assert!(seen.iter().all(|&c| c == 1), "size={size}: exact cover");
+            // Carving *connected* balls out of a 2D mesh inevitably strands pockets smaller
+            // than `size`, so full-size fragments are not something to assert. What must hold
+            // is that every fragment is a single connected piece — the property the walls
+            // exist to preserve, and the one that would break first if they leaked.
+            for frag in &frags {
+                assert!(
+                    is_connected(edges.view(), frag),
+                    "size={size}: fragment {frag:?} is not connected"
+                );
+            }
+        }
+        // The weighted graph is a different search; the invariant is the same.
+        let mut gw = GeodesicGraph::new(edges.view(), n, Some(&w.view()), false, None);
+        let frags = partition(&mut gw, 10);
+        let mut seen = vec![0u32; n];
+        for frag in &frags {
+            for &i in frag {
+                seen[i as usize] += 1;
+            }
+        }
+        assert!(seen.iter().all(|&c| c == 1));
+    }
+
+    #[test]
+    fn growth_cannot_leave_its_connected_component() {
+        // Two disjoint triangles. A budget larger than either component still stops at its edge.
+        let edges = array![[0u32, 1], [1, 2], [2, 0], [3, 4], [4, 5], [5, 3]];
+        let mut g = GeodesicGraph::new(edges.view(), 6, None, false, None);
+        let mut got = g.grow(0, 100, None).0;
+        got.sort_unstable();
+        assert_eq!(got, vec![0, 1, 2]);
+        let mut got = g.grow(4, 100, None).0;
+        got.sort_unstable();
+        assert_eq!(got, vec![3, 4, 5]);
+    }
+
+    #[test]
+    fn empty_nodes_conduct_so_a_sparse_cloud_stays_connected() {
+        // Path of 7 nodes carrying items only at the two ends: 0 and 1 sit on node 0, items 2
+        // and 3 on node 6. Nodes 1..5 carry nothing and must conduct, or the two ends would
+        // look like separate components to the growth.
+        let edges = path_graph(7);
+        let item_nodes = [0u32, 0, 6, 6];
+        let mut g = GeodesicGraph::new(edges.view(), 7, None, false, Some(&item_nodes));
+        assert_eq!(g.n_items(), 4);
+        assert_eq!(g.n_nodes(), 7);
+        assert_eq!(g.grow(0, 4, None).0, vec![0, 1, 2, 3]);
+        // Both items on a node arrive together, in ascending item order.
+        assert_eq!(g.grow(2, 2, None).0, vec![2, 3]);
+    }
+
+    #[test]
+    fn a_fully_claimed_node_walls_but_an_empty_one_still_conducts() {
+        // Path 0-1-2-3-4. Items: one on node 0, one on node 2, one on node 4; nodes 1 and 3
+        // are empty conduits. Claim the middle item and grow from item 0: the claimed node 2
+        // is now a wall, so item 2 (on node 4) is unreachable even though the graph is a
+        // single component.
+        let edges = path_graph(5);
+        let item_nodes = [0u32, 2, 4];
+        let mut g = GeodesicGraph::new(edges.view(), 5, None, false, Some(&item_nodes));
+        assert_eq!(
+            g.grow(0, 3, None).0,
+            vec![0, 1, 2],
+            "no walls without `forbidden`"
+        );
+
+        let claimed = [false, true, false];
+        assert_eq!(
+            g.grow(0, 3, Some(&claimed)).0,
+            vec![0],
+            "the claimed node walls growth off from everything beyond it"
+        );
+
+        // Nothing claimed on the middle node => it conducts again, claimed or not elsewhere.
+        let claimed = [false, false, true];
+        assert_eq!(g.grow(0, 3, Some(&claimed)).0, vec![0, 1]);
+    }
+
+    #[test]
+    fn the_seed_node_is_never_walled_by_its_own_claimed_neighbours() {
+        // A star with items on every node. Claim everything but the seed's own item: the seed
+        // still grows (it is the source), but every neighbour is a wall, so it gathers itself
+        // and stops.
+        let edges = array![[0u32, 1], [0, 2], [0, 3]];
+        let mut g = GeodesicGraph::new(edges.view(), 4, None, false, None);
+        let claimed = [false, true, true, true];
+        assert_eq!(g.grow(0, 4, Some(&claimed)).0, vec![0]);
+
+        // And a seed whose own item is claimed still expands rather than walling itself in —
+        // it just contributes nothing of its own.
+        let claimed = [true, false, false, false];
+        let got = g.grow(0, 4, Some(&claimed)).0;
+        let mut sorted = got.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn repeated_growth_from_one_handle_is_reproducible() {
+        // The whole point of the handle is that `Scratch` outlives the query. If `reset` left
+        // anything behind, the second call would differ from the first.
+        let (edges, w) = grid_graph(10, 1.0);
+        let mut g = GeodesicGraph::new(edges.view(), 100, Some(&w.view()), false, None);
+        let first = g.grow(44, 25, None).0;
+        for _ in 0..5 {
+            // Interleave unrelated queries: they must not perturb the repeat either.
+            g.grow(0, 60, None);
+            g.grow(99, 3, None);
+            assert_eq!(g.grow(44, 25, None).0, first);
+        }
+    }
+
+    #[test]
+    fn grow_handles_degenerate_requests() {
+        let edges = path_graph(4);
+        let mut g = GeodesicGraph::new(edges.view(), 4, None, false, None);
+        assert!(
+            g.grow(2, 0, None).0.is_empty(),
+            "a budget of zero gathers nothing"
+        );
+
+        // An isolated node with no edges at all.
+        let empty: Array2<u32> = Array2::zeros((0, 2));
+        let mut g = GeodesicGraph::new(empty.view(), 3, None, false, None);
+        assert_eq!(g.grow(1, 10, None).0, vec![1]);
+
+        // A node carrying no items is a legal graph, just an unreachable one to seed from.
+        let item_nodes = [1u32];
+        let mut g = GeodesicGraph::new(path_graph(3).view(), 3, None, false, Some(&item_nodes));
+        assert_eq!(g.n_items(), 1);
+        assert_eq!(g.grow(0, 5, None).0, vec![0]);
+    }
+
+    #[test]
+    fn identity_items_and_explicit_items_agree() {
+        // `item_nodes = [0, 1, ..., n-1]` must reproduce the default exactly — the default is
+        // only an optimisation of that case, not different semantics.
+        let (edges, w) = grid_graph(9, 1.0);
+        let ident: Vec<u32> = (0..81u32).collect();
+        let mut a = GeodesicGraph::new(edges.view(), 81, Some(&w.view()), false, None);
+        let mut b = GeodesicGraph::new(edges.view(), 81, Some(&w.view()), false, Some(&ident));
+        for seed in [0u32, 40, 80] {
+            assert_eq!(a.grow(seed, 20, None).0, b.grow(seed, 20, None).0);
+        }
+        assert_eq!(partition(&mut a, 7), partition(&mut b, 7));
+    }
+
+    #[test]
+    fn grow_agrees_with_the_distance_matrix() {
+        // Independent oracle: the region of size k must be a set of k items whose distances are
+        // the k smallest, and its order must be non-decreasing in distance.
+        let (edges, w) = grid_graph(11, 1.0);
+        let n = 121;
+        let seed = 60u32;
+        let dm = geodesic_matrix_graph(
+            edges.view(),
+            n,
+            Some(&w.view()),
+            false,
+            Some(&[seed]),
+            None,
+            None,
+            Some(1),
+        );
+        let d = |v: u32| dm[[0, v as usize]];
+
+        let mut g = GeodesicGraph::new(edges.view(), n, Some(&w.view()), false, None);
+        let region = g.grow(seed, 30, None).0;
+        assert_eq!(region.len(), 30);
+        for pair in region.windows(2) {
+            assert!(d(pair[0]) <= d(pair[1]), "settle order is distance order");
+        }
+        // Nothing outside the region is closer than the farthest item inside it.
+        let radius = d(*region.last().unwrap());
+        let inside: std::collections::HashSet<u32> = region.iter().copied().collect();
+        for v in 0..n as u32 {
+            if !inside.contains(&v) {
+                assert!(
+                    d(v) >= radius,
+                    "node {v} at {} is nearer than the ball edge {radius}",
+                    d(v)
+                );
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // GeodesicGraph::farthest_seed
+    // -----------------------------------------------------------------------
+
+    /// Brute-force farthest-point seed: for each undone item, the distance to its nearest
+    /// done item; take the largest. Deliberately recomputed from the full distance matrix
+    /// every call, so it shares nothing with the incremental machinery under test.
+    fn brute_seed(
+        edges: &Array2<u32>,
+        n_nodes: usize,
+        w: Option<&Array1<f32>>,
+        item_node: &[u32],
+        done: &[bool],
+    ) -> Option<u32> {
+        let dm = geodesic_matrix_graph(
+            edges.view(),
+            n_nodes,
+            w.map(|w| w.view()).as_ref(),
+            false,
+            None,
+            None,
+            None,
+            Some(1),
+        );
+        let sources: Vec<u32> = done
+            .iter()
+            .enumerate()
+            .filter(|(_, &d)| d)
+            .map(|(i, _)| item_node[i])
+            .collect();
+
+        let mut best: Option<(u32, f32)> = None;
+        if !sources.is_empty() {
+            for (i, &d) in done.iter().enumerate() {
+                if d {
+                    continue;
+                }
+                // -1.0 is the unreachable sentinel; such a pair contributes nothing.
+                let near = sources
+                    .iter()
+                    .map(|&s| dm[[s as usize, item_node[i] as usize]])
+                    .filter(|&x| x >= 0.0)
+                    .fold(f32::INFINITY, f32::min);
+                if near.is_finite() && best.is_none_or(|(_, b)| near > b) {
+                    best = Some((i as u32, near));
+                }
+            }
+        }
+        if let Some((i, _)) = best {
+            return Some(i);
+        }
+        // Fallback: lowest-index undone item of the component with the most undone items.
+        let comp = connected_components_graph(edges.view(), n_nodes);
+        let mut counts = vec![0u32; n_nodes];
+        for (i, &d) in done.iter().enumerate() {
+            if !d {
+                counts[comp[item_node[i] as usize] as usize] += 1;
+            }
+        }
+        let best_label = (0..n_nodes).filter(|&l| counts[l] > 0).max_by_key(|&l| {
+            // ties -> lowest label, so invert the index in the key
+            (counts[l], std::cmp::Reverse(l))
+        })?;
+        done.iter().enumerate().find_map(|(i, &d)| {
+            (!d && comp[item_node[i] as usize] as usize == best_label).then_some(i as u32)
+        })
+    }
+
+    #[test]
+    fn farthest_seed_spreads_over_a_path() {
+        // Path 0-1-...-8, seeded at 0. FPS should take the far end, then bisect repeatedly.
+        let edges = path_graph(9);
+        let mut g = GeodesicGraph::new(edges.view(), 9, None, false, None);
+        let mut done = vec![false; 9];
+        done[0] = true;
+        let mut picks = Vec::new();
+        for _ in 0..4 {
+            let s = g.farthest_seed(&done).unwrap();
+            picks.push(s);
+            done[s as usize] = true;
+        }
+        assert_eq!(picks, vec![8, 4, 2, 6]);
+    }
+
+    #[test]
+    fn farthest_seed_matches_brute_force_throughout_a_run() {
+        // The property that matters: every seed of a long incremental run agrees with a
+        // reference that recomputes from the full distance matrix each time.
+        let n = 121;
+        let (edges, w) = grid_graph(11, 1.0);
+        for weights in [None, Some(&w)] {
+            let mut g = GeodesicGraph::new(
+                edges.view(),
+                n,
+                weights.map(|w| w.view()).as_ref(),
+                false,
+                None,
+            );
+            let mut done = vec![false; n];
+            for step in 0..40 {
+                let mine = g.farthest_seed(&done);
+                let theirs = brute_seed(&edges, n, weights, &g.item_node.clone(), &done);
+                assert_eq!(mine, theirs, "step {step}, weighted={}", weights.is_some());
+                done[mine.unwrap() as usize] = true;
+            }
+        }
+    }
+
+    #[test]
+    fn farthest_seed_matches_brute_force_with_items() {
+        // Many items per node, and nodes with none — the cloud case.
+        let n = 81;
+        let (edges, w) = grid_graph(9, 1.0);
+        let item_nodes: Vec<u32> = (0..120u32).map(|i| (i * 7) % 81).collect();
+        let mut g = GeodesicGraph::new(edges.view(), n, Some(&w.view()), false, Some(&item_nodes));
+        let mut done = vec![false; 120];
+        for step in 0..30 {
+            let mine = g.farthest_seed(&done);
+            let theirs = brute_seed(&edges, n, Some(&w), &item_nodes, &done);
+            assert_eq!(mine, theirs, "step {step}");
+            done[mine.unwrap() as usize] = true;
+        }
+    }
+
+    #[test]
+    fn farthest_seed_folds_batches_the_same_as_one_at_a_time() {
+        // `_cover`-style usage marks a whole region done per call rather than a single item.
+        // Folding a batch must land on the same field as folding its members separately.
+        let n = 121;
+        let (edges, w) = grid_graph(11, 1.0);
+        let mut batched = GeodesicGraph::new(edges.view(), n, Some(&w.view()), false, None);
+        let mut done = vec![false; n];
+
+        for _ in 0..8 {
+            let s = batched.farthest_seed(&done).unwrap();
+            // Mark a whole grown region, not just the seed.
+            for &i in &batched.grow(s, 9, None).0 {
+                done[i as usize] = true;
+            }
+            // A graph that has never seen an intermediate state must agree.
+            let mut fresh = GeodesicGraph::new(edges.view(), n, Some(&w.view()), false, None);
+            assert_eq!(
+                batched.farthest_seed(&done),
+                fresh.farthest_seed(&done),
+                "incremental folding must match a cold start"
+            );
+        }
+    }
+
+    #[test]
+    fn farthest_seed_prefers_the_reachable_frontier_then_the_largest_component() {
+        // A 6-node path, plus a 3-node island and a lone node. Seeded inside the path, FPS
+        // must exhaust the path before touching either disconnected piece, then take the
+        // *larger* piece first — a mesh full of specks is the reason this rule exists.
+        let mut rows: Vec<u32> = (0..5u32).flat_map(|i| [i, i + 1]).collect();
+        rows.extend_from_slice(&[6, 7, 7, 8]); // island 6-7-8; node 9 is alone
+        let edges = Array2::from_shape_vec((rows.len() / 2, 2), rows).unwrap();
+        let mut g = GeodesicGraph::new(edges.view(), 10, None, false, None);
+
+        let mut done = vec![false; 10];
+        done[0] = true;
+        let mut order = Vec::new();
+        for _ in 0..9 {
+            let s = g.farthest_seed(&done).unwrap();
+            order.push(s);
+            done[s as usize] = true;
+        }
+        assert_eq!(
+            &order[..5],
+            &[5, 2, 1, 3, 4],
+            "the reachable path goes first"
+        );
+        assert_eq!(&order[5..8], &[6, 8, 7], "then the larger island");
+        assert_eq!(order[8], 9, "the lone node last");
+        assert_eq!(g.farthest_seed(&done), None, "nothing left to seed");
+    }
+
+    #[test]
+    fn farthest_seed_is_a_pure_function_of_done() {
+        // The selection heap must not consume its winner: asking twice without marking
+        // anything has to give the same answer twice. A pop-based selection would quietly
+        // return the *second*-farthest on the repeat.
+        let n = 121;
+        let (edges, w) = grid_graph(11, 1.0);
+        let mut g = GeodesicGraph::new(edges.view(), n, Some(&w.view()), false, None);
+        let mut done = vec![false; n];
+        done[0] = true;
+        for _ in 0..15 {
+            let s = g.farthest_seed(&done).unwrap();
+            for _ in 0..3 {
+                assert_eq!(g.farthest_seed(&done), Some(s), "repeat must not drift");
+            }
+            done[s as usize] = true;
+        }
+    }
+
+    #[test]
+    fn farthest_seed_enrols_every_item_of_a_node_it_reaches() {
+        // A node carrying several items becomes reachable in one step; all of its items must
+        // enter the candidate pool, not just the first. Path 0-1-2 with three items piled on
+        // node 2 and one on node 0.
+        let edges = path_graph(3);
+        let item_nodes = [0u32, 2, 2, 2];
+        let mut g = GeodesicGraph::new(edges.view(), 3, None, false, Some(&item_nodes));
+        let mut done = vec![false, false, false, false];
+        done[0] = true;
+        // All three items on node 2 are equally far; they come out in index order and every
+        // one of them must be offered before the pool runs dry.
+        let mut picks = Vec::new();
+        for _ in 0..3 {
+            let s = g.farthest_seed(&done).unwrap();
+            picks.push(s);
+            done[s as usize] = true;
+        }
+        assert_eq!(picks, vec![1, 2, 3]);
+        assert_eq!(g.farthest_seed(&done), None);
+    }
+
+    #[test]
+    fn farthest_seed_with_nothing_done_starts_on_the_largest_component() {
+        // Small component first in index order, larger one after: the larger must win.
+        let edges = array![[0u32, 1], [2, 3], [3, 4], [4, 5]];
+        let mut g = GeodesicGraph::new(edges.view(), 6, None, false, None);
+        assert_eq!(g.farthest_seed(&[false; 6]), Some(2));
+    }
+
+    #[test]
+    fn farthest_seed_rebuilds_when_done_shrinks() {
+        // The incremental field assumes `done` only grows. If it shrinks the field is stale
+        // and cannot be un-folded, so the answer must come from a rebuild — not from
+        // whatever the stale field happened to hold.
+        let n = 81;
+        let (edges, w) = grid_graph(9, 1.0);
+        let mut g = GeodesicGraph::new(edges.view(), n, Some(&w.view()), false, None);
+
+        let mut done = vec![false; n];
+        for &i in &[0usize, 8, 40, 72, 80] {
+            done[i] = true;
+            g.farthest_seed(&done);
+        }
+        // Now clear almost everything and ask again.
+        let mut shrunk = vec![false; n];
+        shrunk[40] = true;
+        let mut fresh = GeodesicGraph::new(edges.view(), n, Some(&w.view()), false, None);
+        assert_eq!(g.farthest_seed(&shrunk), fresh.farthest_seed(&shrunk));
+        assert_eq!(
+            g.farthest_seed(&shrunk),
+            brute_seed(
+                &edges,
+                n,
+                Some(&w),
+                &(0..n as u32).collect::<Vec<_>>(),
+                &shrunk
+            )
+        );
+    }
+
+    #[test]
+    fn farthest_seed_handles_saturated_and_degenerate_input() {
+        let edges = path_graph(4);
+        let mut g = GeodesicGraph::new(edges.view(), 4, None, false, None);
+        assert_eq!(g.farthest_seed(&[true; 4]), None);
+
+        // Several done items on one node: the node is a single source, not several.
+        let item_nodes = [0u32, 0, 3];
+        let mut g = GeodesicGraph::new(edges.view(), 4, None, false, Some(&item_nodes));
+        assert_eq!(g.farthest_seed(&[true, true, false]), Some(2));
+        // An item sharing a node with a done one is at distance zero — the worst candidate.
+        assert_eq!(g.farthest_seed(&[true, false, false]), Some(2));
+    }
+
+    // -----------------------------------------------------------------------
+    // GeodesicGraph: the mirrored free functions, and `subset`
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn methods_agree_with_the_free_functions_they_mirror() {
+        // The contract of the whole handle: keeping the adjacency changes the cost, never the
+        // answer. Anything else and callers could not migrate off the free functions.
+        let n = 121;
+        let (edges, w) = grid_graph(11, 1.0);
+        let wv = w.view();
+        let mut g = GeodesicGraph::new(edges.view(), n, Some(&wv), false, None);
+
+        let srcs = [0u32, 60, 120];
+        let tgts = [7u32, 55, 99];
+        assert_eq!(
+            g.distances(Some(&srcs), Some(&tgts), None, Some(1)),
+            geodesic_matrix_graph(
+                edges.view(),
+                n,
+                Some(&wv),
+                false,
+                Some(&srcs),
+                Some(&tgts),
+                None,
+                Some(1)
+            )
+        );
+        assert_eq!(
+            g.nearest(Some(&srcs), Some(&tgts), None, Some(1)),
+            geodesic_nearest_mesh_like(&edges, n, &wv, &srcs, &tgts, false)
+        );
+        assert_eq!(
+            g.farthest(Some(&srcs), Some(&tgts), None, Some(1)),
+            geodesic_nearest_mesh_like(&edges, n, &wv, &srcs, &tgts, true)
+        );
+        assert_eq!(
+            g.predecessors(Some(&srcs), None, Some(1)),
+            geodesic_predecessors_graph(
+                edges.view(),
+                n,
+                Some(&wv),
+                false,
+                Some(&srcs),
+                None,
+                Some(1)
+            )
+        );
+        assert_eq!(
+            g.path(0, &tgts),
+            geodesic_path_graph(edges.view(), n, Some(&wv), false, 0, &tgts)
+        );
+        assert_eq!(
+            g.clusters(2.5, Some(&srcs)),
+            geodesic_clusters(edges.view(), n, 2.5, Some(&wv), Some(&srcs))
+        );
+        assert_eq!(g.components(), connected_components_graph(edges.view(), n));
+
+        // Unweighted too — that is the BFS kernel rather than Dijkstra.
+        let g = GeodesicGraph::new(edges.view(), n, None, false, None);
+        assert_eq!(
+            g.distances(Some(&srcs), None, Some(3.0), Some(1)),
+            geodesic_matrix_graph(
+                edges.view(),
+                n,
+                None,
+                false,
+                Some(&srcs),
+                None,
+                Some(3.0),
+                Some(1)
+            )
+        );
+        assert_eq!(
+            g.clusters(2.0, None),
+            geodesic_clusters(edges.view(), n, 2.0, None, None)
+        );
+    }
+
+    /// `geodesic_nearest_mesh`/`geodesic_farthest_mesh` take faces; this is the same call over
+    /// an edge list, so the graph handle has something to be compared against.
+    fn geodesic_nearest_mesh_like(
+        edges: &Array2<u32>,
+        n: usize,
+        w: &ArrayView1<f32>,
+        sources: &[u32],
+        targets: &[u32],
+        farthest: bool,
+    ) -> (Array1<f32>, Array1<i32>) {
+        let adj = Adjacency::from_edges(edges.view(), n, Some(w), false);
+        geodesic_extreme_impl(&adj, Some(sources), Some(targets), None, Some(1), farthest)
+    }
+
+    #[test]
+    fn a_directed_handle_follows_arc_direction() {
+        // A one-way chain 0->1->2->3. Downstream is reachable, upstream is not.
+        let edges = array![[0u32, 1], [1, 2], [2, 3]];
+        let mut g = GeodesicGraph::new(edges.view(), 4, None, true, None);
+        assert_eq!(g.grow(0, 10, None).0, vec![0, 1, 2, 3]);
+        assert_eq!(
+            g.grow(3, 10, None).0,
+            vec![3],
+            "nothing is downstream of the end"
+        );
+        let d = g.distances(Some(&[0]), None, None, Some(1));
+        assert_eq!(d.row(0).to_vec(), vec![0.0, 1.0, 2.0, 3.0]);
+        let d = g.distances(Some(&[3]), None, None, Some(1));
+        assert_eq!(d.row(0).to_vec(), vec![-1.0, -1.0, -1.0, 0.0]);
+        // Components stay *weakly* connected: the chain is one piece either way.
+        assert_eq!(g.components(), vec![0, 0, 0, 0]);
+
+        // And the undirected handle over the same edges sees it all both ways.
+        let mut u = GeodesicGraph::new(edges.view(), 4, None, false, None);
+        assert_eq!(u.grow(3, 10, None).0, vec![3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn subset_is_indistinguishable_from_a_graph_built_from_the_surviving_edges() {
+        // The property that makes `subset` safe: not merely "same distances", but the same
+        // object down to neighbour order, so every tie-break and therefore every result agrees.
+        let n = 81;
+        let (edges, w) = grid_graph(9, 1.0);
+        let wv = w.view();
+        let g = GeodesicGraph::new(edges.view(), n, Some(&wv), false, None);
+
+        // Keep the middle block of the grid, in a deliberately jumbled order.
+        let mut keep: Vec<u32> = (0..81u32)
+            .filter(|v| (2..7).contains(&(v / 9)) && (2..7).contains(&(v % 9)))
+            .collect();
+        keep.swap(0, 7);
+        keep.swap(3, 19);
+        let (mut sub, kept_items) = g.subset(&keep);
+        assert_eq!(sub.n_nodes(), keep.len());
+        assert_eq!(
+            kept_items, keep,
+            "with no items attached, item i must still be node i"
+        );
+        assert_eq!(sub.item_nodes(), (0..keep.len() as u32).collect::<Vec<_>>());
+
+        // Rebuild the same subgraph the long way round, from a filtered edge list.
+        let mut new_id = vec![u32::MAX; n];
+        for (i, &v) in keep.iter().enumerate() {
+            new_id[v as usize] = i as u32;
+        }
+        let mut rows: Vec<u32> = Vec::new();
+        let mut rw: Vec<f32> = Vec::new();
+        for (e, &wt) in edges.rows().into_iter().zip(w.iter()) {
+            let (a, b) = (new_id[e[0] as usize], new_id[e[1] as usize]);
+            if a != u32::MAX && b != u32::MAX {
+                rows.extend_from_slice(&[a, b]);
+                rw.push(wt);
+            }
+        }
+        let re = Array2::from_shape_vec((rows.len() / 2, 2), rows).unwrap();
+        let rwa = Array1::from(rw);
+        let mut fresh = GeodesicGraph::new(re.view(), keep.len(), Some(&rwa.view()), false, None);
+
+        assert_eq!(
+            sub.distances(None, None, None, Some(1)),
+            fresh.distances(None, None, None, Some(1))
+        );
+        assert_eq!(sub.components(), fresh.components());
+        assert_eq!(sub.clusters(2.0, None), fresh.clusters(2.0, None));
+        for seed in [0u32, 5, 12] {
+            assert_eq!(sub.grow(seed, 9, None).0, fresh.grow(seed, 9, None).0);
+            assert_eq!(sub.path(seed, &[1, 20]), fresh.path(seed, &[1, 20]));
+        }
+    }
+
+    #[test]
+    fn subset_distances_match_the_parent_where_the_subgraph_is_the_whole_route() {
+        // A subset only agrees with its parent where no shortest path left the subset. Taking a
+        // whole connected component guarantees that, which is the common use.
+        let edges = array![[0u32, 1], [1, 2], [2, 0], [3, 4], [4, 5]];
+        let wv = array![1.0f32, 2.0, 4.0, 1.0, 1.0];
+        let g = GeodesicGraph::new(edges.view(), 6, Some(&wv.view()), false, None);
+        let (sub, kept) = g.subset(&[3, 4, 5]);
+        assert_eq!(kept, vec![3, 4, 5]);
+        let parent = g.distances(Some(&[3, 4, 5]), Some(&[3, 4, 5]), None, Some(1));
+        assert_eq!(sub.distances(None, None, None, Some(1)), parent);
+    }
+
+    #[test]
+    fn subset_carries_items_and_drops_those_whose_node_is_gone() {
+        // Path 0-1-2-3 with items on nodes 0, 0, 2, 3. Keeping nodes {2, 0} must keep items
+        // 0, 1 and 2, renumber them 0..2, and report their original indices.
+        let edges = path_graph(4);
+        let item_nodes = [0u32, 0, 2, 3];
+        let g = GeodesicGraph::new(edges.view(), 4, None, false, Some(&item_nodes));
+        let (mut sub, kept) = g.subset(&[2, 0]);
+        // Items come out grouped by new node: node 0 (old 2) carries item 2, then node 1
+        // (old 0) carries items 0 and 1. Item 3 rode on the dropped node 3 and is gone.
+        assert_eq!(kept, vec![2, 0, 1]);
+        assert_eq!(sub.n_items(), 3);
+        assert_eq!(sub.n_nodes(), 2);
+        assert_eq!(sub.item_nodes(), &[0, 1, 1]);
+        // Old nodes 2 and 0 are not adjacent, so the induced subgraph has no edges at all and
+        // growth cannot leave the node it starts on.
+        assert_eq!(sub.components(), vec![0, 1]);
+        assert_eq!(sub.grow(0, 5, None).0, vec![0]);
+        assert_eq!(
+            sub.grow(1, 5, None).0,
+            vec![1, 2],
+            "both items of new node 1"
+        );
+    }
+
+    #[test]
+    fn subset_rejects_repeats_and_out_of_range_nodes() {
+        let g = GeodesicGraph::new(path_graph(4).view(), 4, None, false, None);
+        assert!(std::panic::catch_unwind(|| g.subset(&[0, 1, 1])).is_err());
+        assert!(std::panic::catch_unwind(|| g.subset(&[0, 9])).is_err());
+        // The empty subset is legal, just empty.
+        let (sub, kept) = g.subset(&[]);
+        assert_eq!((sub.n_nodes(), sub.n_items(), kept.len()), (0, 0, 0));
+    }
+
+    #[test]
+    fn item_components_label_by_lowest_node_index() {
+        let edges = array![[1u32, 2], [4, 5]];
+        let mut g = GeodesicGraph::new(edges.view(), 6, None, false, None);
+        assert_eq!(g.item_components(), vec![0, 1, 1, 3, 4, 4]);
+        // Matches the free function's labelling, which callers may already rely on.
+        assert_eq!(
+            g.item_components(),
+            connected_components_graph(edges.view(), 6)
+        );
+
+        // With items attached, each item takes its node's label.
+        let item_nodes = [5u32, 0, 2];
+        let mut g = GeodesicGraph::new(edges.view(), 6, None, false, Some(&item_nodes));
+        assert_eq!(g.item_components(), vec![4, 0, 1]);
     }
 }

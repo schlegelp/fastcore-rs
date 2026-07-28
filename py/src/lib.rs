@@ -170,6 +170,9 @@ mod fastcore {
     use super::geodesic_clusters_py;
 
     #[pymodule_export]
+    use super::PyGeodesicGraph;
+
+    #[pymodule_export]
     use super::dotprops_py;
 
     #[pymodule_export]

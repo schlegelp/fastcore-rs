@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from scipy.sparse import csr_matrix
-from scipy.sparse.csgraph import dijkstra
+from scipy.sparse.csgraph import connected_components, dijkstra
 
 import navis_fastcore as fastcore
 
@@ -1005,3 +1005,1106 @@ def test_geodesic_clusters_validation():
         fastcore.geodesic_clusters(edges, 2, np.inf)
     with pytest.raises(ValueError):
         fastcore.geodesic_clusters(edges, 2, 1, weights=[1.0, 2.0])
+
+
+# -----------------------------------------------------------------------------
+# GeodesicGraph
+# -----------------------------------------------------------------------------
+#
+# The oracle here is navis' own pure-Python implementation (`navis.ml.chunk`'s
+# `_Geodesic.grow` / `_ConnectedCloud.grow`), ported verbatim below. `GeodesicGraph.grow`
+# exists to replace it, so "produces the same fragments" is the property that matters.
+
+
+def _navis_grow(indptr, indices, data, seed, size, forbidden=None):
+    """Verbatim port of `navis.ml.chunk._Geodesic.grow`."""
+    import heapq
+
+    region, dists, settled = [], [], set()
+    heap = [(0.0, int(seed))]
+    while heap and len(region) < size:
+        d, u = heapq.heappop(heap)
+        if u in settled:
+            continue
+        settled.add(u)
+        region.append(u)
+        dists.append(d)
+        for j in range(indptr[u], indptr[u + 1]):
+            v = int(indices[j])
+            if v in settled:
+                continue
+            if forbidden is not None and forbidden[v]:
+                continue
+            heapq.heappush(heap, (d + float(data[j]), v))
+    return np.array(region, dtype=np.int64), np.array(dists, dtype=float)
+
+
+def _navis_grow_cloud(indptr, indices, data, by_vtx, svtx, seed, size, forbidden=None):
+    """Verbatim port of `navis.ml.chunk._ConnectedCloud.grow`."""
+    import heapq
+
+    settled, got, gdist = set(), [], []
+    heap = [(0.0, int(svtx[seed]))]
+    while heap and len(got) < size:
+        d, u = heapq.heappop(heap)
+        if u in settled:
+            continue
+        settled.add(u)
+        for s in by_vtx.get(u, ()):
+            if forbidden is None or not forbidden[s]:
+                got.append(s)
+                gdist.append(d)
+        for j in range(indptr[u], indptr[u + 1]):
+            v = int(indices[j])
+            if v in settled:
+                continue
+            if forbidden is not None:
+                sv = by_vtx.get(v)
+                if sv is not None and all(forbidden[s] for s in sv):
+                    continue
+            heapq.heappush(heap, (d + float(data[j]), v))
+    return (np.array(got[:size], dtype=np.int64),
+            np.array(gdist[:size], dtype=float))
+
+
+def _csr_parts(edges, n_nodes, weights):
+    """The symmetric CSR the navis reference walks, matching `_build_csr`."""
+    m = as_csr(edges, n_nodes, weights)
+    return m.indptr, m.indices, m.data
+
+
+def _partition(grow, n_items, size):
+    """The `_partition` driver: seed at the first unclaimed item, grow, mark, repeat."""
+    claimed = np.zeros(n_items, dtype=bool)
+    frags = []
+    while not claimed.all():
+        seed = int(np.argmax(~claimed))
+        frag = np.asarray(grow(seed, size, claimed))
+        assert len(frag), "growth from an unclaimed seed cannot be empty"
+        claimed[frag] = True
+        frags.append(frag)
+    return frags
+
+
+def test_grow_matches_navis_geodesic_reference():
+    # Random weights, so no two paths tie and float32-vs-float64 accumulation cannot
+    # reorder anything: the fragments must agree item for item, in order.
+    n = 200
+    edges = random_graph(n_nodes=n, n_edges=900, seed=3)
+    rng = np.random.default_rng(3)
+    w = rng.random(len(edges)).astype(np.float32)
+    indptr, indices, data = _csr_parts(edges, n, w)
+
+    g = fastcore.GeodesicGraph(edges, n, weights=w)
+    assert (g.n_nodes, g.n_items) == (n, n)
+
+    for size in (1, 5, 40, 200, 1000):
+        for seed in (0, 17, 111, n - 1):
+            np.testing.assert_array_equal(
+                g.grow(seed, size),
+                _navis_grow(indptr, indices, data, seed, size)[0],
+                err_msg=f"seed={seed} size={size}",
+            )
+
+    # And through a full partition, where `forbidden` grows between calls.
+    for size in (3, 25, 60):
+        mine = _partition(lambda s, k, f: g.grow(s, k, forbidden=f), n, size)
+        theirs = _partition(
+            lambda s, k, f: _navis_grow(indptr, indices, data, s, k, f)[0], n, size
+        )
+        assert len(mine) == len(theirs)
+        for a, b in zip(mine, theirs):
+            np.testing.assert_array_equal(a, b, err_msg=f"size={size}")
+
+
+def test_grow_matches_navis_connected_cloud_reference():
+    # Same, for the cloud backend: many items per node, and plenty of nodes with none.
+    n = 200
+    edges = random_graph(n_nodes=n, n_edges=900, seed=5)
+    rng = np.random.default_rng(5)
+    w = rng.random(len(edges)).astype(np.float32)
+    indptr, indices, data = _csr_parts(edges, n, w)
+
+    # ~350 items over 200 nodes, unevenly: some nodes carry several, many carry none.
+    item_nodes = np.sort(rng.integers(0, n, size=350)).astype(np.uint32)
+    by_vtx = {}
+    for i, v in enumerate(item_nodes):
+        by_vtx.setdefault(int(v), []).append(i)
+    assert len(by_vtx) < n, "the test is only meaningful if some nodes are empty"
+
+    g = fastcore.GeodesicGraph(edges, n, weights=w, item_nodes=item_nodes)
+    assert (g.n_nodes, g.n_items) == (n, 350)
+
+    for size in (1, 8, 64, 350, 1000):
+        for seed in (0, 42, 200, 349):
+            np.testing.assert_array_equal(
+                g.grow(seed, size),
+                _navis_grow_cloud(indptr, indices, data, by_vtx, item_nodes, seed, size)[0],
+                err_msg=f"seed={seed} size={size}",
+            )
+
+    for size in (4, 32, 90):
+        mine = _partition(lambda s, k, f: g.grow(s, k, forbidden=f), 350, size)
+        theirs = _partition(
+            lambda s, k, f: _navis_grow_cloud(
+                indptr, indices, data, by_vtx, item_nodes, s, k, f
+            )[0],
+            350,
+            size,
+        )
+        assert len(mine) == len(theirs)
+        for a, b in zip(mine, theirs):
+            np.testing.assert_array_equal(a, b, err_msg=f"size={size}")
+
+
+def test_grow_is_a_ball_in_increasing_distance_order():
+    # Independent oracle: scipy's distances from the seed. The region must be `size`
+    # items ordered by distance, with nothing outside it closer than its edge.
+    n = 200
+    edges = random_graph(n_nodes=n, n_edges=800, seed=11)
+    rng = np.random.default_rng(11)
+    w = rng.random(len(edges)).astype(np.float32)
+    d = dijkstra(as_csr(edges, n, w), directed=False, indices=[7])[0]
+
+    g = fastcore.GeodesicGraph(edges, n, weights=w)
+    region = g.grow(7, 50)
+    assert len(region) == 50
+    assert region[0] == 7
+    assert np.all(np.diff(d[region]) >= -1e-6), "settle order is distance order"
+    outside = np.setdiff1d(np.arange(n), region)
+    assert d[outside].min() >= d[region].max() - 1e-6
+
+
+def test_grow_partition_is_an_exact_cover_of_connected_fragments():
+    faces, verts = grid_mesh(12)
+    n = len(verts)
+    edges, lengths = fastcore.unique_edges(faces, verts)
+    edges = edges.astype(np.uint32)
+
+    for weights in (None, lengths.astype(np.float32)):
+        g = fastcore.GeodesicGraph(edges, n, weights=weights)
+        for size in (1, 7, 33, 144, 500):
+            frags = _partition(lambda s, k, f: g.grow(s, k, forbidden=f), n, size)
+            seen = np.zeros(n, dtype=int)
+            for frag in frags:
+                assert len(frag) <= size
+                seen[frag] += 1
+            assert np.all(seen == 1), f"size={size}: exact cover"
+
+            # Every fragment is a single connected piece — the property the walls exist
+            # to preserve. Checked with scipy, not with fastcore.
+            for frag in frags:
+                sub = as_csr(edges, n, weights)[np.ix_(frag, frag)]
+                from scipy.sparse.csgraph import connected_components
+
+                assert connected_components(sub, directed=False)[0] == 1
+
+
+def test_grow_walls_and_conduits():
+    # Path 0-1-2-3-4 with items only on nodes 0, 2 and 4: the odd nodes are conduits.
+    edges = np.array([[i, i + 1] for i in range(4)], dtype=np.uint32)
+    g = fastcore.GeodesicGraph(edges, 5, item_nodes=[0, 2, 4])
+
+    # Empty nodes conduct, so all three items are one connected region.
+    np.testing.assert_array_equal(g.grow(0, 3), [0, 1, 2])
+
+    # Claiming the middle item walls its node off: item 2 is now unreachable.
+    np.testing.assert_array_equal(
+        g.grow(0, 3, forbidden=np.array([False, True, False])), [0]
+    )
+    # Claiming an item beyond it changes nothing about the conduit in between.
+    np.testing.assert_array_equal(
+        g.grow(0, 3, forbidden=np.array([False, False, True])), [0, 1]
+    )
+    # Without `forbidden` there are no walls at all.
+    np.testing.assert_array_equal(g.grow(0, 3, forbidden=None), [0, 1, 2])
+
+
+def test_grow_stays_within_its_connected_component():
+    edges = np.array([[0, 1], [1, 2], [2, 0], [3, 4], [4, 5], [5, 3]], dtype=np.uint32)
+    g = fastcore.GeodesicGraph(edges, 6)
+    assert sorted(g.grow(0, 100).tolist()) == [0, 1, 2]
+    assert sorted(g.grow(4, 100).tolist()) == [3, 4, 5]
+
+
+def test_grow_repeated_queries_are_reproducible():
+    # The scratch space outlives the query; if `reset` left anything behind, an
+    # interleaved query would perturb the repeat.
+    n = 150
+    edges = random_graph(n_nodes=n, n_edges=600, seed=23)
+    rng = np.random.default_rng(23)
+    w = rng.random(len(edges)).astype(np.float32)
+    g = fastcore.GeodesicGraph(edges, n, weights=w)
+
+    first = g.grow(5, 40)
+    for _ in range(5):
+        g.grow(0, n)
+        g.grow(n - 1, 3)
+        np.testing.assert_array_equal(g.grow(5, 40), first)
+
+
+def test_grow_degenerate_requests():
+    edges = np.array([[0, 1], [1, 2], [2, 3]], dtype=np.uint32)
+    g = fastcore.GeodesicGraph(edges, 4)
+    assert len(g.grow(2, 0)) == 0
+    assert g.grow(2, 1).tolist() == [2]
+
+    # No edges at all: every node is its own component.
+    g = fastcore.GeodesicGraph(np.zeros((0, 2), dtype=np.uint32), 3)
+    assert g.grow(1, 10).tolist() == [1]
+
+    # A graph whose nodes mostly carry nothing.
+    g = fastcore.GeodesicGraph(edges, 4, item_nodes=[1])
+    assert g.n_items == 1
+    assert g.grow(0, 5).tolist() == [0]
+
+
+def test_grow_accepts_a_non_contiguous_or_non_bool_mask():
+    edges = np.array([[i, i + 1] for i in range(5)], dtype=np.uint32)
+    g = fastcore.GeodesicGraph(edges, 6)
+    # A strided view and a plain list must both work, matching the bool array.
+    ref = g.grow(0, 3, forbidden=np.array([False, False, True, False, False, False]))
+    strided = np.zeros(12, dtype=bool)
+    strided[4] = True  # element 2 of the ::2 view
+    np.testing.assert_array_equal(g.grow(0, 3, forbidden=strided[::2]), ref)
+    np.testing.assert_array_equal(g.grow(0, 3, forbidden=[0, 0, 1, 0, 0, 0]), ref)
+
+
+def test_geodesic_graph_validation():
+    edges = np.array([[0, 1], [1, 2]], dtype=np.uint32)
+    with pytest.raises(ValueError):
+        fastcore.GeodesicGraph(edges, 2)  # edge references node 2
+    with pytest.raises(ValueError):
+        fastcore.GeodesicGraph(edges, 3, weights=[1.0])  # one weight per edge
+
+    g = fastcore.GeodesicGraph(edges, 3)
+    with pytest.raises(ValueError):
+        g.grow(3, 2)  # seed out of range
+    with pytest.raises(ValueError):
+        g.grow(0, 2, forbidden=np.zeros(2, dtype=bool))  # wrong mask length
+
+
+def test_grow_is_an_exact_ball_on_a_tie_rich_graph():
+    """Ties may reorder, but the region is still exactly the right set.
+
+    fastcore searches in float32 where the navis reference uses float64. On a graph
+    whose edge lengths tie in float32 - a symmetric mesh is full of them - the two can
+    settle equally-distant nodes in a different order, so the *sequences* diverge even
+    though both are correct. What must not drift is the ball property itself: nothing
+    outside the region may be nearer than the farthest node inside it, measured against
+    a float64 oracle.
+    """
+    faces, verts = grid_mesh(20)
+    n = len(verts)
+    edges, lengths = fastcore.unique_edges(faces, verts)
+    edges = edges.astype(np.uint32)
+    assert len(np.unique(lengths.astype(np.float32))) < len(lengths), "ties expected"
+
+    g = fastcore.GeodesicGraph(edges, n, weights=lengths.astype(np.float32))
+    m = as_csr(edges, n, lengths)
+    for seed in (0, 210, n - 1):
+        d = dijkstra(m, directed=False, indices=[seed])[0]
+        for size in (16, 64, 200):
+            region = g.grow(seed, size)
+            assert len(region) == size and region[0] == seed
+            assert np.all(np.diff(d[region]) >= -1e-5), "settle order is distance order"
+            outside = np.setdiff1d(np.arange(n), region)
+            assert d[region].max() <= d[outside].min() + 1e-5, (
+                f"seed={seed} size={size}: region is not a ball"
+            )
+
+
+# -----------------------------------------------------------------------------
+# GeodesicGraph.farthest_seed
+# -----------------------------------------------------------------------------
+
+
+class _NavisSeeder:
+    """Verbatim port of `navis.ml.chunk._Geodesic`'s FPS seeding.
+
+    Keeps its own incremental `_fps_min` exactly as navis does - an unpruned multi-source
+    Dijkstra over the *whole* graph per fold, which is the cost `farthest_seed` removes.
+    """
+
+    def __init__(self, csr):
+        self.csr = csr
+        self.n_comp, self.labels = connected_components(csr, directed=False)
+        self._fps_min = None
+        self._fps_seen = None
+
+    def seed(self, done):
+        if done.any():
+            self._fps_fold(done)
+            reachable = np.isfinite(self._fps_min) & ~done
+            if reachable.any():
+                return int(np.argmax(np.where(reachable, self._fps_min, -np.inf)))
+        return self._largest_unset(done)
+
+    def _fps_fold(self, done):
+        if self._fps_min is None:
+            self._fps_min = np.full(done.shape[0], np.inf)
+            self._fps_seen = np.zeros(done.shape[0], dtype=bool)
+        new = done & ~self._fps_seen
+        if new.any():
+            d = dijkstra(
+                self.csr, directed=False, indices=np.where(new)[0], min_only=True
+            )
+            np.minimum(self._fps_min, d, out=self._fps_min)
+            self._fps_seen |= done
+
+    def _largest_unset(self, done):
+        unset = ~done
+        counts = np.bincount(self.labels[unset], minlength=self.n_comp)
+        best = int(np.argmax(counts))
+        return int(np.flatnonzero(unset & (self.labels == best))[0])
+
+
+def test_farthest_seed_matches_navis_reference():
+    # Random weights, so nothing ties and float32-vs-float64 cannot reorder the argmax:
+    # every seed of a long run must agree exactly.
+    n = 250
+    edges = random_graph(n_nodes=n, n_edges=1100, seed=13)
+    rng = np.random.default_rng(13)
+    w = rng.random(len(edges)).astype(np.float32)
+
+    g = fastcore.GeodesicGraph(edges, n, weights=w)
+    ref = _NavisSeeder(as_csr(edges, n, w))
+
+    mine, theirs = np.zeros(n, dtype=bool), np.zeros(n, dtype=bool)
+    for step in range(60):
+        a, b = g.farthest_seed(mine), ref.seed(theirs)
+        assert a == b, f"step {step}: fastcore {a}, navis {b}"
+        mine[a] = theirs[b] = True
+
+
+def test_farthest_seed_matches_navis_reference_unweighted():
+    n = 250
+    edges = random_graph(n_nodes=n, n_edges=1100, seed=29)
+    g = fastcore.GeodesicGraph(edges, n)
+    ref = _NavisSeeder(as_csr(edges, n))
+
+    mine, theirs = np.zeros(n, dtype=bool), np.zeros(n, dtype=bool)
+    for step in range(60):
+        a, b = g.farthest_seed(mine), ref.seed(theirs)
+        assert a == b, f"step {step}: fastcore {a}, navis {b}"
+        mine[a] = theirs[b] = True
+
+
+def test_farthest_seed_is_a_true_argmax_on_a_tie_rich_graph():
+    # On a mesh, distances tie constantly, so which of several equally-far nodes is picked
+    # is not something to pin down. That it is *one of* the farthest is.
+    faces, verts = grid_mesh(12)
+    n = len(verts)
+    edges, lengths = fastcore.unique_edges(faces, verts)
+    edges = edges.astype(np.uint32)
+    m = as_csr(edges, n, lengths)
+
+    g = fastcore.GeodesicGraph(edges, n, weights=lengths.astype(np.float32))
+    done = np.zeros(n, dtype=bool)
+    done[0] = True
+    for step in range(25):
+        s = g.farthest_seed(done)
+        d = dijkstra(m, directed=False, indices=np.flatnonzero(done), min_only=True)
+        eligible = np.isfinite(d) & ~done
+        assert eligible[s], f"step {step}: seed {s} is not an eligible candidate"
+        assert d[s] >= d[eligible].max() - 1e-5, (
+            f"step {step}: seed {s} at {d[s]} is not farthest ({d[eligible].max()})"
+        )
+        done[s] = True
+
+
+def test_farthest_seed_batched_folds_match_one_at_a_time():
+    # The `cover` pattern marks a whole grown region done per call, not a single item.
+    n = 200
+    edges = random_graph(n_nodes=n, n_edges=900, seed=31)
+    rng = np.random.default_rng(31)
+    w = rng.random(len(edges)).astype(np.float32)
+
+    g = fastcore.GeodesicGraph(edges, n, weights=w)
+    done = np.zeros(n, dtype=bool)
+    for _ in range(12):
+        s = g.farthest_seed(done)
+        done[g.grow(s, 12)] = True
+        # A graph that has never seen the intermediate states must give the same answer.
+        fresh = fastcore.GeodesicGraph(edges, n, weights=w)
+        assert g.farthest_seed(done) == fresh.farthest_seed(done)
+
+
+def test_farthest_seed_with_items():
+    # Cloud case: many items per node, plenty of nodes with none. The reference is the
+    # brute-force argmax over item distances, computed from scratch each step.
+    n = 150
+    edges = random_graph(n_nodes=n, n_edges=650, seed=37)
+    rng = np.random.default_rng(37)
+    w = rng.random(len(edges)).astype(np.float32)
+    item_nodes = np.sort(rng.integers(0, n, size=260)).astype(np.uint32)
+    m = as_csr(edges, n, w)
+
+    g = fastcore.GeodesicGraph(edges, n, weights=w, item_nodes=item_nodes)
+    done = np.zeros(len(item_nodes), dtype=bool)
+    done[0] = True
+    for step in range(30):
+        s = g.farthest_seed(done)
+        d = dijkstra(
+            m, directed=False, indices=np.unique(item_nodes[done]), min_only=True
+        )
+        di = d[item_nodes]  # each item inherits its node's distance
+        eligible = np.isfinite(di) & ~done
+        assert eligible[s]
+        assert di[s] >= di[eligible].max() - 1e-5, f"step {step}"
+        done[s] = True
+
+
+def test_farthest_seed_prefers_reachable_then_largest_component():
+    # A 6-path, a 3-island and a lone node: the path must be exhausted first, then the
+    # bigger island, then the singleton.
+    edges = np.array(
+        [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [6, 7], [7, 8]], dtype=np.uint32
+    )
+    g = fastcore.GeodesicGraph(edges, 10)
+    done = np.zeros(10, dtype=bool)
+    done[0] = True
+    order = []
+    for _ in range(9):
+        s = g.farthest_seed(done)
+        order.append(s)
+        done[s] = True
+    assert order[:5] == [5, 2, 1, 3, 4]
+    assert order[5:8] == [6, 8, 7]
+    assert order[8] == 9
+    assert g.farthest_seed(done) is None
+
+
+def test_farthest_seed_empty_done_starts_on_largest_component():
+    edges = np.array([[0, 1], [2, 3], [3, 4], [4, 5]], dtype=np.uint32)
+    g = fastcore.GeodesicGraph(edges, 6)
+    assert g.farthest_seed(np.zeros(6, dtype=bool)) == 2
+
+
+def test_farthest_seed_rebuilds_when_done_shrinks():
+    n = 120
+    edges = random_graph(n_nodes=n, n_edges=500, seed=41)
+    rng = np.random.default_rng(41)
+    w = rng.random(len(edges)).astype(np.float32)
+
+    g = fastcore.GeodesicGraph(edges, n, weights=w)
+    done = np.zeros(n, dtype=bool)
+    for _ in range(10):
+        done[g.farthest_seed(done)] = True
+
+    shrunk = np.zeros(n, dtype=bool)
+    shrunk[7] = True
+    fresh = fastcore.GeodesicGraph(edges, n, weights=w)
+    assert g.farthest_seed(shrunk) == fresh.farthest_seed(shrunk)
+
+
+def test_spaced_driver_places_distinct_evenly_spread_seeds():
+    # End-to-end `_spaced`: k distinct seeds, and every one at least as far from its
+    # nearest neighbour as a random draw would manage.
+    faces, verts = grid_mesh(15)
+    n = len(verts)
+    edges, lengths = fastcore.unique_edges(faces, verts)
+    edges = edges.astype(np.uint32)
+    g = fastcore.GeodesicGraph(edges, n, weights=lengths.astype(np.float32))
+
+    chosen = np.zeros(n, dtype=bool)
+    seeds = []
+    while len(seeds) < 20:
+        s = g.farthest_seed(chosen)
+        assert s is not None and not chosen[s], "seeds must be distinct"
+        seeds.append(s)
+        chosen[s] = True
+
+    def min_separation(idx):
+        """Distance from each chosen node to its nearest other chosen node."""
+        d = dijkstra(as_csr(edges, n, lengths), directed=False, indices=idx)[:, idx]
+        return np.min(d + np.diag(np.full(len(idx), np.inf)), axis=1)
+
+    sep = min_separation(seeds)
+    rng = np.random.default_rng(0)
+    worst_random = min(
+        min_separation(rng.choice(n, size=len(seeds), replace=False)).min()
+        for _ in range(10)
+    )
+    assert sep.min() > worst_random, "FPS must spread better than a random draw"
+
+
+def test_item_components():
+    edges = np.array([[1, 2], [4, 5]], dtype=np.uint32)
+    g = fastcore.GeodesicGraph(edges, 6)
+    np.testing.assert_array_equal(g.item_components(), [0, 1, 1, 3, 4, 4])
+    # Matches the free function, which callers may already rely on.
+    np.testing.assert_array_equal(
+        g.item_components(), fastcore.connected_components_graph(edges, 6)
+    )
+    g = fastcore.GeodesicGraph(edges, 6, item_nodes=[5, 0, 2])
+    np.testing.assert_array_equal(g.item_components(), [4, 0, 1])
+
+
+def test_farthest_seed_validation():
+    edges = np.array([[0, 1], [1, 2]], dtype=np.uint32)
+    g = fastcore.GeodesicGraph(edges, 3)
+    with pytest.raises(ValueError):
+        g.farthest_seed(np.zeros(2, dtype=bool))
+    assert g.farthest_seed(np.ones(3, dtype=bool)) is None
+    # A list and a strided view are both accepted, like `forbidden`.
+    assert g.farthest_seed([True, False, False]) == 2
+
+
+# -----------------------------------------------------------------------------
+# GeodesicGraph: the mirrored free functions, and subset
+# -----------------------------------------------------------------------------
+
+
+def test_geodesic_graph_methods_agree_with_the_free_functions():
+    # The contract of the whole class: keeping the index changes the cost, never the
+    # answer. If these ever diverge, callers cannot safely migrate off the free functions.
+    faces, verts = grid_mesh(11)
+    n = len(verts)
+    edges, lengths = fastcore.unique_edges(faces, verts)
+    edges = edges.astype(np.uint32)
+    w = lengths.astype(np.float32)
+    srcs, tgts = [0, 60, 120], [7, 55, 99]
+
+    for weights in (None, w):
+        g = fastcore.GeodesicGraph(edges, n, weights=weights)
+        kw = dict(weights=weights)
+
+        np.testing.assert_array_equal(
+            g.distances(sources=srcs, targets=tgts, threads=1),
+            fastcore.geodesic_matrix_graph(
+                edges, n, sources=srcs, targets=tgts, threads=1, **kw
+            ),
+        )
+        np.testing.assert_array_equal(
+            g.distances(sources=srcs, limit=3.0, threads=1),
+            fastcore.geodesic_matrix_graph(
+                edges, n, sources=srcs, limit=3.0, threads=1, **kw
+            ),
+        )
+        for mine, theirs in zip(
+            g.predecessors(sources=srcs, threads=1),
+            fastcore.geodesic_predecessors(edges, n, sources=srcs, threads=1, **kw),
+        ):
+            np.testing.assert_array_equal(mine, theirs)
+        for a, b in zip(g.path(0, tgts), fastcore.geodesic_path(edges, n, 0, tgts, **kw)):
+            np.testing.assert_array_equal(a, b)
+
+        labels, k = g.clusters(2.5, seeds=srcs)
+        rl, rk = fastcore.geodesic_clusters(edges, n, 2.5, seeds=srcs, **kw)
+        np.testing.assert_array_equal(labels, rl)
+        assert k == rk
+
+        np.testing.assert_array_equal(
+            g.components(), fastcore.connected_components_graph(edges, n)
+        )
+
+    # nearest / farthest have only a mesh-shaped free function, so compare on the mesh.
+    g = fastcore.GeodesicGraph(edges, n, weights=w)
+    for method, ref in (
+        (g.nearest, fastcore.geodesic_nearest_mesh),
+        (g.farthest, fastcore.geodesic_farthest_mesh),
+    ):
+        for mine, theirs in zip(
+            method(sources=srcs, targets=tgts, threads=1),
+            ref(faces, verts, sources=srcs, targets=tgts, threads=1),
+        ):
+            np.testing.assert_allclose(mine, theirs, rtol=1e-6)
+
+
+def test_geodesic_graph_directed():
+    # A one-way chain 0->1->2->3.
+    edges = np.array([[0, 1], [1, 2], [2, 3]], dtype=np.uint32)
+    g = fastcore.GeodesicGraph(edges, 4, directed=True)
+
+    np.testing.assert_array_equal(g.grow(0, 10), [0, 1, 2, 3])
+    np.testing.assert_array_equal(g.grow(3, 10), [3])
+    np.testing.assert_array_equal(g.distances(sources=[0], threads=1), [[0, 1, 2, 3]])
+    np.testing.assert_array_equal(
+        g.distances(sources=[3], threads=1), [[-1, -1, -1, 0]]
+    )
+    # Agrees with the free function's directed mode.
+    np.testing.assert_array_equal(
+        g.distances(threads=1),
+        fastcore.geodesic_matrix_graph(edges, 4, directed=True, threads=1),
+    )
+    # Components are *weakly* connected, so the chain stays one piece.
+    np.testing.assert_array_equal(g.components(), [0, 0, 0, 0])
+    # And undirected sees it all both ways.
+    u = fastcore.GeodesicGraph(edges, 4)
+    np.testing.assert_array_equal(u.grow(3, 10), [3, 2, 1, 0])
+
+
+def test_subset_matches_a_graph_built_from_the_surviving_edges():
+    # Not merely "same distances" but the same graph, down to the neighbour order that
+    # decides every tie-break - so a subset is safe to treat as the real thing.
+    faces, verts = grid_mesh(9)
+    n = len(verts)
+    edges, lengths = fastcore.unique_edges(faces, verts)
+    edges = edges.astype(np.uint32)
+    w = lengths.astype(np.float32)
+    g = fastcore.GeodesicGraph(edges, n, weights=w)
+
+    keep = np.array(
+        [v for v in range(n) if 2 <= v // 9 <= 6 and 2 <= v % 9 <= 6], dtype=np.uint32
+    )
+    keep[[0, 7]] = keep[[7, 0]]  # deliberately not ascending
+    sub = g.subset(keep)
+    np.testing.assert_array_equal(sub.parent_nodes, keep)
+    np.testing.assert_array_equal(sub.parent_items, keep)
+    assert sub.n_nodes == len(keep)
+
+    # Rebuild the same subgraph the long way, from a filtered edge list.
+    new_id = np.full(n, -1, dtype=np.int64)
+    new_id[keep] = np.arange(len(keep))
+    mask = (new_id[edges[:, 0]] >= 0) & (new_id[edges[:, 1]] >= 0)
+    fresh = fastcore.GeodesicGraph(
+        new_id[edges[mask]].astype(np.uint32), len(keep), weights=w[mask]
+    )
+
+    np.testing.assert_array_equal(
+        sub.distances(threads=1), fresh.distances(threads=1)
+    )
+    np.testing.assert_array_equal(sub.components(), fresh.components())
+    np.testing.assert_array_equal(sub.clusters(2.0)[0], fresh.clusters(2.0)[0])
+    for seed in (0, 5, 12):
+        np.testing.assert_array_equal(sub.grow(seed, 9), fresh.grow(seed, 9))
+
+
+def test_subset_of_a_component_preserves_parent_distances():
+    edges = np.array([[0, 1], [1, 2], [2, 0], [3, 4], [4, 5]], dtype=np.uint32)
+    w = np.array([1, 2, 4, 1, 1], dtype=np.float32)
+    g = fastcore.GeodesicGraph(edges, 6, weights=w)
+
+    labels = g.components()
+    comp = np.flatnonzero(labels == labels[3]).astype(np.uint32)
+    sub = g.subset(comp)
+    np.testing.assert_array_equal(
+        sub.distances(threads=1), g.distances(sources=comp, targets=comp, threads=1)
+    )
+    # A bool mask is accepted too and means the same thing.
+    np.testing.assert_array_equal(
+        g.subset(labels == labels[3]).parent_nodes, sub.parent_nodes
+    )
+
+
+def test_subset_carries_items_and_drops_the_orphans():
+    edges = np.array([[0, 1], [1, 2], [2, 3]], dtype=np.uint32)
+    g = fastcore.GeodesicGraph(edges, 4, item_nodes=[0, 0, 2, 3])
+    sub = g.subset([2, 0])
+    # Items come out grouped by new node: node 0 (old 2) has item 2, node 1 (old 0) has
+    # items 0 and 1. The item on the dropped node 3 is gone.
+    np.testing.assert_array_equal(sub.parent_items, [2, 0, 1])
+    np.testing.assert_array_equal(sub.item_nodes, [0, 1, 1])
+    assert (sub.n_nodes, sub.n_items) == (2, 3)
+
+    # Subsetting a plain graph must keep item i == node i, whatever order `nodes` came in.
+    plain = fastcore.GeodesicGraph(edges, 4).subset([3, 1, 0])
+    np.testing.assert_array_equal(plain.item_nodes, [0, 1, 2])
+    np.testing.assert_array_equal(plain.parent_items, [3, 1, 0])
+
+
+def test_subset_is_chainable_and_maps_back():
+    faces, verts = grid_mesh(8)
+    n = len(verts)
+    edges, lengths = fastcore.unique_edges(faces, verts)
+    g = fastcore.GeodesicGraph(edges.astype(np.uint32), n, weights=lengths.astype(np.float32))
+
+    first = g.subset(np.arange(0, 40, dtype=np.uint32))
+    second = first.subset(np.arange(0, 20, dtype=np.uint32))
+    # Composing the two maps must land on the same original nodes as subsetting once.
+    original = first.parent_nodes[second.parent_nodes]
+    np.testing.assert_array_equal(original, np.arange(20))
+    direct = g.subset(np.arange(0, 20, dtype=np.uint32))
+    np.testing.assert_array_equal(
+        second.distances(threads=1), direct.distances(threads=1)
+    )
+
+
+def test_subset_validation():
+    g = fastcore.GeodesicGraph(np.array([[0, 1], [1, 2]], dtype=np.uint32), 4)
+    with pytest.raises(ValueError):
+        g.subset([0, 1, 1])  # repeated node
+    with pytest.raises(ValueError):
+        g.subset([0, 9])  # out of range
+    with pytest.raises(ValueError):
+        g.subset(np.zeros(3, dtype=bool))  # mask of the wrong length
+    empty = g.subset([])
+    assert (empty.n_nodes, empty.n_items) == (0, 0)
+
+
+def test_subset_reuses_the_parent_index_rather_than_rebuilding():
+    # Behavioural proxy for "carved from the parent": a subset of a graph whose edge list
+    # we then mutate must be unaffected, i.e. it cannot be re-reading our input.
+    edges = np.array([[0, 1], [1, 2], [2, 3]], dtype=np.uint32)
+    g = fastcore.GeodesicGraph(edges, 4)
+    sub = g.subset([0, 1, 2])
+    edges[:] = 0
+    np.testing.assert_array_equal(sub.distances(sources=[0], threads=1), [[0, 1, 2]])
+
+
+# -----------------------------------------------------------------------------
+# GeodesicGraph.grow: distances, and the foveation they enable
+# -----------------------------------------------------------------------------
+
+
+def test_grow_distances_match_the_navis_reference():
+    # Same oracle as the indices: navis' own `_Geodesic.grow` / `_ConnectedCloud.grow`,
+    # which now return distances alongside. Random weights, so nothing ties.
+    n = 200
+    edges = random_graph(n_nodes=n, n_edges=900, seed=61)
+    rng = np.random.default_rng(61)
+    w = rng.random(len(edges)).astype(np.float32)
+    indptr, indices, data = _csr_parts(edges, n, w)
+
+    g = fastcore.GeodesicGraph(edges, n, weights=w)
+    for size in (1, 10, 75, 200):
+        for seed in (0, 33, 199):
+            idx, dist = g.grow(seed, size, return_distances=True)
+            ridx, rdist = _navis_grow(indptr, indices, data, seed, size)
+            np.testing.assert_array_equal(idx, ridx)
+            np.testing.assert_allclose(dist, rdist, rtol=1e-5, atol=1e-6)
+
+    # Cloud backend: several items per node, many nodes with none.
+    item_nodes = np.sort(rng.integers(0, n, size=350)).astype(np.uint32)
+    by_vtx = {}
+    for i, v in enumerate(item_nodes):
+        by_vtx.setdefault(int(v), []).append(i)
+    g = fastcore.GeodesicGraph(edges, n, weights=w, item_nodes=item_nodes)
+    for size in (1, 20, 128, 350):
+        for seed in (0, 111, 349):
+            idx, dist = g.grow(seed, size, return_distances=True)
+            ridx, rdist = _navis_grow_cloud(
+                indptr, indices, data, by_vtx, item_nodes, seed, size
+            )
+            np.testing.assert_array_equal(idx, ridx)
+            np.testing.assert_allclose(dist, rdist, rtol=1e-5, atol=1e-6)
+
+
+def test_grow_distances_agree_with_scipy_and_are_sorted():
+    n = 200
+    edges = random_graph(n_nodes=n, n_edges=800, seed=67)
+    rng = np.random.default_rng(67)
+    w = rng.random(len(edges)).astype(np.float32)
+    g = fastcore.GeodesicGraph(edges, n, weights=w)
+
+    idx, dist = g.grow(9, 60, return_distances=True)
+    ref = dijkstra(as_csr(edges, n, w), directed=False, indices=[9])[0]
+    np.testing.assert_allclose(dist, ref[idx], rtol=1e-5, atol=1e-6)
+    assert np.all(np.diff(dist) >= 0), "distances are non-decreasing"
+    assert dist[0] == 0.0
+
+
+def test_grow_distances_are_shared_within_a_node():
+    # An item's position is its node's, so items on one node must share a distance
+    # *exactly* - a radial thinning keyed on these would drift otherwise.
+    edges = np.array([[i, i + 1] for i in range(3)], dtype=np.uint32)
+    g = fastcore.GeodesicGraph(edges, 4, item_nodes=[0, 1, 1, 1, 3])
+    idx, dist = g.grow(0, 5, return_distances=True)
+    np.testing.assert_array_equal(idx, [0, 1, 2, 3, 4])
+    np.testing.assert_array_equal(dist, [0, 1, 1, 1, 3])
+    assert len(np.unique(dist[1:4])) == 1
+
+
+def test_grow_distances_stay_in_lockstep_with_indices():
+    edges = np.array([[i, i + 1] for i in range(3)], dtype=np.uint32)
+    g = fastcore.GeodesicGraph(edges, 4, item_nodes=[0, 1, 1, 1])
+
+    # Budget fills mid-node.
+    idx, dist = g.grow(0, 3, return_distances=True)
+    assert len(idx) == len(dist) == 3
+    # Growth stops at a wall.
+    idx, dist = g.grow(
+        0, 4, forbidden=np.array([False, True, True, True]), return_distances=True
+    )
+    np.testing.assert_array_equal(idx, [0])
+    np.testing.assert_array_equal(dist, [0.0])
+    # Zero budget gives two empty arrays, and the default still gives a bare one.
+    idx, dist = g.grow(0, 0, return_distances=True)
+    assert len(idx) == 0 and len(dist) == 0
+    assert isinstance(g.grow(0, 3), np.ndarray)
+
+
+def test_grow_supports_navis_foveation():
+    """End-to-end: the `fovea` pipeline driven off fastcore agrees with navis'.
+
+    `_Foveated.grow` grows an oversized candidate pool and thins it radially back to
+    `n_points`. Everything after the grow is pure numpy; what it needs from the backend
+    is the ``(indices, distances)`` pair, so this pins that the two agree.
+    """
+    n = 300
+    edges = random_graph(n_nodes=n, n_edges=1400, seed=71)
+    rng = np.random.default_rng(71)
+    w = rng.random(len(edges)).astype(np.float32)
+    indptr, indices, data = _csr_parts(edges, n, w)
+    item_nodes = np.sort(rng.integers(0, n, size=600)).astype(np.uint32)
+    by_vtx = {}
+    for i, v in enumerate(item_nodes):
+        by_vtx.setdefault(int(v), []).append(i)
+    g = fastcore.GeodesicGraph(edges, n, weights=w, item_nodes=item_nodes)
+
+    n_points, reach, fovea = 32, 8, 4
+    for falloff in (None, 2.0):
+        for seed in (0, 250, 599):
+            mine = g.grow(seed, reach * n_points, return_distances=True)
+            theirs = _navis_grow_cloud(
+                indptr, indices, data, by_vtx, item_nodes, seed, reach * n_points
+            )
+            # Thin both with the same draw; identical inputs must give identical patches.
+            sel_a, focus_a = _radial_thin(
+                len(mine[0]), n_points, fovea, falloff, mine[1],
+                np.random.default_rng(0),
+            )
+            sel_b, focus_b = _radial_thin(
+                len(theirs[0]), n_points, fovea, falloff, theirs[1],
+                np.random.default_rng(0),
+            )
+            np.testing.assert_array_equal(mine[0][sel_a], theirs[0][sel_b])
+            np.testing.assert_allclose(focus_a, focus_b)
+
+            # And the patch has the shape foveation promises: full-density core, then
+            # a thinned halo reaching well beyond a uniform patch of the same budget.
+            assert len(sel_a) == n_points
+            # `_focus` is a central difference, so the *last* fovea point already
+            # straddles the transition into the halo; everything inside it is at 1.0.
+            assert np.all(focus_a[: fovea - 1] == 1.0), "the fovea is at full density"
+            assert focus_a[-1] < 1.0, "the periphery is thinned"
+            uniform = g.grow(seed, n_points, return_distances=True)[1]
+            assert mine[1][sel_a].max() >= uniform.max(), "the halo reaches further"
+
+
+def _radial_thin(m, size, fovea, falloff, dist, rng):
+    """Verbatim port of `navis.ml.chunk._radial_thin`."""
+    if m <= size:
+        sel = np.arange(m)
+        return sel, _focus(sel)
+    k = min(int(fovea), size)
+    n = size - k
+    if n == 0:
+        sel = np.arange(k)
+        return sel, _focus(sel)
+    u = (np.arange(n) + rng.random(n)) / n
+    if falloff is None:
+        sel = k + np.round((m - k) ** u).astype(np.int64) - 1
+    else:
+        r = dist[k:]
+        pos = r[r > 0]
+        r0 = float(r[0]) if r[0] > 0 else (float(pos[0]) if len(pos) else 1.0)
+        weight = (r0**2 + r**2) ** (-falloff / 2)
+        cum = np.cumsum(weight)
+        sel = k + np.searchsorted(cum, u * cum[-1], side="right")
+    sel = np.concatenate([np.arange(k), _spread(np.clip(sel, k, m - 1), k, m)])
+    return sel, _focus(sel)
+
+
+def _focus(sel):
+    """Verbatim port of `navis.ml.chunk._focus`."""
+    if len(sel) < 2:
+        return np.ones(len(sel), dtype=float)
+    return 1.0 / np.gradient(sel.astype(float))
+
+
+def _spread(sel, lo, hi):
+    """Verbatim port of `navis.ml.chunk._spread`."""
+    i = np.arange(len(sel))
+    out = np.maximum.accumulate(sel - i) + i
+    return np.minimum(out, hi - len(sel) + i)
+
+
+# -----------------------------------------------------------------------------
+# GeodesicGraph.ball
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("weighted", [False, True])
+@pytest.mark.parametrize("seed", [0, 7, 61])
+def test_ball_matches_scipy_min_only(weighted, seed):
+    """The oracle is `dijkstra(..., min_only=True, limit=...)`, which asks exactly this."""
+    n = 200
+    edges = random_graph(n_nodes=n, n_edges=600, seed=seed)
+    rng = np.random.default_rng(seed)
+    w = rng.random(len(edges)).astype(np.float32) if weighted else None
+    g = fastcore.GeodesicGraph(edges, n, weights=w)
+    m = as_csr(edges, n, w)
+
+    sources = rng.choice(n, size=4, replace=False).astype(np.uint32)
+    limit = 1.5 if weighted else 3.0
+    nodes, dist, src = g.ball(sources, limit)
+
+    ref = dijkstra(m, directed=False, indices=sources, limit=limit, min_only=True)
+    assert set(nodes.tolist()) == set(np.flatnonzero(ref <= limit).tolist())
+    np.testing.assert_allclose(dist, ref[nodes], atol=1e-5)
+
+    # Every reported source must be *a* nearest one - which need not be scipy's, since
+    # equidistant sources are a tie either way
+    per_source = g.distances(sources=sources, threads=1)
+    per_source[per_source < 0] = np.inf
+    for v, s, d in zip(nodes, src, dist):
+        assert s in sources
+        assert per_source[:, v].min() == pytest.approx(d, abs=1e-5)
+        assert per_source[list(sources).index(s), v] == pytest.approx(d, abs=1e-5)
+
+
+def test_ball_returns_increasing_distances_and_includes_its_sources():
+    edges = np.array([[i, i + 1] for i in range(6)], dtype=np.uint32)
+    g = fastcore.GeodesicGraph(edges, 7)
+
+    # Two sources at opposite ends. The contract is the *set*, its distances and its
+    # attribution, plus that distances come back non-decreasing - not how two equidistant
+    # frontiers interleave, which the docs call arbitrary. Pinning that would turn a
+    # legitimate change of frontier order into a test failure.
+    nodes, dist, src = g.ball([0, 6], 1)
+    assert (np.diff(dist) >= 0).all()
+    order = np.argsort(nodes)
+    np.testing.assert_array_equal(nodes[order], [0, 1, 5, 6])
+    np.testing.assert_array_equal(dist[order], [0, 1, 1, 0])
+    np.testing.assert_array_equal(src[order], [0, 0, 6, 6])
+
+    # Unbounded: every reachable node, nearest source and all
+    nodes, dist, src = g.ball([0])
+    np.testing.assert_array_equal(nodes, np.arange(7))
+    np.testing.assert_array_equal(dist, np.arange(7))
+    np.testing.assert_array_equal(src, np.zeros(7))
+
+
+def test_ball_skips_unreachable_and_survives_repeat_sources():
+    # Two components; a source in one says nothing about the other
+    edges = np.array([[0, 1], [2, 3]], dtype=np.uint32)
+    g = fastcore.GeodesicGraph(edges, 5)
+    nodes, _, _ = g.ball([0])
+    np.testing.assert_array_equal(np.sort(nodes), [0, 1])
+
+    # A repeated source is one source, not two frontier entries
+    np.testing.assert_array_equal(g.ball([0, 0, 0])[0], g.ball([0])[0])
+
+    assert len(g.ball([])[0]) == 0
+    assert len(g.ball([4])[0]) == 1  # isolated node: only itself
+
+
+def test_ball_is_reusable_and_matches_a_fresh_graph():
+    """Scratch is shared between calls, so a stale one would show up as drift."""
+    n = 120
+    edges = random_graph(n_nodes=n, n_edges=400, seed=3)
+    rng = np.random.default_rng(3)
+    w = rng.random(len(edges)).astype(np.float32)
+    g = fastcore.GeodesicGraph(edges, n, weights=w)
+
+    first = g.ball([0, 1], 0.8)
+    for _ in range(5):
+        g.ball(rng.choice(n, size=3).astype(np.uint32), 2.0)
+        g.grow(int(rng.integers(n)), 10)
+    again = g.ball([0, 1], 0.8)
+    for a, b in zip(first, again):
+        np.testing.assert_array_equal(a, b)
+
+    fresh = fastcore.GeodesicGraph(edges, n, weights=w).ball([0, 1], 0.8)
+    for a, b in zip(first, fresh):
+        np.testing.assert_array_equal(a, b)
+
+
+def test_ball_rejects_bad_arguments():
+    g = fastcore.GeodesicGraph(np.array([[0, 1]], dtype=np.uint32), 2)
+    with pytest.raises(ValueError, match="sources"):
+        g.ball([2])
+    with pytest.raises(ValueError, match="max_dist"):
+        g.ball([0], -1)
+
+
+# -----------------------------------------------------------------------------
+# GeodesicGraph.set_weights
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("seed", [0, 7, 61])
+def test_set_weights_matches_a_rebuilt_graph(seed):
+    """An edited graph must be indistinguishable from one built with the new weights."""
+    n = 150
+    edges = random_graph(n_nodes=n, n_edges=500, seed=seed)
+    rng = np.random.default_rng(seed)
+    w = rng.random(len(edges)).astype(np.float32)
+    g = fastcore.GeodesicGraph(edges, n, weights=w)
+
+    pick = rng.choice(len(edges), size=len(edges) // 3, replace=False)
+    new = rng.random(len(pick)).astype(np.float32)
+    g.set_weights(edges[pick], new)
+
+    w2 = w.copy()
+    w2[pick] = new
+    ref = fastcore.GeodesicGraph(edges, n, weights=w2)
+    np.testing.assert_allclose(g.distances(threads=1), ref.distances(threads=1), atol=1e-5)
+
+
+def test_set_weights_keeps_an_undirected_graph_symmetric():
+    """Both arcs of an undirected edge must move, whichever way round it is given."""
+    edges = np.array([[0, 1], [1, 2], [0, 2]], dtype=np.uint32)
+    g = fastcore.GeodesicGraph(edges, 3, weights=[1.0, 1.0, 5.0])
+    assert g.distances(sources=[0], targets=[2], threads=1)[0, 0] == 2.0
+
+    g.set_weights([[2, 0]], [0.5])  # reversed pair
+    d = g.distances(threads=1)
+    np.testing.assert_allclose(d, d.T)
+    assert d[0, 2] == pytest.approx(0.5)
+
+
+def test_set_weights_broadcasts_a_scalar_and_takes_repeats():
+    edges = np.array([[0, 1], [1, 2], [2, 3]], dtype=np.uint32)
+    g = fastcore.GeodesicGraph(edges, 4, weights=[1.0, 1.0, 1.0])
+
+    g.set_weights(edges, 0.0)  # the shape a caller zeroing a path writes
+    assert g.distances(sources=[0], targets=[3], threads=1)[0, 0] == 0.0
+
+    # Last write wins on a repeat
+    g.set_weights([[0, 1], [0, 1]], [9.0, 2.0])
+    assert g.distances(sources=[0], targets=[1], threads=1)[0, 0] == 2.0
+
+
+def test_set_weights_rejects_what_it_cannot_do():
+    g = fastcore.GeodesicGraph(np.array([[0, 1]], dtype=np.uint32), 3, weights=[1.0])
+    with pytest.raises(ValueError, match="no edge 0 - 2"):
+        g.set_weights([[0, 2]], [1.0])  # not an edge: this cannot add one
+
+    unweighted = fastcore.GeodesicGraph(np.array([[0, 1]], dtype=np.uint32), 3)
+    with pytest.raises(ValueError, match="weights=None"):
+        unweighted.set_weights([[0, 1]], [1.0])
+
+    with pytest.raises(ValueError, match="one entry per edge"):
+        g.set_weights([[0, 1]], [1.0, 2.0])
+
+
+def test_set_weights_on_a_subset_edits_only_the_subset():
+    """`subset` carves out its own adjacency, so its weights are its own."""
+    edges = np.array([[0, 1], [1, 2], [2, 3]], dtype=np.uint32)
+    g = fastcore.GeodesicGraph(edges, 4, weights=[1.0, 1.0, 1.0])
+    sub = g.subset([1, 2, 3])  # new node i is old node parent_nodes[i]
+
+    sub.set_weights([[0, 1]], [7.0])  # sub's (0, 1) is the parent's (1, 2)
+    assert sub.distances(sources=[0], targets=[1], threads=1)[0, 0] == 7.0
+    assert g.distances(sources=[1], targets=[2], threads=1)[0, 0] == 1.0
+
+
+def test_set_weights_directed_leaves_the_reverse_arc_alone():
+    edges = np.array([[0, 1], [1, 0]], dtype=np.uint32)
+    g = fastcore.GeodesicGraph(edges, 2, weights=[1.0, 1.0], directed=True)
+
+    g.set_weights([[0, 1]], [5.0])
+    assert g.distances(sources=[0], targets=[1], threads=1)[0, 0] == 5.0
+    assert g.distances(sources=[1], targets=[0], threads=1)[0, 0] == 1.0
+
+
+def test_set_weights_restarts_farthest_seed_rather_than_lying():
+    """The incremental FPS field is a minimum under the old weights - it cannot be kept."""
+    edges = np.array([[i, i + 1] for i in range(8)], dtype=np.uint32)
+    w = np.ones(8, dtype=np.float32)
+    g = fastcore.GeodesicGraph(edges, 9, weights=w)
+
+    done = np.zeros(9, dtype=bool)
+    done[0] = True
+    assert g.farthest_seed(done) == 8
+
+    # Make the far end cheap to reach and the near end expensive; the answer must move
+    w2 = w.copy()
+    w2[4:] = 0.0
+    g.set_weights(edges[4:], 0.0)
+    assert g.farthest_seed(done) == fastcore.GeodesicGraph(
+        edges, 9, weights=w2
+    ).farthest_seed(done)

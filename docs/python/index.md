@@ -68,6 +68,7 @@ Meshes:
 - [`contract_vertices`](mesh.md#navis_fastcore.contract_vertices) / [`minimum_spanning_tree`](mesh.md#navis_fastcore.minimum_spanning_tree): collapse a graph onto new nodes, then span it
 - [`geodesic_path`](mesh.md#navis_fastcore.geodesic_path) / [`geodesic_predecessors`](mesh.md#navis_fastcore.geodesic_predecessors): the shortest *route*, not just its length
 - [`geodesic_clusters`](mesh.md#navis_fastcore.geodesic_clusters): greedily partition a graph into clusters of bounded geodesic radius
+- [`GeodesicGraph`](mesh.md#navis_fastcore.GeodesicGraph): a graph prepared once for many small geodesic queries — grow fixed-*size* connected regions, and place evenly-spread seeds by farthest-point sampling
 
 [Neuron similarity](../concepts/nblast.md):
 

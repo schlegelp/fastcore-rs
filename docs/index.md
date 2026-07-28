@@ -102,6 +102,12 @@ surface and how they spell it. `—` means that surface doesn't expose it direct
 | Minimum / maximum spanning forest | `mesh::minimum_spanning_tree` | `minimum_spanning_tree` | — |
 | Shortest paths with the route, not just the length | `mesh::geodesic_predecessors_graph`, `mesh::geodesic_path_graph` | `geodesic_predecessors`, `geodesic_path` | — |
 | Greedy clustering by geodesic radius | `mesh::geodesic_clusters` | `geodesic_clusters` | — |
+| A graph prepared once for many geodesic queries (all of the above as methods, minus the per-call index build) | `mesh::GeodesicGraph` | `GeodesicGraph` | — |
+| Induced subgraph, carved from a prepared graph | `mesh::GeodesicGraph::subset` | `GeodesicGraph.subset` | — |
+| Grow a connected region of a fixed *number* of nodes/points, with each one's distance to the seed | `mesh::GeodesicGraph::grow` | `GeodesicGraph.grow` | — |
+| Farthest-point sampling: evenly-spread seeds along the graph | `mesh::GeodesicGraph::farthest_seed` | `GeodesicGraph.farthest_seed` | — |
+| Everything within a radius of a *set* of nodes, and which of them is nearest | `mesh::GeodesicGraph::ball` | `GeodesicGraph.ball` | — |
+| Re-weight edges of a prepared graph in place | `mesh::GeodesicGraph::set_weights` | `GeodesicGraph.set_weights` | — |
 
 ### Neuron similarity
 

@@ -16,6 +16,7 @@ __all__ = [
     "geodesic_predecessors",
     "geodesic_path",
     "geodesic_clusters",
+    "GeodesicGraph",
 ]
 
 
@@ -1086,3 +1087,712 @@ def geodesic_clusters(edges, n_nodes, max_dist, weights=None, seeds=None):
         _prep_weights(weights, edges),
         _prep_indices(seeds, n_nodes, "seeds"),
     )
+
+
+def _prep_mask(mask, n, what):
+    """Coerce an optional boolean mask to a contiguous bool array of length ``n``.
+
+    Deliberately a no-op for the array a caller in a tiling loop actually holds (a
+    C-contiguous ``np.bool_`` array): ``asarray`` and ``ascontiguousarray`` both pass it
+    straight through, so the mask is borrowed rather than copied on every iteration.
+    """
+    if mask is None:
+        return None
+    mask = np.ascontiguousarray(np.asarray(mask, dtype=bool).ravel())
+    if len(mask) != n:
+        raise ValueError(f"`{what}` must have {n} entries, got {len(mask)}")
+    return mask
+
+
+class GeodesicGraph:
+    """A graph prepared once for many geodesic queries.
+
+    The module-level geodesic functions each build an adjacency index from your edge
+    list, answer one question and throw it away. That is the right trade for a single
+    all-pairs sweep, and the wrong one for algorithms that ask *many small* questions
+    of the same graph - the index build is O(E) over the whole graph, so it dwarfs a
+    query that only ever explores a small ball.
+
+    This class is for that second pattern. It builds the index once, keeps the search
+    scratch space alive between calls, and lets each query cost only the ball it
+    explores.
+
+    Parameters
+    ----------
+    edges :      (E, 2) array
+                 Edges given as rows of two node indices. Treated as undirected.
+    n_nodes :    int
+                 Total number of nodes.
+    weights :    (E, ) array, optional
+                 Length of each edge. If ``None`` all edges weigh 1, i.e. distances
+                 are hop counts (and the searches run as BFS rather than Dijkstra).
+    directed :   bool
+                 If ``True`` an edge ``(u, v)`` may only be traversed from ``u`` to
+                 ``v``, and every method takes its "outward from here" reading - see
+                 Notes.
+    item_nodes : (M, ) array, optional
+                 The node each of ``M`` *items* is attached to. :meth:`grow`,
+                 :meth:`farthest_seed` and :meth:`item_components` then count and return
+                 items rather than nodes - see Notes. If ``None`` (default) each node is
+                 its own single item, so items and nodes coincide.
+
+    Attributes
+    ----------
+    n_nodes :    int
+    n_items :    int
+                 Equals ``n_nodes`` unless ``item_nodes`` was given.
+    item_nodes : (n_items, ) uint32 array
+                 The node each item sits on.
+
+    Notes
+    -----
+    **What's here.** Most methods are the module-level functions with the index build
+    taken out, and answer exactly what their counterpart does: :meth:`distances`
+    (:func:`~navis_fastcore.geodesic_matrix_graph`), :meth:`nearest`, :meth:`farthest`,
+    :meth:`predecessors`, :meth:`path`, :meth:`clusters` and :meth:`components`. The two
+    with no counterpart - :meth:`grow` and :meth:`farthest_seed` - are the ones that only
+    make sense against a graph you keep, since they are called in a loop. :meth:`subset`
+    carves out an induced subgraph without going back to your edge list.
+
+    **When the reuse pays.** Hoisting the index build out of the call is worth real time
+    exactly when each query is *small* relative to the graph - many short paths, a
+    :meth:`nearest` with a tight ``limit``, :meth:`grow`. On a 40k-vertex mesh, 500
+    short-path queries run ~100x faster through this class than through
+    :func:`~navis_fastcore.geodesic_path`. It buys nothing measurable when a single query
+    already sweeps the graph: one 50-source distance matrix on that mesh costs 90 ms
+    either way, against a 1 ms build. The other reason to reach for the class is simply
+    that you have a graph, and would rather not re-pass ``edges``/``weights``/``directed``
+    to every call.
+
+    **Items.** Optionally each node carries zero or more *items* - points of a cloud
+    attached to the graph, one entry of a resampled surface say. By default the
+    distinction vanishes entirely.
+
+    The rule for which index space a method speaks is short: :meth:`grow`,
+    :meth:`farthest_seed` and :meth:`item_components` count and return **items**;
+    everything else takes and returns graph **nodes**, exactly as the free function it
+    mirrors does. So growth follows the graph but is measured in cloud points - which is
+    what keeps a patch of a cloud far sparser than its mesh connected, since the empty
+    nodes in between conduct without contributing - while a distance matrix stays a
+    matrix over the graph.
+
+    **Direction.** With ``directed=True``, :meth:`grow` gathers the *out*-reachable ball,
+    :meth:`farthest_seed` measures distance *from* the done set, and :meth:`clusters`
+    grows out-balls (so it differs from :func:`~navis_fastcore.geodesic_clusters`, which
+    is always undirected). :meth:`components` still reports *weakly* connected
+    components - a search has to start somewhere.
+
+    **Threading.** Queries share mutable scratch space, so concurrent calls on one
+    instance serialise. Build one instance per thread if you need real parallelism. The
+    ``threads`` argument on the matrix-style methods is unaffected: those parallelise
+    internally over sources.
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> edges = np.array([[0, 1], [1, 2], [2, 3], [3, 4], [4, 5]], dtype=np.uint32)
+    >>> g = fastcore.GeodesicGraph(edges, 6)
+    >>> g
+    GeodesicGraph(n_nodes=6, n_items=6)
+
+    Grow a ball of three nodes around node 2 - nearest first:
+
+    >>> g.grow(2, 3)
+    array([2, 1, 3], dtype=uint32)
+
+    Tile the whole graph into disjoint connected fragments by feeding what has already
+    been claimed back in as ``forbidden``:
+
+    >>> claimed = np.zeros(6, dtype=bool)
+    >>> frags = []
+    >>> while not claimed.all():
+    ...     frag = g.grow(int(np.argmax(~claimed)), 2, forbidden=claimed)
+    ...     claimed[frag] = True
+    ...     frags.append(frag.tolist())
+    >>> frags
+    [[0, 1], [2, 3], [4, 5]]
+
+    """
+
+    def __init__(self, edges, n_nodes, weights=None, directed=False, item_nodes=None):
+        edges, n_nodes = _prep_edges(edges, n_nodes)
+        self._adopt(
+            _fastcore.GeodesicGraph(
+                edges,
+                n_nodes,
+                _prep_weights(weights, edges),
+                bool(directed),
+                _prep_indices(item_nodes, n_nodes, "item_nodes"),
+            )
+        )
+
+    @classmethod
+    def _wrap(cls, inner, parent_nodes, parent_items):
+        """Wrap an already-built Rust graph - the second construction path.
+
+        :meth:`subset` gets its graph back from Rust fully formed; rebuilding it through
+        ``__init__`` from an edge list is exactly the work it exists to avoid. Funnelling
+        both paths through :meth:`_adopt` keeps that shortcut from quietly producing an
+        object that is missing whatever ``__init__`` sets.
+        """
+        self = cls.__new__(cls)
+        self._adopt(inner, parent_nodes, parent_items)
+        return self
+
+    def _adopt(self, inner, parent_nodes=None, parent_items=None):
+        """Take ownership of a Rust graph and cache what never changes about it.
+
+        ``n_nodes``/``n_items`` are fixed for the object's lifetime, and reading them
+        crosses into Rust and takes the graph's lock - which `grow` and `farthest_seed`
+        would otherwise pay on every call of a tight loop, to re-learn a constant.
+        """
+        self._graph = inner
+        self.n_nodes = inner.n_nodes
+        self.n_items = inner.n_items
+        #: For a graph returned by :meth:`subset`, the parent's node/item indices.
+        self.parent_nodes = parent_nodes
+        self.parent_items = parent_items
+
+    @property
+    def item_nodes(self):
+        """The node each item sits on, as a ``(n_items, )`` uint32 array."""
+        return self._graph.item_nodes
+
+    def __repr__(self):
+        return repr(self._graph)
+
+    # -- the module-level geodesic functions, without the per-call index build --
+
+    def distances(self, sources=None, targets=None, limit=None, threads=None):
+        """Pairwise geodesic distances between `sources` and `targets` (nodes).
+
+        The same query as :func:`~navis_fastcore.geodesic_matrix_graph`, minus the
+        adjacency build. Use this when you slice the same graph repeatedly - a batch of
+        sources at a time, say - where the free function would rebuild its index on each
+        call.
+
+        Parameters
+        ----------
+        sources :  iterable, optional
+                   Node indices. ``None`` (default) means all nodes.
+        targets :  iterable, optional
+                   Node indices. ``None`` (default) means all nodes. Beware the output
+                   size: a full ``V x V`` matrix is ~107 GB at V=164k.
+        limit :    float, optional
+                   Ignore anything farther than this; such pairs come back as ``-1``.
+        threads :  int, optional
+                   Size of the thread pool. Defaults to all available cores.
+
+        Returns
+        -------
+        matrix :   (len(sources), len(targets)) float32 array
+                   ``-1`` where unreachable, or beyond `limit`.
+
+        Examples
+        --------
+        >>> import navis_fastcore as fastcore
+        >>> import numpy as np
+        >>> edges = np.array([[0, 1], [1, 2], [2, 3]], dtype=np.uint32)
+        >>> g = fastcore.GeodesicGraph(edges, 4)
+        >>> g.distances(sources=[0], targets=[3])
+        array([[3.]], dtype=float32)
+
+        """
+        return self._graph.distances(
+            _prep_indices(sources, self.n_nodes, "sources"),
+            _prep_indices(targets, self.n_nodes, "targets"),
+            None if limit is None else float(limit),
+            None if threads is None else int(threads),
+        )
+
+    def nearest(self, sources=None, targets=None, limit=None, threads=None):
+        """For each source node, the distance to its nearest target and which one.
+
+        As :func:`~navis_fastcore.geodesic_nearest_mesh`, minus the adjacency build.
+        ``O(sources)`` output instead of ``O(sources x targets)``, and faster than the
+        matrix too - each search stops at the first target it settles.
+
+        A source that is itself a target is matched to its nearest *distinct* target.
+        Sources with no reachable distinct target get ``-1`` / ``-1``.
+
+        Parameters
+        ----------
+        sources, targets, limit, threads
+                   As :meth:`distances`.
+
+        Returns
+        -------
+        distances : (len(sources), ) float32 array
+        indices :   (len(sources), ) int32 array
+                    Index *into the graph*, not into `targets`.
+
+        """
+        return self._graph.nearest(
+            _prep_indices(sources, self.n_nodes, "sources"),
+            _prep_indices(targets, self.n_nodes, "targets"),
+            None if limit is None else float(limit),
+            None if threads is None else int(threads),
+        )
+
+    def farthest(self, sources=None, targets=None, limit=None, threads=None):
+        """For each source node, the distance to its farthest target and which one.
+
+        The mirror of :meth:`nearest`; see
+        :func:`~navis_fastcore.geodesic_farthest_mesh`. This one cannot stop early - it
+        has to settle every target - but the farthest is then free, since the kernels
+        settle in increasing distance order.
+
+        Returns
+        -------
+        distances : (len(sources), ) float32 array
+        indices :   (len(sources), ) int32 array
+
+        """
+        return self._graph.farthest(
+            _prep_indices(sources, self.n_nodes, "sources"),
+            _prep_indices(targets, self.n_nodes, "targets"),
+            None if limit is None else float(limit),
+            None if threads is None else int(threads),
+        )
+
+    def predecessors(self, sources=None, limit=None, threads=None):
+        """Shortest-path trees: distances *and* the route to every node.
+
+        As :func:`~navis_fastcore.geodesic_predecessors`, minus the adjacency build.
+        Use :meth:`path` when you want the node sequences rather than the raw chains.
+
+        Parameters
+        ----------
+        sources :  iterable, optional
+                   Node indices, one tree each. ``None`` (default) means all nodes.
+        limit, threads
+                   As :meth:`distances`.
+
+        Returns
+        -------
+        distances :    (len(sources), n_nodes) float32 array, ``-1`` where unreachable.
+        predecessors : (len(sources), n_nodes) int32 array
+                       The node before each node on its shortest path back to that row's
+                       source; ``-1`` for the source itself and for unreachable nodes.
+
+        """
+        return self._graph.predecessors(
+            _prep_indices(sources, self.n_nodes, "sources"),
+            None if limit is None else float(limit),
+            None if threads is None else int(threads),
+        )
+
+    def path(self, source, targets):
+        """Node sequences of the shortest paths from `source` to each of `targets`.
+
+        As :func:`~navis_fastcore.geodesic_path`, minus the adjacency build. One search,
+        stopped as soon as the last target settles.
+
+        Parameters
+        ----------
+        source :  int
+                  Node index.
+        targets : iterable
+                  Node indices.
+
+        Returns
+        -------
+        paths :   list of uint32 arrays
+                  One per target, source-first and target-last. An unreachable target
+                  gives an empty array; a target equal to `source` gives ``[source]``.
+
+        Examples
+        --------
+        >>> import navis_fastcore as fastcore
+        >>> import numpy as np
+        >>> edges = np.array([[0, 1], [1, 2], [2, 3]], dtype=np.uint32)
+        >>> g = fastcore.GeodesicGraph(edges, 4)
+        >>> g.path(0, [3])[0]
+        array([0, 1, 2, 3], dtype=uint32)
+
+        """
+        source = int(source)
+        if not 0 <= source < self.n_nodes:
+            raise ValueError(f"`source` is node {source} but n_nodes = {self.n_nodes}")
+        targets = _prep_indices(targets, self.n_nodes, "targets")
+        if targets is None:
+            raise ValueError("`targets` must be given")
+        return self._graph.path(source, targets)
+
+    def ball(self, sources, max_dist=None):
+        """Every node within `max_dist` of any of `sources`, and its nearest source.
+
+        One multi-source search, so this costs the ball it returns rather than one sweep
+        per source - and it returns the ball itself, not a ``(n_nodes, )`` array with the
+        ball buried in it. Both halves matter for the pattern this exists for: sweeping a
+        graph a neighbourhood at a time, thousands of small radii against one big graph.
+
+        The nearest equivalent elsewhere,
+        ``scipy.sparse.csgraph.dijkstra(..., min_only=True, limit=...)``, allocates and
+        fills three node-sized arrays per call whatever the radius, which for a small one
+        costs more than the search does.
+
+        Parameters
+        ----------
+        sources :  iterable
+                   Node indices. May repeat.
+        max_dist : float, optional
+                   Radius, inclusive, in the graph's own metric (hop counts when the graph
+                   is unweighted). ``None`` (default) for no bound, which makes this "the
+                   nearest source of every reachable node".
+
+        Returns
+        -------
+        nodes :     (N, ) uint32 array
+                    The nodes within reach, in increasing-distance order. Every source is
+                    in here at distance 0. Nodes farther than `max_dist`, and nodes no
+                    source reaches, are absent rather than flagged.
+        distances : (N, ) float32 array
+                    Distance from each node to its nearest source.
+        sources :   (N, ) uint32 array
+                    That source, as a node index. A source's own entry is itself. Ties are
+                    broken deterministically but arbitrarily.
+
+        Examples
+        --------
+        >>> import navis_fastcore as fastcore
+        >>> import numpy as np
+
+        A path of 7 nodes, seeded from both ends - one hop out from each:
+
+        >>> edges = np.array([[i, i + 1] for i in range(6)], dtype=np.uint32)
+        >>> g = fastcore.GeodesicGraph(edges, 7)
+        >>> nodes, dist, src = g.ball([0, 6], 1)
+        >>> order = np.argsort(nodes)   # settle order interleaves the two frontiers
+        >>> nodes[order]
+        array([0, 1, 5, 6], dtype=uint32)
+        >>> dist[order]
+        array([0., 1., 1., 0.], dtype=float32)
+        >>> src[order]
+        array([0, 0, 6, 6], dtype=uint32)
+
+        """
+        sources = _prep_indices(sources, self.n_nodes, "sources")
+        if sources is None:
+            raise ValueError("`sources` must be given")
+        max_dist = np.inf if max_dist is None else float(max_dist)
+        if not max_dist >= 0:  # also catches NaN
+            raise ValueError(f"`max_dist` must be non-negative, got {max_dist}")
+        return self._graph.ball(sources, max_dist)
+
+    def set_weights(self, edges, weights):
+        """Re-weight edges in place, leaving the graph otherwise untouched.
+
+        For algorithms that *change* the graph as they run - TEASAR zeroing each path it
+        extracts so later ones may re-traverse it for free is the case this was added for.
+        Rebuilding the graph after each change costs O(E) against an edit of a few hundred
+        edges, and gives up the reason for holding a prepared graph in the first place;
+        this costs O(edits) and a binary search apiece.
+
+        Parameters
+        ----------
+        edges :   (K, 2) array
+                  Edges to re-weight, as node pairs. Each must be an edge the graph
+                  actually has, or you get a `ValueError` naming it - re-weighting a
+                  non-existent edge is far more likely to be a bug than an intent to add
+                  one, and this cannot add one anyway. Order is irrelevant and repeats are
+                  allowed, last write winning.
+        weights : (K, ) array or scalar
+                  Their new weights, finite and non-negative. A single value applies to all
+                  of them, which is the shape a caller zeroing a whole path writes.
+
+        Notes
+        -----
+        Only available on a graph built *with* weights: there is no weight array on an
+        unweighted one to write into, and materialising one would quietly turn every later
+        search from a BFS into a Dijkstra.
+
+        Distances change, so the incremental field behind :meth:`farthest_seed` is
+        discarded here - a minimum folded under the old weights cannot be corrected under
+        the new ones. Interleaving `farthest_seed` with re-weighting therefore pays a cold
+        start after each edit; not interleaving them costs nothing. Component labels
+        survive, since which edges exist has not changed.
+
+        Examples
+        --------
+        >>> import navis_fastcore as fastcore
+        >>> import numpy as np
+        >>> edges = np.array([[0, 1], [1, 2], [0, 2]], dtype=np.uint32)
+        >>> g = fastcore.GeodesicGraph(edges, 3, weights=[1.0, 1.0, 5.0])
+        >>> g.distances(sources=[0], targets=[2])
+        array([[2.]], dtype=float32)
+        >>> g.set_weights([[0, 2]], [0.5])
+        >>> g.distances(sources=[0], targets=[2])
+        array([[0.5]], dtype=float32)
+
+        """
+        edges, _ = _prep_edges(edges, self.n_nodes)
+        weights = np.asarray(weights, dtype=np.float32).ravel()
+        if len(weights) == 1:
+            # One value for all of them - the shape a caller zeroing a path writes. `repeat`
+            # of a length-1 array is a no-op, so the K == 1 case needs no special casing.
+            weights = np.repeat(weights, len(edges))
+        return self._graph.set_weights(edges, _prep_weights(weights, edges))
+
+    def clusters(self, max_dist, seeds=None):
+        """Greedily partition *nodes* into connected clusters of bounded radius.
+
+        As :func:`~navis_fastcore.geodesic_clusters`, minus the adjacency build. This is
+        the radius-bounded sibling of :meth:`grow`'s count-bounded ball: use this when
+        the cluster's physical extent is what must be fixed, :meth:`grow` when its size
+        is.
+
+        On a graph built with ``directed=True`` this grows *out*-balls, so it differs
+        from the always-undirected free function.
+
+        Parameters
+        ----------
+        max_dist : float
+                   Maximum distance from a cluster's seed.
+        seeds :    iterable, optional
+                   Preferred seed nodes, in order of preference. Any node still
+                   unassigned afterwards seeds a cluster of its own.
+
+        Returns
+        -------
+        labels :     (n_nodes, ) int32 array of contiguous cluster ids.
+        n_clusters : int
+
+        """
+        return self._graph.clusters(
+            float(max_dist), _prep_indices(seeds, self.n_nodes, "seeds")
+        )
+
+    def components(self):
+        """Component label of each *node*.
+
+        Labels are node indices - the smallest node index in the component, the same
+        convention :func:`~navis_fastcore.connected_components_graph` uses. See
+        :meth:`item_components` for the per-item view.
+
+        Returns
+        -------
+        labels : (n_nodes, ) uint32 array
+
+        """
+        return self._graph.components()
+
+    def subset(self, nodes):
+        """The subgraph induced on `nodes`, as a graph in its own right.
+
+        New node ``i`` is old node ``nodes[i]``. Edges with an endpoint outside the
+        subset are dropped, and items go wherever their node did - an item whose node was
+        dropped goes with it. The result carries ``parent_nodes`` and ``parent_items``
+        so anything computed on it can be mapped back.
+
+        The subgraph is carved out of the adjacency already built rather than re-derived,
+        so this never returns to your original edge list - which is the point, since
+        masking and renumbering an edge list in numpy is both slower and easy to get
+        wrong. Restricting to one connected component is the motivating case.
+
+        Distances within a subset are *not* generally the parent's: a shortest path that
+        left the subset is gone. Taking a whole connected component is the case where
+        they do agree.
+
+        Parameters
+        ----------
+        nodes : iterable or (n_nodes, ) bool array
+                Nodes to keep, as indices or as a mask. Indices may be in any order but
+                must not repeat; the order becomes the subgraph's node order.
+
+        Returns
+        -------
+        subgraph : GeodesicGraph
+
+        Examples
+        --------
+        Pull out the largest connected component:
+
+        >>> import navis_fastcore as fastcore
+        >>> import numpy as np
+        >>> edges = np.array([[0, 1], [2, 3], [3, 4]], dtype=np.uint32)
+        >>> g = fastcore.GeodesicGraph(edges, 5)
+        >>> labels = g.components()
+        >>> sub = g.subset(labels == np.bincount(labels).argmax())
+        >>> sub.n_nodes
+        3
+        >>> sub.parent_nodes            # which original nodes these are
+        array([2, 3, 4], dtype=uint32)
+        >>> sub.distances(sources=[0], targets=[2])
+        array([[2.]], dtype=float32)
+
+        """
+        nodes = np.asarray(nodes)
+        if nodes.dtype == bool:
+            if nodes.shape != (self.n_nodes,):
+                raise ValueError(
+                    f"a boolean `nodes` mask must have {self.n_nodes} entries, "
+                    f"got {nodes.shape}"
+                )
+            nodes = np.flatnonzero(nodes)
+        nodes = _prep_indices(nodes, self.n_nodes, "nodes")
+        inner, kept_items = self._graph.subset(nodes)
+        return type(self)._wrap(inner, nodes, kept_items)
+
+    def grow(self, seed, size, forbidden=None, return_distances=False):
+        """Grow a connected region of up to ``size`` items outwards from ``seed``.
+
+        Settles nodes in order of increasing geodesic distance from the seed's node,
+        collecting the items on each until ``size`` are gathered. The region is
+        therefore the geodesic *ball* around the seed that happens to hold ``size``
+        items - not whatever a depth-first walk stumbled into - and it is always
+        connected, since every node reached bar the seed's own is reached through one
+        settled before it.
+
+        This is the count-bounded sibling of
+        :func:`~navis_fastcore.geodesic_clusters`, which bounds by radius instead. Use
+        this one when the fragment *size* is what must be fixed, e.g. tiling a neuron
+        into equal-length inputs for a neural network.
+
+        Parameters
+        ----------
+        seed :      int
+                    Item to grow from.
+        size :      int
+                    How many items to gather. You get fewer only when the reachable
+                    region runs out of eligible items.
+        forbidden : (n_items, ) bool array, optional
+                    Items an earlier fragment already claimed. Claimed items are never
+                    collected, and a node whose items are *all* claimed becomes a wall
+                    that growth will not cross - which is what makes repeated calls
+                    carve the graph into disjoint *connected* fragments rather than
+                    letting a later fragment tunnel through an earlier one. Nodes
+                    carrying no items at all always conduct. If ``None``, nothing is
+                    claimed, so successive calls are independent and may overlap.
+        return_distances : bool
+                    Also return each item's distance to the seed. It costs nothing - the
+                    search settles items in distance order, so it already holds the
+                    number - and it is what you need to make a patch *non-uniform*, e.g.
+                    to thin it radially into a dense core with a sparse, far-reaching
+                    halo. Items sharing a node share a distance exactly, since an item's
+                    position is its node's.
+
+        Returns
+        -------
+        region :    (<= size, ) uint32 array
+                    Item indices, seed-first and in increasing-distance order.
+        distances : (<= size, ) float32 array
+                    Only if ``return_distances=True``. Each item's distance to the seed,
+                    in the graph's own metric (hop counts when ``weights=None``), and
+                    non-decreasing by construction.
+
+        Examples
+        --------
+        A path of 7 nodes carrying a sparse cloud - two points at each end, nothing in
+        between. The empty nodes conduct, so the patch spans them:
+
+        >>> import navis_fastcore as fastcore
+        >>> import numpy as np
+        >>> edges = np.array([[i, i + 1] for i in range(6)], dtype=np.uint32)
+        >>> g = fastcore.GeodesicGraph(edges, 7, item_nodes=[0, 0, 6, 6])
+        >>> g.n_items
+        4
+        >>> g.grow(0, 4)
+        array([0, 1, 2, 3], dtype=uint32)
+
+        The distances come back alongside on request - here both points at each end
+        share their node's distance:
+
+        >>> g.grow(0, 4, return_distances=True)[1]
+        array([0., 0., 6., 6.], dtype=float32)
+
+        """
+        return self._graph.grow(
+            int(seed),
+            int(size),
+            _prep_mask(forbidden, self.n_items, "forbidden"),
+            bool(return_distances),
+        )
+
+    def farthest_seed(self, done):
+        """The undone item geodesically farthest from everything already done.
+
+        Calling this repeatedly with a growing ``done`` set is farthest-point sampling:
+        it spreads seeds evenly over the graph instead of letting them clump, which is
+        what you want when placing patches, landmarks or cluster centres. Pair it with
+        :meth:`grow` - seed, grow, mark what you covered, seed again.
+
+        Only items *reachable* from something in ``done`` are candidates. Unreachable
+        ones are infinitely far and would otherwise win every time, so a mesh with a few
+        hundred disconnected specks would seed every speck before returning to the main
+        body. Once the reachable frontier is exhausted - or when ``done`` is empty - this
+        jumps to a fresh component, largest first. Ties go to the lower item index.
+
+        Parameters
+        ----------
+        done :  (n_items, ) bool array
+                Items already seeded or covered.
+
+        Returns
+        -------
+        seed :  int or None
+                ``None`` only when every item is already done.
+
+        Notes
+        -----
+        The distance field is maintained incrementally, and each update is *pruned*
+        against the running field, so a call costs the region the new sources actually
+        claim rather than a sweep of the whole graph. The usual implementation of this
+        (a fresh multi-source Dijkstra per seed, e.g. via
+        ``scipy.sparse.csgraph.dijkstra(..., min_only=True)``) cannot prune that way and
+        so goes quadratic in the number of seeds: placing 2560 seeds on a 160k-vertex
+        mesh takes ~93 s that way against ~0.35 s here.
+
+        ``done`` is expected to only ever *grow* between calls. It may shrink - the field
+        is rebuilt from scratch when that is detected, so the answer stays correct - but
+        that call loses the incremental saving.
+
+        Examples
+        --------
+        >>> import navis_fastcore as fastcore
+        >>> import numpy as np
+        >>> edges = np.array([[i, i + 1] for i in range(8)], dtype=np.uint32)
+        >>> g = fastcore.GeodesicGraph(edges, 9)
+        >>> done = np.zeros(9, dtype=bool)
+        >>> done[0] = True
+        >>> picks = []
+        >>> for _ in range(4):
+        ...     s = g.farthest_seed(done)
+        ...     picks.append(s)
+        ...     done[s] = True
+        >>> picks  # the far end, then repeated bisection
+        [8, 4, 2, 6]
+
+        """
+        return self._graph.farthest_seed(_prep_mask(done, self.n_items, "done"))
+
+    def item_components(self):
+        """Component label of each item.
+
+        Labels are node indices - specifically the smallest node index in the component,
+        the same convention
+        :func:`~navis_fastcore.connected_components_graph` uses - not a contiguous range.
+
+        :meth:`farthest_seed` deliberately does not offer a "random seed from the largest
+        component"; that would mean owning a random number generator, and a caller who
+        cares about reproducibility wants it to be theirs. This is the piece to build it
+        from:
+
+        >>> import navis_fastcore as fastcore
+        >>> import numpy as np
+        >>> edges = np.array([[0, 1], [2, 3], [3, 4]], dtype=np.uint32)
+        >>> g = fastcore.GeodesicGraph(edges, 5)
+        >>> labels = g.item_components()
+        >>> labels
+        array([0, 0, 2, 2, 2], dtype=uint32)
+        >>> pool = np.flatnonzero(labels == np.bincount(labels).argmax())
+        >>> int(np.random.default_rng(0).choice(pool))  # a seed off the largest component
+        4
+
+        Returns
+        -------
+        labels : (n_items, ) uint32 array
+
+        """
+        return self._graph.item_components()
