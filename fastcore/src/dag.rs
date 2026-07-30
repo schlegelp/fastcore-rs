@@ -747,12 +747,18 @@ fn visit_forward<T>(
     // This node as a target, against every source above it. Now the roles are reversed: the
     // sources are *upstream* of the target, which is the direction `directed` rejects.
     // `active_sources` is sorted by depth, so walking it backwards lets us stop at the first
-    // strictly shallower source rather than scanning the whole path (which would put the
+    // source that is not below us rather than scanning the whole path (which would put the
     // quadratic straight back in).
+    //
+    // The bound has to be `<=`, not `<`: everything on `active_sources` is a *strict* ancestor
+    // (this node is pushed further down), but a zero-weight edge -- coincident nodes are routine
+    // in traced skeletons -- gives an ancestor the *same* depth. A strict `<` would let it
+    // through and write distance 0, reporting a parent as reachable from its child's direction.
+    // The only legitimate equal-depth source is this node itself, handled separately below.
     if let Some(col) = col {
         if directed {
             for (source_ix, source_depth) in active_sources.iter().rev() {
-                if *source_depth < depth {
+                if *source_depth <= depth {
                     break;
                 }
                 dists[[*source_ix, col]] = narrow((*source_depth - depth).abs());
@@ -2258,6 +2264,32 @@ mod tests {
         let (dist, tgt) = geodesic_nearest::<f32>(&parents.view(), &sources, &None, &None, true);
         assert_eq!(dist[0], 1.0);
         assert_eq!(tgt[0], 1);
+    }
+
+    /// A zero-weight edge makes an ancestor sit at the *same* depth as its descendant. The
+    /// `directed` early-out in `visit_forward` uses depth as a proxy for ancestry, so it has to
+    /// break on `<=`; a strict `<` never fires here and writes the upstream pair as distance 0,
+    /// i.e. a parent reported as reachable from its child's direction.
+    #[test]
+    fn directed_partial_does_not_leak_across_zero_weight_edges() {
+        // 0 <- 1 <- 2, with the 0 -> 1 edge collapsed (weight stored on the child).
+        let parents = arr1(&[-1, 0, 1]);
+        let weights = Some(arr1(&[0.0f32, 0.0, 1.0]));
+        let sources = Some(arr1(&[0]));
+        let targets = Some(arr1(&[1, 2]));
+
+        let dists =
+            geodesic_distances_partial::<f32>(&parents.view(), &sources, &targets, &weights, true);
+
+        // Node 0 is upstream of both, so neither is reachable walking rootwards from it.
+        assert_eq!(dists[[0, 0]], -1.0); // node 1, coincident with node 0
+        assert_eq!(dists[[0, 1]], -1.0); // node 2, one hop further down
+
+        // The reverse direction is unaffected: both still reach node 0, node 1 at zero cost.
+        let dists =
+            geodesic_distances_partial::<f32>(&parents.view(), &targets, &sources, &weights, true);
+        assert_eq!(dists[[0, 0]], 0.0);
+        assert_eq!(dists[[1, 0]], 1.0);
     }
 
     /// A source that is its own only target has no *distinct* target and must report "none".
