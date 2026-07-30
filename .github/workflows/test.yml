@@ -46,7 +46,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: |
           pip install -U pip wheel
-          pip install pandas numpy scipy pytest maturin
+          pip install pandas numpy scipy pytest maturin igraph
         name: Install dependencies
       - run: |
           mkdir -p $TGT_DIR
@@ -74,7 +74,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: |
           pip install -U pip wheel
-          pip install pandas numpy scipy pytest maturin
+          pip install pandas numpy scipy pytest maturin igraph
         name: Install dependencies
       - run: |
           mkdir -p $TGT_DIR
@@ -99,11 +99,45 @@ jobs:
           python-version: "3.11"
       - run: |
           pip install -U pip wheel
-          pip install pandas numpy scipy pytest maturin
+          pip install pandas numpy scipy pytest maturin igraph
         name: Install dependencies
       - run: |
           mkdir -p dist
           maturin build --release --interpreter python --out .
           pip install (get-item navis_fastcore-*.whl)
         name: Install and test package
+      - run: pytest --verbose
+
+  # igraph backs the parity suite (`tests/test_igraph_parity.py`) as a correctness
+  # oracle. It must never become a runtime dependency, so this job runs the suite
+  # without it and asserts the parity tests skip rather than error.
+  no-igraph:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          pip install -U pip wheel
+          pip install pandas numpy scipy pytest maturin
+        name: Install dependencies (deliberately no igraph)
+      - run: |
+          mkdir -p $TGT_DIR
+          rm -f $TGT_DIR/*.whl
+          maturin build --release --interpreter python --out $TGT_DIR
+          pip install $TGT_DIR/*.whl
+        name: Install package
+        env:
+          TGT_DIR: "target/wheels/no-igraph"
+      - run: |
+          python -c "
+          import importlib.util, sys
+          if importlib.util.find_spec('igraph'): sys.exit('igraph leaked into the env')
+          "
+        name: Assert igraph is absent
       - run: pytest --verbose

@@ -43,3 +43,14 @@ build-backend = "maturin"
 module-name = "navis_fastcore._fastcore"
 # "extension-module" tells pyo3 we want to build an extension module (skips linking against libpython.so)
 features = ["pyo3/extension-module"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Benchmarks are opt-in - they take minutes and gate on wall-clock, which is the
+# wrong thing to run on every commit. The opt-in itself is enforced in
+# `tests/conftest.py` rather than by an `addopts` filter here, so that it still
+# applies when pytest is invoked from the repository root (where this file is not
+# the rootdir config). Run them with `pytest -m benchmark`.
+markers = [
+    "benchmark: performance and memory regression guards (see tests/test_perf.py)",
+]

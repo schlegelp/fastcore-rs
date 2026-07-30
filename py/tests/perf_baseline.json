@@ -1,0 +1,12 @@
+{
+  "calibration": 0.0015052909730002284,
+  "cases": {
+    "break_segments": 0.041718291002325714,
+    "classify_nodes": 0.00038820900954306126,
+    "connected_components": 0.0025356659898534417,
+    "dist_to_root": 0.0005810830043628812,
+    "generate_segments": 0.031769791967235506,
+    "geodesic_matrix_partial": 0.003839291981421411
+  },
+  "n": 100000
+}

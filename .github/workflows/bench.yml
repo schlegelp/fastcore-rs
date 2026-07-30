@@ -1,0 +1,47 @@
+name: bench
+
+# Performance guards are deliberately kept off the per-commit path: they gate on
+# wall-clock, which on shared runners is noisy enough to flake if run constantly.
+# Nightly plus on-demand gives regression coverage without training anyone to
+# ignore a red check.
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: ./py
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          pip install -U pip wheel
+          pip install pandas numpy scipy pytest maturin igraph
+        name: Install dependencies
+      - run: |
+          mkdir -p $TGT_DIR
+          rm -f $TGT_DIR/*.whl
+          maturin build --release --interpreter python --out $TGT_DIR
+          pip install $TGT_DIR/*.whl
+        name: Install package
+        env:
+          TGT_DIR: "target/wheels/bench"
+      # `-s` so the fastcore-vs-oracle table reaches the log. The committed
+      # baseline is normalised by a calibration workload timed in this same
+      # session, so a slower runner shifts the budget rather than failing.
+      - run: pytest -m benchmark -s --verbose
+        name: Run performance guards
