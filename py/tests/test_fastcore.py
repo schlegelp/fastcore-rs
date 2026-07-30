@@ -105,11 +105,16 @@ def test_generate_segments(swc, weights):
     # `lengths[i]` must describe `segments[i]`. The weighted branch used to sort the
     # segments longest-first but hand back the lengths in their original order, so the
     # two did not line up -- and nothing here caught it.
+    #
+    # A length spans the segment's first node to its last, so the terminal node is
+    # excluded: a segment stops *at* a branch point, whose own child -> parent edge
+    # carries on into the parent segment. Weights are indexed by child, so dropping the
+    # last node is exactly dropping that edge.
     if weights is None:
-        expected = [len(s) for s in segments]
+        expected = [len(s) - 1 for s in segments]
     else:
         w = dict(zip(nodes, weights))
-        expected = [sum(w[n] for n in s) for s in segments]
+        expected = [sum(w[n] for n in s[:-1]) for s in segments]
     np.testing.assert_allclose(lengths, expected, rtol=1e-5)
 
     # Segments come out longest-first.

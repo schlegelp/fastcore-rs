@@ -128,7 +128,14 @@ fn find_roots(parents: &ArrayView1<i32>) -> Vec<i32> {
 ///
 /// Returns:
 ///
-/// A vector of vectors where each vector contains the nodes of a segment.
+/// A vector of vectors where each vector contains the nodes of a segment, plus (if `weights`
+/// were given) the length of each segment.
+///
+/// A segment's length is the distance from its **first node to its last** -- i.e. the sum over
+/// the edges strictly inside it. Weights are indexed by child, so `weights[n]` is the length of
+/// the edge from `n` up to its parent; the *last* node's edge leaves the segment (it belongs to
+/// the parent segment, which continues from that branch point) and is therefore not counted.
+/// A single-node segment has length 0.
 ///
 pub fn generate_segments<T>(parents: &ArrayView1<i32>, weights: Option<Array1<T>>) -> (Vec<Vec<i32>>, Option<Vec<T>>)
 where
@@ -198,7 +205,11 @@ where
         let unsorted: Vec<T> = all_segments
             .iter()
             .map(|segment| {
-                segment
+                // First node to last, so the terminal node's own edge -- which runs out of
+                // the segment and into the parent one -- is excluded. `saturating_sub` keeps
+                // a hypothetical empty segment from underflowing; single-node segments
+                // correctly come out at 0.
+                segment[..segment.len().saturating_sub(1)]
                     .iter()
                     .map(|&node| weights[node as usize])
                     .sum::<T>()
@@ -747,12 +758,18 @@ fn visit_forward<T>(
     // This node as a target, against every source above it. Now the roles are reversed: the
     // sources are *upstream* of the target, which is the direction `directed` rejects.
     // `active_sources` is sorted by depth, so walking it backwards lets us stop at the first
-    // strictly shallower source rather than scanning the whole path (which would put the
+    // source that is not below us rather than scanning the whole path (which would put the
     // quadratic straight back in).
+    //
+    // The bound has to be `<=`, not `<`: everything on `active_sources` is a *strict* ancestor
+    // (this node is pushed further down), but a zero-weight edge -- coincident nodes are routine
+    // in traced skeletons -- gives an ancestor the *same* depth. A strict `<` would let it
+    // through and write distance 0, reporting a parent as reachable from its child's direction.
+    // The only legitimate equal-depth source is this node itself, handled separately below.
     if let Some(col) = col {
         if directed {
             for (source_ix, source_depth) in active_sources.iter().rev() {
-                if *source_depth < depth {
+                if *source_depth <= depth {
                     break;
                 }
                 dists[[*source_ix, col]] = narrow((*source_depth - depth).abs());
@@ -2260,6 +2277,32 @@ mod tests {
         assert_eq!(tgt[0], 1);
     }
 
+    /// A zero-weight edge makes an ancestor sit at the *same* depth as its descendant. The
+    /// `directed` early-out in `visit_forward` uses depth as a proxy for ancestry, so it has to
+    /// break on `<=`; a strict `<` never fires here and writes the upstream pair as distance 0,
+    /// i.e. a parent reported as reachable from its child's direction.
+    #[test]
+    fn directed_partial_does_not_leak_across_zero_weight_edges() {
+        // 0 <- 1 <- 2, with the 0 -> 1 edge collapsed (weight stored on the child).
+        let parents = arr1(&[-1, 0, 1]);
+        let weights = Some(arr1(&[0.0f32, 0.0, 1.0]));
+        let sources = Some(arr1(&[0]));
+        let targets = Some(arr1(&[1, 2]));
+
+        let dists =
+            geodesic_distances_partial::<f32>(&parents.view(), &sources, &targets, &weights, true);
+
+        // Node 0 is upstream of both, so neither is reachable walking rootwards from it.
+        assert_eq!(dists[[0, 0]], -1.0); // node 1, coincident with node 0
+        assert_eq!(dists[[0, 1]], -1.0); // node 2, one hop further down
+
+        // The reverse direction is unaffected: both still reach node 0, node 1 at zero cost.
+        let dists =
+            geodesic_distances_partial::<f32>(&parents.view(), &targets, &sources, &weights, true);
+        assert_eq!(dists[[0, 0]], 0.0);
+        assert_eq!(dists[[1, 0]], 1.0);
+    }
+
     /// A source that is its own only target has no *distinct* target and must report "none".
     #[test]
     fn farthest_excludes_self() {
@@ -2530,12 +2573,53 @@ mod tests {
 
         assert_eq!(segments.len(), lengths.len());
         for (segment, reported) in segments.iter().zip(lengths.iter()) {
-            let actual: f32 = segment.iter().map(|&n| weights[n as usize]).sum();
+            // First node to last: the terminal node's edge belongs to the parent segment.
+            let actual: f32 = segment[..segment.len() - 1]
+                .iter()
+                .map(|&n| weights[n as usize])
+                .sum();
             assert_eq!(actual, *reported);
         }
 
         // And they must still come out longest-first.
         assert!(lengths.windows(2).all(|w| w[0] >= w[1]));
+    }
+
+    /// A segment's length is the distance between its endpoints, so the terminal node's own
+    /// child->parent edge -- which leaves the segment -- must not be counted. It used to be,
+    /// which made every segment ending at a branch point one edge too long (segments ending
+    /// at a root were unaffected, because a root's weight slot is 0).
+    #[test]
+    fn generate_segments_lengths_span_first_to_last_node() {
+        //   0 - 1 - 2 - 3
+        //        \
+        //         4
+        // Every edge weighs 1, and node 1's own edge (1 -> 0) weighs 10 so that wrongly
+        // including it in the twig's length is unmissable.
+        let parents = arr1(&[-1, 0, 1, 2, 1]);
+        let weights = arr1(&[0.0f32, 10.0, 1.0, 1.0, 1.0]);
+
+        let (segments, lengths) = generate_segments(&parents.view(), Some(weights));
+        let lengths = lengths.expect("weighted input must return lengths");
+
+        // Longest first: [3, 2, 1, 0] spans 1 + 1 + 10 = 12; the twig [4, 1] spans just 1.
+        assert_eq!(segments[0], vec![3, 2, 1, 0]);
+        assert_eq!(lengths[0], 12.0);
+        assert_eq!(segments[1], vec![4, 1]);
+        assert_eq!(lengths[1], 1.0);
+    }
+
+    /// A lone node is a segment of length 0, not of its own (meaningless) weight.
+    #[test]
+    fn generate_segments_single_node_segment_has_zero_length() {
+        let parents = arr1(&[-1, -1]);
+        let weights = arr1(&[7.0f32, 9.0]);
+
+        let (segments, lengths) = generate_segments(&parents.view(), Some(weights));
+        let lengths = lengths.expect("weighted input must return lengths");
+
+        assert!(segments.iter().all(|s| s.len() == 1));
+        assert_eq!(lengths, vec![0.0, 0.0]);
     }
 
     /// A tree where every backbone node also carries a twig, so the branch points form one

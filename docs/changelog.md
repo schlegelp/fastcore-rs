@@ -8,6 +8,29 @@ it is called out.
 Tags, source archives and the original announcements are on
 [GitHub](https://github.com/schlegelp/fastcore-rs/releases).
 
+## Unreleased
+
+### Breaking
+- `generate_segments` now measures a segment's length from its **first node to its last**.
+  It previously summed the weight vector over *every* node in the segment, including the
+  terminal one — but a segment stops *at* a branch point, whose own child→parent edge
+  continues into the parent segment. Every segment ending at a branch point was therefore
+  one edge too long; segments ending at a root were already correct, because a root's
+  weight slot is 0. Unweighted lengths change with it, from a node count to an edge count,
+  so that `weights=None` stays equivalent to `weights=ones` — the same correction
+  `dist_to_root` had in 0.6.0. Segments themselves are unchanged; only `lengths` moves
+  (and, where lengths tie differently, the order they are sorted in). Affects all three
+  surfaces.
+
+### Fixes
+- `geodesic_matrix(directed=True)` no longer leaks across zero-weight edges when `sources`
+  or `targets` are given. The partial backend used depth as a proxy for ancestry, which
+  holds only while every edge weight is strictly positive: a zero-weight edge gives an
+  ancestor the *same* depth, so it slipped through the guard and was written at distance 0
+  — reporting a parent as reachable from its child's direction. Coincident nodes are
+  routine in traced and resampled skeletons. The all-by-all backend, `geodesic_nearest`,
+  `geodesic_farthest` and `geodesic_pairs` were unaffected.
+
 ## 0.9.0 (2026-07-28)
 
 **`mesh.GeodesicGraph` — build the adjacency index once, query it many times.** The

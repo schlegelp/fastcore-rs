@@ -41,8 +41,12 @@ def generate_segments(node_ids, parent_ids, weights=None):
                  Each segment starts with a leaf and stops with a branch point
                  or root node.
     lengths :    array
-                 Length for each segment. If `weights` is provided this will be
-                 the physical length. Otherwise it will be the number of nodes.
+                 Length of each segment, measured from its **first node to its
+                 last**: the physical distance between them if `weights` was
+                 given, otherwise the number of edges. Because a segment stops
+                 *at* a branch point, that terminal node's own edge continues
+                 into the parent segment and is not counted here - so a
+                 single-node segment has length 0.
 
     Examples
     --------
@@ -54,7 +58,7 @@ def generate_segments(node_ids, parent_ids, weights=None):
     >>> segs
     [array([6, 5, 4, 1, 0]), array([3, 2, 1])]
     >>> length
-    array([5, 3], dtype=int32)
+    array([4, 2], dtype=int32)
 
     """
     # Convert parent IDs into indices
@@ -73,7 +77,9 @@ def generate_segments(node_ids, parent_ids, weights=None):
     if lengths is not None:
         lengths = np.asarray(lengths, dtype=np.float32)
     else:
-        lengths = np.array([len(s) for s in segments], dtype=np.int32)
+        # Edges, not nodes: with every edge weighing 1 this is what the weighted
+        # branch above returns, so `weights=None` stays equivalent to `weights=ones`.
+        lengths = np.array([len(s) - 1 for s in segments], dtype=np.int32)
 
     # Map node indices back to IDs
     seg_ids = [node_ids[s] for s in segments]

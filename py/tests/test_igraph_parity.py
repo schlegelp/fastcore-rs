@@ -319,10 +319,9 @@ def test_break_segments_partition_edges(topo):
 def test_generate_segments_sequences(topo, weighted):
     """The node sequences themselves must match igraph exactly.
 
-    Compared as a multiset rather than in order: the two sort their output by
-    lengths that are measured differently (see the next test), and navis' own
-    fallback breaks ties by comparing the node lists, which is arbitrary. The
-    sort *contract* is checked separately below.
+    Compared as a multiset rather than in order: navis' fallback breaks ties in
+    segment length by falling through to comparing the node lists themselves,
+    which is arbitrary. The sort *contract* is checked separately below.
     """
     weights = topo.weights if weighted else None
 
@@ -349,32 +348,21 @@ def test_generate_segments_sorted_longest_first(topo, weighted):
 
 
 @pytest.mark.parametrize("weighted", [True, False])
-def test_generate_segments_length_definition(topo, weighted):
-    """PINNED DIVERGENCE - fastcore and igraph measure segment length differently.
+def test_generate_segments_length_is_first_to_last(topo, weighted):
+    """A segment's length is the distance between its endpoints.
 
-    fastcore sums the weight vector over *every* node in the segment, including
-    the terminal one. But a segment's terminal node is a branch point (or root)
-    whose own child->parent edge lies *outside* the segment - it belongs to the
-    parent segment. igraph's geodesic length from the segment's first to its last
-    node therefore comes out one edge shorter:
+    fastcore used to sum the weight vector over *every* node in a segment,
+    including the terminal one - but a segment stops *at* a branch point, whose
+    own child->parent edge continues into the parent segment. That made every
+    segment ending at a branch point exactly one edge too long, while segments
+    ending at a root agreed (a root's weight slot is 0), and it left navis'
+    `_generate_segments(..., return_lengths=True)` returning different numbers
+    depending on which backend was installed.
 
-        fastcore_length == geodesic(first, last) + weights[last]
-
-    and unweighted, where fastcore counts nodes and the geodesic counts edges:
-
-        fastcore_length == geodesic(first, last) + 1
-
-    Segments terminating at a root agree, because a root's weight slot is 0 - which
-    is why the *longest* segment of a rooted skeleton matches and the rest do not.
-
-    This is pinned, not asserted-equal, because it is a live inconsistency in
-    navis: `_generate_segments(..., return_lengths=True)` returns fastcore's
-    definition when fastcore is installed and the geodesic one otherwise
-    (navis: `graph/graph_utils.py:125-172`). Whichever way that is resolved, this
-    test should fail and be updated deliberately.
+    Both now measure first node to last, so this is a plain equality - weighted
+    and unweighted alike, since `weights=None` means every edge weighs 1.
     """
     weights = topo.weights if weighted else None
-    ix = {nid: i for i, nid in enumerate(topo.node_ids.tolist())}
 
     ours, our_lengths = fastcore.generate_segments(
         topo.node_ids, topo.parent_ids, weights=weights
@@ -386,8 +374,20 @@ def test_generate_segments_length_definition(topo, weighted):
 
     for seg, ours_len in zip(ours, our_lengths):
         geodesic = by_seg[tuple(seg.tolist())]
-        offset = topo.weights[ix[int(seg[-1])]] if weighted else 1
-        assert np.isclose(ours_len, geodesic + offset, rtol=RTOL, atol=ATOL), (
+        assert np.isclose(ours_len, geodesic, rtol=RTOL, atol=ATOL), (
             f"segment {seg[:3]}...{seg[-1]}: fastcore {ours_len}, "
-            f"geodesic {geodesic} + {offset}"
+            f"geodesic first->last {geodesic}"
         )
+
+
+def test_generate_segments_single_node_segment_is_zero_length():
+    """A lone node spans no edges, so its length is 0 - not its own weight."""
+    node_ids = np.array([0, 1], dtype=np.int64)
+    parent_ids = np.array([-1, -1], dtype=np.int64)
+    weights = np.array([7.0, 9.0], dtype=np.float32)
+
+    _, unweighted = fastcore.generate_segments(node_ids, parent_ids)
+    _, weighted = fastcore.generate_segments(node_ids, parent_ids, weights=weights)
+
+    assert list(unweighted) == [0, 0]
+    assert list(weighted) == [0.0, 0.0]
