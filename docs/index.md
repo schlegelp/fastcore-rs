@@ -84,7 +84,7 @@ surface and how they spell it. `—` means that surface doesn't expose it direct
 | Synapse flow centrality | `dag::synapse_flow_centrality` | `synapse_flow_centrality` | `synapse_flow_centrality` |
 | Cycle detection | `dag::has_cycles` | — | `has_cycles` |
 | Node ID → index mapping | — | — (done internally) | `node_indices` |
-| Child → parent distances | — | — (see `parent_dist`) | `child_to_parent_dists` |
+| Child → parent distances | — | `parent_dist` | `child_to_parent_dists` |
 
 [^1]: R's `prune_twigs` has no `mask` argument — extendr cannot take a `Vec<bool>`.
 

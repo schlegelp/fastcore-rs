@@ -278,8 +278,10 @@ pub struct Ragged<T> {
     /// array, and numpy refuses `uint64` as `np.repeat` counts — which would break the
     /// one recipe every caller of this needs.
     pub offsets: Vec<i64>,
-    /// Indices along the scanned axis.
-    pub indices: Vec<u32>,
+    /// Indices along the scanned axis. `i64` for the same reason as `offsets`: these are
+    /// positions in the caller's `scores` matrix, and this crate hands positions back as
+    /// `i64` so they are never mistaken for the `u32` node ids the graph API returns.
+    pub indices: Vec<i64>,
     pub values: Vec<T>,
 }
 
@@ -295,8 +297,6 @@ pub enum MatchError {
     InvalidCriterion(String),
     /// `skip` was not one entry per group.
     SkipLen { got: usize, want: usize },
-    /// The scanned axis is longer than `u32::MAX` (ragged indices are `u32`).
-    AxisTooLong { len: usize },
     /// The cutoff would produce more matches than `max_matches` allows.
     TooManyMatches { total: u64, limit: u64 },
     Cancelled,
@@ -318,10 +318,6 @@ impl fmt::Display for MatchError {
             MatchError::SkipLen { got, want } => {
                 write!(f, "`skip` must have one entry per group: got {got}, want {want}")
             }
-            MatchError::AxisTooLong { len } => write!(
-                f,
-                "the scanned axis has {len} entries, which exceeds the u32 index range"
-            ),
             MatchError::TooManyMatches { total, limit } => write!(
                 f,
                 "this cutoff yields {total} matches (limit {limit}); tighten the cutoff or \
@@ -365,9 +361,6 @@ fn layout<'a, T: Score>(
     } else {
         (n_cols, n_rows)
     };
-    if n_scan > u32::MAX as usize {
-        return Err(MatchError::AxisTooLong { len: n_scan });
-    }
     if let Some(s) = opts.skip {
         if s.len() != n_groups {
             return Err(MatchError::SkipLen {
@@ -767,8 +760,8 @@ fn split_groups<'a, T>(buf: &'a mut [T], counts: &[i64]) -> Vec<&'a mut [T]> {
 /// Order a group best-first, ties by lower index. `NaN`s cannot be present (they never
 /// clear a cutoff), so this is a genuine total order and the result does not depend on the
 /// sort's stability or on the thread count.
-fn sort_group<T: Score, D: Dir>(idx: &mut [u32], val: &mut [T]) {
-    let mut pairs: Vec<(u32, T)> = idx.iter().copied().zip(val.iter().copied()).collect();
+fn sort_group<T: Score, D: Dir>(idx: &mut [i64], val: &mut [T]) {
+    let mut pairs: Vec<(i64, T)> = idx.iter().copied().zip(val.iter().copied()).collect();
     pairs.sort_unstable_by(|a, b| {
         if D::better(a.1, b.1) {
             Ordering::Less
@@ -791,7 +784,7 @@ fn fill<T: Score, D: Dir>(
     skip: Option<&[i64]>,
     w: usize,
     counts: &[i64],
-    indices: &mut [u32],
+    indices: &mut [i64],
     values: &mut [T],
     cancel: Option<&AtomicBool>,
     bar: Option<&ProgressBar>,
@@ -814,7 +807,7 @@ fn fill<T: Score, D: Dir>(
                 let mut k = 0usize;
                 for (j, &v) in row.iter().enumerate() {
                     if D::passes(v, t) && !(s >= 0 && j as i64 == s) {
-                        idx_out[k] = j as u32;
+                        idx_out[k] = j as i64;
                         val_out[k] = v;
                         k += 1;
                     }
@@ -854,7 +847,7 @@ fn fill<T: Score, D: Dir>(
                                 }
                             }
                             let k = cursor[lc];
-                            idx_seg[lc][k] = r as u32;
+                            idx_seg[lc][k] = r as i64;
                             val_seg[lc][k] = v;
                             cursor[lc] = k + 1;
                         }
@@ -970,7 +963,7 @@ pub fn matches_above<T: Score>(
                     }
                 }
 
-                let mut indices = vec![0u32; total as usize];
+                let mut indices = vec![0i64; total as usize];
                 let mut values = vec![T::ZERO; total as usize];
                 fill::<T, $d>(
                     &l, &cut, opts.skip, w, &cnt, &mut indices, &mut values, opts.cancel,
@@ -1212,7 +1205,7 @@ mod tests {
 
             let r = matches_above(m.view(), Criterion::Threshold(-2.0), o).unwrap();
             let s = r.offsets[1] as usize;
-            assert!(!r.indices[0..s].contains(&0u32));
+            assert!(!r.indices[0..s].contains(&0i64));
         }
     }
 
@@ -1250,7 +1243,7 @@ mod tests {
                             .collect();
                         assert_eq!(hi - lo, want.len(), "{crit:?} {axis:?} dist={dist} g={g}");
                         for (k, (j, v)) in want.iter().enumerate() {
-                            assert_eq!(r.indices[lo + k], *j as u32);
+                            assert_eq!(r.indices[lo + k], *j as i64);
                             assert_eq!(r.values[lo + k], *v);
                         }
                     }

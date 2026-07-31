@@ -16,6 +16,7 @@ __all__ = [
     "strahler_index",
     "subtree_height",
     "dist_to_root",
+    "parent_dist",
     "classify_nodes",
     "descendants",
     "paths_to_root",
@@ -704,8 +705,11 @@ def synapse_flow_centrality(
     return flow
 
 
-def parent_dist(node_ids, parent_ids, xyz, root_dist=None) -> None:
+def parent_dist(node_ids, parent_ids, xyz, root_dist=None):
     """Get child->parent distances for skeleton nodes.
+
+    The edge weights every other function here takes as ``weights``: the euclidean
+    distance from each node to its parent. R spells this ``child_to_parent_dists``.
 
     Parameters
     ----------

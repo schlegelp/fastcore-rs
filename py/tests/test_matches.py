@@ -190,7 +190,9 @@ def test_matches_above_vs_reference(dtype, axis, distances, crit):
     assert offsets[0] == 0
     assert offsets[-1] == len(indices) == len(values)
     assert (np.diff(offsets) >= 0).all()
-    assert indices.dtype == np.uint32
+    # Positions in `scores`, so int64 — the same dtype `top_matches` uses for the
+    # same quantity. See docs/python/index.md, "Integer return dtypes".
+    assert indices.dtype == np.int64
     assert offsets.dtype == np.int64
     assert values.dtype == dtype
 

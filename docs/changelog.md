@@ -120,15 +120,19 @@ segfault there.
 expensive once the API is frozen.
 
 - **Integer returns follow one rule**, written down in the
-  [Python overview](python/index.md#integer-return-dtypes): a node id is `uint32`, a node
-  id needing a `-1` sentinel is `int32`, and a *position in an array you passed in* is
-  `int64`. The point is the third — `int64` tells you the values index your array rather
-  than the graph, so `nodes[out]` is the node-id form and `out` alone is not. Three
-  returns moved to fit (see Breaking).
+  [Python overview](python/index.md#integer-return-dtypes): a node id is `uint32`; a node
+  id needing a `-1` sentinel, or a dense label such as a cluster id, is `int32`; and a
+  *position in an array you passed in* is `int64`. The point is the last — `int64` tells
+  you the values index your array rather than the graph, so `nodes[out]` is the node-id
+  form and `out` alone is not. Four returns moved to fit (see Breaking). The rule governs
+  the index-space API; the tree functions work in *ID space* and hand back values in the
+  dtype of the `node_ids` you gave them, which the overview now states explicitly.
 - **`from navis_fastcore import *` exports functions only.** The package had no `__all__`,
   so `import *` took the default and dragged in seven submodule objects while dropping
   `__version__` for starting with an underscore. It is now composed from the submodules'
-  own `__all__`, so a new function is exported by listing it in one place.
+  own `__all__`, so a new function is exported by listing it in one place. `parent_dist`
+  is exported for the first time along with it: it was public and documented but in no
+  `__all__`, so `fastcore.parent_dist` did not resolve.
 - `GeodesicGraph.subset` validated its `nodes` argument in three places — the Python
   wrapper, the binding layer and the core. The binding-layer copy is gone; the wrapper now
   uses the same `unique=True` check every other node subset in the package goes through.
@@ -147,6 +151,12 @@ expensive once the API is frozen.
   positions in the `3F` edge list, not node ids. Python callers who fed these straight back
   in were already coercing to `uint32`; those coercions are now no-ops rather than copies.
   R is unaffected — the bindings already narrowed to R integers.
+- **`matches_above`' `indices` is now `int64`, not `uint32`.** It is a position along the
+  scanned axis of the `scores` matrix you passed in — the same quantity `top_matches`
+  returns, which was already `int64`. The two disagreed on the dtype of one thing. The
+  ragged array is the larger of the two, so this does cost memory; consistency at the call
+  site is worth more than the width. `MatchError::AxisTooLong` goes with it — it existed
+  only to refuse a scanned axis longer than `u32::MAX`, which is no longer a limit.
 - `generate_segments` now measures a segment's length from its **first node to its last**.
   It previously summed the weight vector over *every* node in the segment, including the
   terminal one — but a segment stops *at* a branch point, whose own child→parent edge

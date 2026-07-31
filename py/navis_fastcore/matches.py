@@ -176,8 +176,9 @@ def matches_above(scores, threshold=None, percentage=None, axis=0, distances=Fal
     -------
     offsets :       (n_groups + 1,) int64
                     Group `g`'s matches are `indices[offsets[g]:offsets[g + 1]]`.
-    indices :       (total,) uint32
-                    Index along the other axis, best first within each group.
+    indices :       (total,) int64
+                    Index along the other axis, best first within each group. Same
+                    quantity, and same dtype, as `top_matches`' `indices`.
     values :        (total,)
                     The matching scores, in the dtype of `scores`.
 
@@ -192,7 +193,7 @@ def matches_above(scores, threshold=None, percentage=None, axis=0, distances=Fal
     >>> offsets
     array([0, 2, 3, 5])
     >>> indices[offsets[0]:offsets[1]]   # query 0's matches, best first
-    array([0, 2], dtype=uint32)
+    array([0, 2])
 
     Expand to a long-format table without a Python loop:
 
