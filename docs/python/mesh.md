@@ -157,6 +157,119 @@ entirely.
 
 ::: navis_fastcore.minimum_spanning_tree
 
+### Turning an edge list into a tree
+
+[`minimum_spanning_tree`](#navis_fastcore.minimum_spanning_tree) picks *which* edges
+survive. [`spanning_forest`](#navis_fastcore.spanning_forest) picks which way they point —
+which is what turns a bag of undirected edges into something you can walk, root, or write
+out as SWC. Cycles in the input are fine; each component contributes a spanning tree of
+itself, so this doubles as the cycle-breaker `networkx.bfs_tree` is usually pressed into.
+
+```python
+import navis_fastcore as fastcore
+
+# Break cycles, orient, and re-index so parents come before their children
+keep = fastcore.minimum_spanning_tree(edges, n, weights=lengths)
+parents, order = fastcore.spanning_forest(edges[keep], n)
+
+new_ids = np.empty(n, dtype=np.int64)
+new_ids[order] = np.arange(n)
+swc_parents = np.where(parents < 0, -1, new_ids[parents])[order]
+```
+
+`order` is the second return for exactly that last step. A node always settles after its
+parent, so relabelling by it guarantees parents get lower ids than their children — the SWC
+requirement — and it comes free, since the search already visits nodes in that order.
+
+**One search, not one per component.** The obvious construction is a shortest-path tree per
+component, which is what [`geodesic_predecessors`](#navis_fastcore.geodesic_predecessors)
+gives you — and it costs `O(components x n_nodes)` in *output alone*. On a skeleton that
+shatters into four thousand fragments that is a 2 GB array to answer a question whose answer
+is one `n_nodes`-long column. Here the components are swept one after another into that
+single column, so the cost is `O(V + E)` however finely the graph is fragmented:
+
+| 100k-node graph | fastcore | igraph (BFS per component) | networkx (`bfs_tree` per component) |
+|---|---|---|---|
+| one arbor | 2.9 ms | 14 ms | 365 ms |
+| ~4000 fragments | 2.7 ms | 4370 ms | 285 ms |
+
+Weights are optional and change what you get: `None` gives the breadth-first tree, weights
+give the shortest-path tree. Neither is the minimum spanning tree — for that, run
+`minimum_spanning_tree` first and orient what it keeps, as above.
+
+::: navis_fastcore.spanning_forest
+
+### Which edges are load-bearing
+
+[`bridges`](#navis_fastcore.bridges) is the counterpart to
+[`minimum_spanning_tree`](#navis_fastcore.minimum_spanning_tree) rather than a variant of
+it: the MST asks which edges to *keep* to stay connected, this asks which ones may not be
+*dropped*. That is the question behind "prune this graph but do not shatter it", where you
+have a set of edges you would like gone and need to know which of them are load-bearing.
+
+```python
+# Drop the edges you don't want -- except the ones holding the graph together
+unwanted = ...                        # bool mask over `edges`
+safe = unwanted & ~fastcore.bridges(edges, n)
+edges = edges[~safe]
+```
+
+Parallel edges are honoured: two nodes joined twice are joined by a cycle, so neither of
+those edges is a bridge. That is why this does not share the deduplicated adjacency the
+geodesic searches use — that would fuse a parallel pair into one edge and report a bridge
+that is not there. Self-loops are never bridges.
+
+It is Tarjan's algorithm on an explicit stack, so a mesh strip tens of thousands of vertices
+long does not overflow anything. Against igraph's `Graph.bridges()` on a 100k-node graph:
+2.6 ms against 13.5 ms for one arbor, 2.2 ms against 207 ms once it fragments.
+
+::: navis_fastcore.bridges
+
+### Spanning a subset by geodesic distance
+
+Skeletonization ends up here: the mesh has been thinned to a scatter of surviving vertices
+that must be rejoined *along the surface* rather than through space. That is a minimum
+spanning tree over a `k`-node subset, weighted by geodesic distance in the mesh underneath.
+
+The obvious route is to ask for the `k x k` geodesic matrix and hand it to a matrix MST.
+That materialises `k**2` distances to use `k - 1` of them — 400 MB at `k = 10_000`, before
+the `O(k^2)` MST itself — and needs `k` separate searches to fill.
+[`geodesic_mst_mesh`](#navis_fastcore.geodesic_mst_mesh) never forms the matrix:
+
+```python
+edges, weights = fastcore.geodesic_mst_mesh(faces, keep, vertices)
+
+# Rows index `keep`, so map them back yourself
+skeleton_edges = keep[edges]
+```
+
+Following Mehlhorn's construction for the distance network, one multi-source search
+partitions *every* vertex by which of `keep` is nearest, and then each mesh edge whose
+endpoints fall in different cells offers one candidate: joining their two owners at
+`d(u) + w(u, v) + d(v)`. An MST over those candidates is an MST of the full distance
+network, so one sweep and one Kruskal replace `k` searches and a dense matrix. The returned
+weights come back exactly equal to the geodesic distances between the pairs they join, so
+they are usable as lengths and not merely as an ordering.
+
+The cost is flat in `k`, because it is one sweep whatever `k` is — which is the whole shape
+of the table, on a 100k-node graph:
+
+| `k` | fastcore | `k x k` matrix + MST | matrix size |
+|---|---|---|---|
+| 250 | 12.7 ms | 187 ms | 0.3 MB |
+| 1000 | 7.6 ms | 584 ms | 4 MB |
+| 4000 | 8.3 ms | 7820 ms | 64 MB |
+
+`limit` bounds how far apart two nodes may be and still be joined. The result is then the
+MST of the graph on `nodes` keeping only pairs within `limit`, which is a *forest* when that
+graph is disconnected — the same trade `scipy.sparse.csgraph.dijkstra(limit=...)` offers,
+except that here it also prunes the sweep, so it buys time rather than merely discarding
+results. Nodes in different components of the mesh are never joined either way.
+
+::: navis_fastcore.geodesic_mst_mesh
+
+::: navis_fastcore.geodesic_mst_graph
+
 ### Paths, not just distances
 
 [`geodesic_matrix_graph`](#navis_fastcore.geodesic_matrix_graph) answers *how far*;

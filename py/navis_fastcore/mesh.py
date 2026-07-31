@@ -8,6 +8,10 @@ __all__ = [
     "level_set_components",
     "contract_vertices",
     "minimum_spanning_tree",
+    "bridges",
+    "spanning_forest",
+    "geodesic_mst_mesh",
+    "geodesic_mst_graph",
     "unique_edges",
     "geodesic_matrix_mesh",
     "geodesic_matrix_graph",
@@ -446,6 +450,346 @@ def minimum_spanning_tree(edges, n_nodes, weights=None, maximize=False, threads=
     )
 
 
+def bridges(edges, n_nodes):
+    """Find the edges whose removal would disconnect their component.
+
+    Tarjan's algorithm: one depth-first sweep tracking, per node, the earliest
+    node reachable from its subtree by a single back edge. A tree edge ``(u, v)``
+    is a bridge exactly when nothing under ``v`` can climb above it, i.e. there is
+    no second route around it.
+
+    The counterpart to :func:`~navis_fastcore.minimum_spanning_tree` rather than a
+    variant of it: the MST asks which edges to *keep* to stay connected, this asks
+    which ones may not be *dropped*. That is the question behind "prune this graph
+    but do not shatter it", where you have a set of edges you would like gone and
+    need to know which of them are load-bearing.
+
+    Parameters
+    ----------
+    edges :   (E, 2) array
+              Edges given as rows of two node indices. Treated as undirected.
+    n_nodes : int
+              Total number of nodes.
+
+    Returns
+    -------
+    mask :    (E, ) bool array
+              ``True`` for each edge that is a bridge. A mask rather than a list of
+              indices because the next move is nearly always to filter a parallel
+              array; ``np.flatnonzero`` recovers the indices when it is not.
+
+    Notes
+    -----
+    Parallel edges are honoured: two nodes joined twice are joined by a cycle, so
+    neither of those edges is a bridge. Self-loops are never bridges. This is why
+    ``bridges`` does not share the deduplicated adjacency the geodesic searches in
+    this module use — that would fuse a parallel pair into one edge and report a
+    bridge that is not there.
+
+    Examples
+    --------
+    Every edge of a tree is a bridge:
+
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> path = np.array([[0, 1], [1, 2], [2, 3]], dtype=np.uint32)
+    >>> fastcore.bridges(path, 4)
+    array([ True,  True,  True])
+
+    Close it into a ring and none of them is:
+
+    >>> ring = np.array([[0, 1], [1, 2], [2, 3], [3, 0]], dtype=np.uint32)
+    >>> fastcore.bridges(ring, 4)
+    array([False, False, False, False])
+
+    Two triangles joined by a single edge — only the link:
+
+    >>> edges = np.array([[0, 1], [1, 2], [2, 0],
+    ...                   [3, 4], [4, 5], [5, 3],
+    ...                   [2, 3]], dtype=np.uint32)
+    >>> fastcore.bridges(edges, 6)
+    array([False, False, False, False, False, False,  True])
+
+    """
+    edges, n_nodes = _prep_edges(edges, n_nodes)
+    return _fastcore.bridges(edges, n_nodes)
+
+
+def spanning_forest(edges, n_nodes, weights=None, roots=None):
+    """Orient a graph into a rooted spanning forest — one parent per node.
+
+    The missing half of "I have an edge list and I want a tree".
+    :func:`~navis_fastcore.minimum_spanning_tree` picks *which* edges survive; this
+    picks which way they point, which is what turns a bag of undirected edges into
+    something you can walk, root, or write out as SWC. Cycles in the input are
+    fine — each component contributes a spanning tree of itself, so this doubles as
+    the cycle-breaker ``networkx.bfs_tree`` is usually pressed into.
+
+    One search covers the whole graph. The obvious construction — a shortest-path
+    tree per component — is what
+    :func:`~navis_fastcore.geodesic_predecessors` gives you, and it costs
+    ``O(components * n_nodes)`` in *output alone*: on a mesh that shatters into four
+    thousand specks that is a two-gigabyte array to answer a question whose answer
+    is one ``n_nodes``-long column. Here the components are swept one after another
+    into that single column, so the cost is ``O(V + E)`` however finely the graph is
+    fragmented.
+
+    Parameters
+    ----------
+    edges :   (E, 2) array
+              Edges given as rows of two node indices. Direction is ignored.
+    n_nodes : int
+              Total number of nodes. Nodes named by no edge are isolated roots.
+    weights : (E, ) array, optional
+              Length of each edge. ``None`` gives the breadth-first tree; weights
+              give the shortest-path tree, which is a different (and generally
+              deeper) spanning tree. Neither is the minimum spanning tree — for
+              that, run :func:`~navis_fastcore.minimum_spanning_tree` first and
+              orient the edges it keeps.
+    roots :   iterable, optional
+              Nodes to root at. If ``None`` each component is rooted at its lowest
+              node index — the same representative
+              :func:`~navis_fastcore.connected_components_graph` labels components
+              by. Components holding none of ``roots`` fall back to that, so the
+              result is always a complete forest. Two roots in the *same* component
+              split it into two trees, which is well defined (each node goes to
+              whichever root is nearer) and occasionally what you want.
+
+    Returns
+    -------
+    parents : (n_nodes, ) int32 array
+              Parent of each node, ``-1`` for a root.
+    order :   (n_nodes, ) int64 array
+              Every node in the order it settled. A node always settles after its
+              parent, so this is a topological order — relabel by it and parents are
+              guaranteed to have lower ids than their children, which is exactly the
+              SWC requirement. It comes free: the search already visits nodes in this
+              order, and deriving it afterwards from ``parents`` would cost another
+              traversal.
+
+    Notes
+    -----
+    Among equal-length routes the parent is whichever settled first, which is
+    deterministic but otherwise arbitrary — as it is for any spanning tree of a
+    graph with more than one.
+
+    Examples
+    --------
+    A path, written "backwards" to show the orientation comes from the search and
+    not from the order the endpoints happen to be in:
+
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> edges = np.array([[1, 0], [2, 1], [3, 2]], dtype=np.uint32)
+    >>> parents, order = fastcore.spanning_forest(edges, 4)
+    >>> parents
+    array([-1,  0,  1,  2], dtype=int32)
+
+    Root it at the far end instead and every link reverses:
+
+    >>> parents, order = fastcore.spanning_forest(edges, 4, roots=[3])
+    >>> parents
+    array([ 1,  2,  3, -1], dtype=int32)
+    >>> order
+    array([3, 2, 1, 0])
+
+    Cycles are broken; two components each get their own root:
+
+    >>> edges = np.array([[0, 1], [1, 2], [2, 0], [4, 5]], dtype=np.uint32)
+    >>> parents, order = fastcore.spanning_forest(edges, 6)
+    >>> parents
+    array([-1,  0,  0, -1, -1,  4], dtype=int32)
+
+    ``order`` relabels a forest so parents come before their children:
+
+    >>> new_ids = np.empty(len(order), dtype=np.int64)
+    >>> new_ids[order] = np.arange(len(order))
+    >>> new_parents = np.where(parents < 0, -1, new_ids[parents])
+    >>> bool(np.all(new_parents < new_ids))
+    True
+
+    """
+    edges, n_nodes = _prep_edges(edges, n_nodes)
+    return _fastcore.spanning_forest(
+        edges,
+        n_nodes,
+        _prep_weights(weights, edges),
+        _prep_indices(roots, n_nodes, "roots"),
+    )
+
+
+def _prep_mst_nodes(nodes, n_nodes):
+    """Coerce and check the node subset the geodesic MST spans."""
+    nodes = _prep_indices(nodes, n_nodes, "nodes", unique=True)
+    if nodes is None:
+        raise ValueError("`nodes` is required: pass the nodes you want to span.")
+    return nodes
+
+
+def geodesic_mst_mesh(
+    faces, nodes, vertices=None, n_vertices=None, limit=None, threads=None
+):
+    """Minimum spanning tree over a subset of mesh vertices, by geodesic distance.
+
+    The tree that reconnects a scatter of surviving vertices through the mesh they
+    were carved out of — the last step of a skeletonisation, where the mesh has been
+    thinned to a few thousand vertices that must be rejoined along the surface
+    rather than through space.
+
+    The obvious route is to ask for the ``k x k`` geodesic matrix and hand it to a
+    matrix MST. That materialises ``k**2`` distances to use ``k - 1`` of them —
+    400 MB at ``k = 10_000``, before the ``O(k**2)`` MST itself — and it needs ``k``
+    separate searches to fill. This never forms the matrix. Instead, following
+    Mehlhorn's construction for the distance network, one multi-source search
+    partitions *every* vertex by which of ``nodes`` is nearest, and then each mesh
+    edge whose endpoints fall in different cells offers one candidate: joining their
+    two owners at ``d(u) + w(u, v) + d(v)``. An MST over those candidates is an MST
+    of the full distance network, so one sweep and one Kruskal replace ``k`` searches
+    and a dense matrix.
+
+    The returned weights come back exactly equal to the geodesic distances between
+    the pairs they join, so they are usable as lengths and not merely as an ordering.
+
+    Parameters
+    ----------
+    faces :      (F, 3) array
+                 Triangular faces given as rows of three vertex indices.
+    nodes :      (K, ) array
+                 Vertices to span. Must be distinct.
+    vertices :   (V, 3) array, optional
+                 Vertex positions. If given, mesh edges are weighted by their
+                 euclidean length; if ``None`` distances are hop counts.
+    n_vertices : int, optional
+                 Total number of vertices. Inferred from ``vertices`` when that is
+                 given; required otherwise.
+    limit :      float, optional
+                 Do not join vertices farther apart than this. The result is then
+                 the MST of the graph on ``nodes`` keeping only pairs within
+                 ``limit``, which is a *forest* when that graph is disconnected —
+                 the same trade ``scipy.sparse.csgraph.dijkstra(limit=...)`` offers,
+                 except that here it also prunes the sweep, so it buys time rather
+                 than merely discarding results.
+    threads :    int, optional
+                 Number of threads to use. If ``None`` uses all available cores.
+
+    Returns
+    -------
+    edges :      (M, 2) int64 array
+                 Rows of *positions in* ``nodes``, not vertex indices — so
+                 ``nodes[edges]`` maps back, and any per-node data you hold indexes
+                 the same way. Ascending by weight, as
+                 :func:`~navis_fastcore.minimum_spanning_tree`.
+    weights :    (M, ) float32 array
+                 Geodesic distance across each of those edges.
+
+    ``M`` is ``len(nodes) - 1`` when every node can reach every other within
+    ``limit``, and less when they cannot: vertices in different components of the
+    mesh are never joined.
+
+    Examples
+    --------
+    Two triangles sharing an edge, spanning three of the four vertices:
+
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> faces = np.array([[0, 1, 2], [1, 2, 3]], dtype=np.uint32)
+    >>> verts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=float)
+    >>> edges, weights = fastcore.geodesic_mst_mesh(faces, [0, 1, 3], verts)
+    >>> edges
+    array([[0, 1],
+           [1, 2]])
+    >>> np.round(weights, 3)
+    array([1., 1.], dtype=float32)
+
+    The rows index ``nodes``, so map them back to vertex ids yourself:
+
+    >>> np.asarray([0, 1, 3])[edges]
+    array([[0, 1],
+           [1, 3]])
+
+    """
+    faces, vertices, n_vertices = _prep_mesh(faces, vertices, n_vertices)
+    nodes = _prep_mst_nodes(nodes, n_vertices)
+
+    return _fastcore.geodesic_mst_mesh(
+        faces,
+        n_vertices,
+        nodes,
+        vertices,
+        _prep_limit(limit),
+        None if threads is None else int(threads),
+    )
+
+
+def geodesic_mst_graph(edges, n_nodes, nodes, weights=None, limit=None, threads=None):
+    """Minimum spanning tree over a subset of graph nodes, by geodesic distance.
+
+    The edge-list form of :func:`~navis_fastcore.geodesic_mst_mesh`, which explains
+    why this never builds the ``k x k`` distance matrix the question seems to call
+    for. Always undirected — a minimum spanning tree of a directed graph is a
+    different problem (an arborescence) with a different algorithm.
+
+    Parameters
+    ----------
+    edges :   (E, 2) array
+              Edges given as rows of two node indices.
+    n_nodes : int
+              Total number of nodes.
+    nodes :   (K, ) array
+              Nodes to span. Must be distinct.
+    weights : (E, ) array, optional
+              Length of each edge. If ``None`` all edges weigh 1, i.e. distances are
+              hop counts.
+    limit :   float, optional
+              Do not join nodes farther apart than this. See
+              :func:`~navis_fastcore.geodesic_mst_mesh`.
+    threads : int, optional
+              Number of threads to use. If ``None`` uses all available cores.
+
+    Returns
+    -------
+    edges :   (M, 2) int64 array
+              Rows of *positions in* ``nodes``, ascending by weight.
+    weights : (M, ) float32 array
+              Geodesic distance across each of those edges.
+
+    Examples
+    --------
+    Two paths joined at their middle. Spanning the four endpoints costs three edges,
+    each two hops long:
+
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> edges = np.array([[0, 1], [1, 2], [1, 3], [3, 4]], dtype=np.uint32)
+    >>> mst, weights = fastcore.geodesic_mst_graph(edges, 5, nodes=[0, 2, 4])
+    >>> np.asarray([0, 2, 4])[mst]
+    array([[0, 2],
+           [0, 4]])
+    >>> weights
+    array([2., 3.], dtype=float32)
+
+    Nodes in different components are never joined, so the result is a forest:
+
+    >>> edges = np.array([[0, 1], [2, 3]], dtype=np.uint32)
+    >>> mst, weights = fastcore.geodesic_mst_graph(edges, 4, nodes=[0, 1, 2, 3])
+    >>> mst
+    array([[0, 1],
+           [2, 3]])
+
+    """
+    edges, n_nodes = _prep_edges(edges, n_nodes)
+    nodes = _prep_mst_nodes(nodes, n_nodes)
+
+    return _fastcore.geodesic_mst_graph(
+        edges,
+        n_nodes,
+        nodes,
+        _prep_weights(weights, edges),
+        _prep_limit(limit),
+        None if threads is None else int(threads),
+    )
+
+
 def _prep_mesh(faces, vertices, n_vertices):
     """Validate and coerce the shared (faces, vertices, n_vertices) arguments."""
     faces = np.asarray(faces, dtype=np.uint32, order="C")
@@ -480,8 +824,14 @@ def _prep_mesh(faces, vertices, n_vertices):
     return faces, vertices, n_vertices
 
 
-def _prep_indices(x, n_nodes, what):
-    """Coerce an optional index subset to a contiguous uint32 array."""
+def _prep_indices(x, n_nodes, what, unique=False):
+    """Coerce an optional index subset to a contiguous uint32 array.
+
+    ``unique`` additionally rejects repeats, for the callers that renumber the
+    subset and so cannot give one node two new ids. The core asserts it too, but
+    only after the wrapper has handed the array over — so checking here is what
+    turns a caller's mistake into a ``ValueError`` rather than a panic.
+    """
     if x is None:
         return None
     x = np.ascontiguousarray(np.asarray(x, dtype=np.uint32).ravel())
@@ -489,7 +839,23 @@ def _prep_indices(x, n_nodes, what):
         raise ValueError(
             f"`{what}` contains vertex {x.max()} but there are only {n_nodes} nodes"
         )
+    if unique and len(np.unique(x)) != len(x):
+        raise ValueError(f"`{what}` must not contain duplicates")
     return x
+
+
+def _prep_limit(limit):
+    """Coerce an optional distance bound, rejecting what a search cannot use.
+
+    ``None`` and ``+inf`` are the same input to the core, which reads a missing
+    bound as infinity, so both pass through as ``None``.
+    """
+    if limit is None:
+        return None
+    limit = float(limit)
+    if np.isnan(limit) or limit < 0:
+        raise ValueError(f"`limit` must be non-negative, got {limit}")
+    return None if np.isinf(limit) else limit
 
 
 def geodesic_matrix_mesh(
@@ -588,7 +954,7 @@ def geodesic_matrix_mesh(
         vertices,
         _prep_indices(sources, n_vertices, "sources"),
         _prep_indices(targets, n_vertices, "targets"),
-        None if limit is None else float(limit),
+        _prep_limit(limit),
         None if threads is None else int(threads),
     )
 
@@ -678,7 +1044,7 @@ def geodesic_matrix_graph(
         bool(directed),
         _prep_indices(sources, n_nodes, "sources"),
         _prep_indices(targets, n_nodes, "targets"),
-        None if limit is None else float(limit),
+        _prep_limit(limit),
         None if threads is None else int(threads),
     )
 
@@ -758,7 +1124,7 @@ def geodesic_nearest_mesh(
         vertices,
         _prep_indices(sources, n_vertices, "sources"),
         _prep_indices(targets, n_vertices, "targets"),
-        None if limit is None else float(limit),
+        _prep_limit(limit),
         None if threads is None else int(threads),
     )
 
@@ -834,7 +1200,7 @@ def geodesic_farthest_mesh(
         vertices,
         _prep_indices(sources, n_vertices, "sources"),
         _prep_indices(targets, n_vertices, "targets"),
-        None if limit is None else float(limit),
+        _prep_limit(limit),
         None if threads is None else int(threads),
     )
 
@@ -936,7 +1302,7 @@ def geodesic_predecessors(
         _prep_weights(weights, edges),
         bool(directed),
         _prep_indices(sources, n_nodes, "sources"),
-        None if limit is None else float(limit),
+        _prep_limit(limit),
         None if threads is None else int(threads),
     )
 
@@ -1302,7 +1668,7 @@ class GeodesicGraph:
         return self._graph.distances(
             _prep_indices(sources, self.n_nodes, "sources"),
             _prep_indices(targets, self.n_nodes, "targets"),
-            None if limit is None else float(limit),
+            _prep_limit(limit),
             None if threads is None else int(threads),
         )
 
@@ -1331,7 +1697,7 @@ class GeodesicGraph:
         return self._graph.nearest(
             _prep_indices(sources, self.n_nodes, "sources"),
             _prep_indices(targets, self.n_nodes, "targets"),
-            None if limit is None else float(limit),
+            _prep_limit(limit),
             None if threads is None else int(threads),
         )
 
@@ -1352,7 +1718,7 @@ class GeodesicGraph:
         return self._graph.farthest(
             _prep_indices(sources, self.n_nodes, "sources"),
             _prep_indices(targets, self.n_nodes, "targets"),
-            None if limit is None else float(limit),
+            _prep_limit(limit),
             None if threads is None else int(threads),
         )
 
@@ -1379,7 +1745,7 @@ class GeodesicGraph:
         """
         return self._graph.predecessors(
             _prep_indices(sources, self.n_nodes, "sources"),
-            None if limit is None else float(limit),
+            _prep_limit(limit),
             None if threads is None else int(threads),
         )
 

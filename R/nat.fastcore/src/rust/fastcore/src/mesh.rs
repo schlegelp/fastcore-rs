@@ -238,6 +238,27 @@ fn edge_lengths(edges: &[i64], coords: ArrayView2<f64>) -> Array1<f64> {
 // Graph primitives
 // ---------------------------------------------------------------------------
 
+/// Invert a list of distinct node indices: `out[nodes[i]] == i`, `u32::MAX` where unlisted.
+///
+/// The map back from a node to *which of the caller's nodes* it is — needed by anything that
+/// renumbers a subset, and the place the "must be distinct" contract is actually enforced,
+/// since a repeat is a collision in this array and costs nothing extra to spot.
+fn inverse_index(nodes: &[u32], n_nodes: usize) -> Vec<u32> {
+    let mut out: Vec<u32> = vec![u32::MAX; n_nodes];
+    for (i, &v) in nodes.iter().enumerate() {
+        assert!(
+            (v as usize) < n_nodes,
+            "`nodes` contains node {v}, but n_nodes = {n_nodes}"
+        );
+        assert!(
+            out[v as usize] == u32::MAX,
+            "`nodes` contains node {v} more than once"
+        );
+        out[v as usize] = i as u32;
+    }
+    out
+}
+
 /// Range-check an edge list and return its row count.
 fn check_edges(edges: ArrayView2<u32>, n_nodes: usize) -> usize {
     assert_eq!(edges.ncols(), 2, "`edges` must have shape (E, 2)");
@@ -503,6 +524,139 @@ pub fn minimum_spanning_tree(
             // nothing left to join and the rest of the sorted list is dead weight.
             if out.len() + 1 == n_nodes {
                 break;
+            }
+        }
+    }
+
+    Array1::from_vec(out)
+}
+
+/// Which edges are *bridges* — the ones whose removal would disconnect their component.
+///
+/// Tarjan's algorithm: one depth-first sweep tracking, per node, the earliest discovery time
+/// reachable from its subtree by a single back edge. A tree edge `(u, v)` is a bridge exactly
+/// when nothing in `v`'s subtree can climb above `v`, i.e. there is no second route around it.
+///
+/// The counterpart to [`minimum_spanning_tree`] rather than a variant of it: the MST asks which
+/// edges to *keep* to stay connected, this asks which ones may not be *dropped*. That is the
+/// question behind "prune this graph but do not shatter it", where a caller has a set of edges
+/// it would like gone and needs to know which of them are load-bearing.
+///
+/// Parallel edges are honoured, which is why this does not go through [`Adjacency`]: two nodes
+/// joined twice are joined by a cycle, so neither of those edges is a bridge, and a
+/// deduplicated adjacency — which is what every search in this module wants — would fuse them
+/// into one and report a bridge that is not there. Self-loops are never bridges.
+///
+/// Arguments
+/// ---------
+/// - `edges`:   (E, 2) array of edges given as node indices. Direction is ignored.
+/// - `n_nodes`: Total number of nodes.
+///
+/// Returns
+/// -------
+/// A 1-D bool array with one flag per input edge, `true` for a bridge. A mask rather than a
+/// list of indices because the caller's next move is nearly always to filter a parallel array
+/// (`edges[!mask]`), and `flatnonzero` recovers the indices when it is not.
+pub fn bridges(edges: ArrayView2<u32>, n_nodes: usize) -> Array1<bool> {
+    let n_edges = check_edges(edges, n_nodes);
+    let mut out = vec![false; n_edges];
+    // No `n_nodes == 0` arm: `check_edges` has already rejected every edge in that case, so an
+    // empty graph arrives here as an empty edge list.
+    if n_edges == 0 {
+        return Array1::from_vec(out);
+    }
+
+    // Before the counting pass, not after: the counters below are the offsets themselves, so
+    // an edge list this large would wrap them rather than trip anything later.
+    assert!(
+        n_edges.saturating_mul(2) <= u32::MAX as usize,
+        "too many edges: CSR offsets are u32"
+    );
+
+    // Arc CSR carrying, per arc, the *row* it came from — that edge id is what distinguishes
+    // two parallel edges from one edge seen twice, and it is also how the walk below knows
+    // which arc it entered a node by without a separate parent-node field (which would get
+    // parallel edges wrong).
+    let mut offsets: Vec<u32> = vec![0; n_nodes + 1];
+    for e in edges.rows() {
+        if e[0] != e[1] {
+            offsets[e[0] as usize + 1] += 1;
+            offsets[e[1] as usize + 1] += 1;
+        }
+    }
+    for i in 0..n_nodes {
+        offsets[i + 1] += offsets[i];
+    }
+    let n_arcs = offsets[n_nodes] as usize;
+
+    let mut nbrs: Vec<u32> = vec![0; n_arcs];
+    let mut eids: Vec<u32> = vec![0; n_arcs];
+    {
+        let mut cursor: Vec<u32> = offsets[..n_nodes].to_vec();
+        for (i, e) in edges.rows().into_iter().enumerate() {
+            let (u, v) = (e[0], e[1]);
+            if u == v {
+                continue;
+            }
+            for (a, b) in [(u, v), (v, u)] {
+                let slot = &mut cursor[a as usize];
+                nbrs[*slot as usize] = b;
+                eids[*slot as usize] = i as u32;
+                *slot += 1;
+            }
+        }
+    }
+
+    /// Not yet discovered. Discovery times are counted from 0, so `u32::MAX` cannot collide.
+    const UNVISITED: u32 = u32::MAX;
+    let mut disc: Vec<u32> = vec![UNVISITED; n_nodes];
+    let mut low: Vec<u32> = vec![0; n_nodes];
+    let mut timer: u32 = 0;
+
+    // Explicit stack, not recursion: a mesh strip is a path tens of thousands of nodes long and
+    // the natural recursive form would overflow on it. Each frame is the node, the edge we
+    // entered it by, and how far through its arc row we have got.
+    let mut stack: Vec<(u32, u32, u32)> = Vec::new();
+
+    for s in 0..n_nodes as u32 {
+        if disc[s as usize] != UNVISITED {
+            continue;
+        }
+        disc[s as usize] = timer;
+        low[s as usize] = timer;
+        timer += 1;
+        stack.push((s, u32::MAX, offsets[s as usize]));
+
+        while !stack.is_empty() {
+            let top = stack.len() - 1;
+            let (v, pe, cur) = stack[top];
+            if cur < offsets[v as usize + 1] {
+                stack[top].2 = cur + 1;
+                let (w, e) = (nbrs[cur as usize], eids[cur as usize]);
+                // The arc we came in by — not a back edge. Testing the *edge id* rather than
+                // the neighbour is what makes a second, parallel edge to the same node count:
+                // it has its own id, so it is taken, and it correctly rules out a bridge.
+                if e == pe {
+                    continue;
+                }
+                if disc[w as usize] == UNVISITED {
+                    disc[w as usize] = timer;
+                    low[w as usize] = timer;
+                    timer += 1;
+                    stack.push((w, e, offsets[w as usize]));
+                } else {
+                    low[v as usize] = low[v as usize].min(disc[w as usize]);
+                }
+            } else {
+                stack.pop();
+                if let Some(&(u, _, _)) = stack.last() {
+                    low[u as usize] = low[u as usize].min(low[v as usize]);
+                    // Nothing under `v` reaches back past `v` itself, so the tree edge into it
+                    // is the component's only route there.
+                    if low[v as usize] > disc[u as usize] {
+                        out[pe as usize] = true;
+                    }
+                }
             }
         }
     }
@@ -826,18 +980,7 @@ impl Adjacency {
     ///
     fn induced(&self, keep: &[u32]) -> Adjacency {
         let n_old = self.n_nodes();
-        let mut new_id: Vec<u32> = vec![u32::MAX; n_old];
-        for (i, &v) in keep.iter().enumerate() {
-            assert!(
-                (v as usize) < n_old,
-                "`nodes` contains node {v}, but n_nodes = {n_old}"
-            );
-            assert!(
-                new_id[v as usize] == u32::MAX,
-                "`nodes` contains node {v} more than once"
-            );
-            new_id[v as usize] = i as u32;
-        }
+        let new_id = inverse_index(keep, n_old);
 
         // Packed (neighbour, weight-bits) rows, as in `from_edges`, so one sort per row orders
         // by the *new* index while keeping each arc's weight welded to it.
@@ -963,7 +1106,7 @@ impl Scratch {
         }
     }
 
-    /// Label each of `nodes` with the source its shortest path came from.
+    /// Label each of `nodes` with the source its shortest path came from, in `src`.
     ///
     /// `nodes` must be in settle order, as a [`Collect`] visitor records it. That is what makes
     /// this one forward pass rather than a chain-walk per node: a node's predecessor always
@@ -971,19 +1114,22 @@ impl Scratch {
     /// A node with no predecessor is a source and is its own.
     ///
     /// `src` needs no reset for the same reason — nothing is read before it is written.
-    fn resolve_sources(&mut self, nodes: &[u32]) -> Vec<u32> {
-        let mut out: Vec<u32> = Vec::with_capacity(nodes.len());
+    fn resolve_sources_into(&mut self, nodes: &[u32]) {
         for &v in nodes {
             let p = self.pred[v as usize];
-            let s = if p == NO_PRED {
+            self.src[v as usize] = if p == NO_PRED {
                 v
             } else {
                 self.src[p as usize]
             };
-            self.src[v as usize] = s;
-            out.push(s);
         }
-        out
+    }
+
+    /// [`resolve_sources_into`](Self::resolve_sources_into), gathered into a fresh array aligned
+    /// with `nodes` — for callers handing the answer back rather than indexing `src` themselves.
+    fn resolve_sources(&mut self, nodes: &[u32]) -> Vec<u32> {
+        self.resolve_sources_into(nodes);
+        nodes.iter().map(|&v| self.src[v as usize]).collect()
     }
 
     /// Restore the all-`INFINITY` invariant.
@@ -1271,6 +1417,27 @@ impl Visitor for Collect<'_> {
     fn settle(&mut self, node: u32, d: f32) -> Visit {
         self.nodes.push(node);
         self.dists.push(d);
+        Visit::Expand
+    }
+}
+
+/// [`Collect`]'s leaner sibling: settle order, and nothing else.
+///
+/// For callers that want the order a search discovered nodes in but have no use for the
+/// distances — which the search has already left in `Scratch::dist` anyway, so `Collect` would
+/// only make them allocate a second buffer holding a copy.
+///
+/// Generic in the element type so a caller wanting `i64` node indices — the width this crate
+/// hands back to numpy — gets them directly rather than through a widening pass over the
+/// finished array.
+struct CollectNodes<'a, T> {
+    nodes: &'a mut Vec<T>,
+}
+
+impl<T: From<u32>> Visitor for CollectNodes<'_, T> {
+    #[inline]
+    fn settle(&mut self, node: u32, _d: f32) -> Visit {
+        self.nodes.push(T::from(node));
         Visit::Expand
     }
 }
@@ -1970,6 +2137,303 @@ fn geodesic_clusters_impl(
     }
 
     (labels, n_clusters)
+}
+
+// ---------------------------------------------------------------------------
+// Spanning forest
+// ---------------------------------------------------------------------------
+
+/// Settle one round of [`spanning_forest`] and fold what it reached into the running answer.
+///
+/// Split out because the two rounds — the caller's roots, then whatever they missed — differ
+/// only in their seed set, and the book-keeping that turns a settled node into a parent entry
+/// is the part that is easy to get subtly wrong.
+fn spanning_sweep(
+    adj: &Adjacency,
+    seeds: &[u32],
+    scratch: &mut Scratch,
+    parents: &mut [i32],
+    order: &mut Vec<i64>,
+) {
+    let start = order.len();
+    {
+        let mut vis = CollectNodes { nodes: order };
+        search_from_many::<true, _>(adj, seeds, f32::INFINITY, &mut vis, scratch);
+    }
+    for &v in &order[start..] {
+        let p = scratch.pred[v as usize];
+        parents[v as usize] = if p == NO_PRED { -1 } else { p as i32 };
+    }
+}
+
+/// Orient a graph into a rooted spanning forest — one parent per node, `-1` at the roots.
+///
+/// The missing half of "I have an edge list and I want a tree". [`minimum_spanning_tree`] picks
+/// *which* edges survive; this picks which way they point, which is what turns a bag of
+/// undirected edges into something you can walk, root, or write out as SWC. Cycles in the input
+/// are fine — each component contributes a spanning tree of itself, so this doubles as the
+/// cycle-breaker `networkx.bfs_tree` is usually pressed into.
+///
+/// One search covers the whole graph. The obvious construction — a shortest-path tree per
+/// component — is what a per-source predecessor call gives you, and it costs `O(components x
+/// n_nodes)` in *output alone*: on a mesh that shatters into four thousand specks that is a
+/// two-gigabyte array to answer a question whose answer is one `n_nodes`-long column. Here the
+/// components are swept one after another into that single column, so the cost is `O(V + E)`
+/// however finely the graph is fragmented.
+///
+/// Arguments
+/// ---------
+/// - `edges`:   (E, 2) array of edges given as node indices. Direction is ignored.
+/// - `n_nodes`: Total number of nodes. Nodes named by no edge are isolated roots.
+/// - `weights`: Length of each edge, or `None` for hop counts. `None` gives the breadth-first
+///   tree; weights give the shortest-path tree, which is a different (and generally deeper)
+///   spanning tree. Neither is the minimum spanning tree — for that, run
+///   [`minimum_spanning_tree`] first and orient the edges it keeps.
+/// - `roots`:   Nodes to root at, or `None` for "the lowest node index in each component" —
+///   the same representative [`connected_components_graph`] labels components by. Components
+///   holding none of `roots` fall back to that, so the result is always a complete forest.
+///   Two roots in the *same* component split it into two trees, which is well defined (each
+///   node goes to whichever root is nearer) and occasionally what you want.
+///
+/// Returns
+/// -------
+/// - `parents`: `(n_nodes, )` i32, the parent of each node, `-1` for a root.
+/// - `order`:   `(n_nodes, )` i64, every node in the order it settled. A node always settles
+///   after its parent, so this is a topological order — relabel by it and parents are
+///   guaranteed to have lower ids than their children, which is exactly the SWC requirement.
+///   It comes free: the search already visits nodes in this order, and computing it afterwards
+///   from `parents` would cost another traversal.
+///
+/// Among equal-length routes the parent is whichever settled first, which is deterministic but
+/// otherwise arbitrary — as it is for any spanning tree of a graph with more than one.
+pub fn spanning_forest(
+    edges: ArrayView2<u32>,
+    n_nodes: usize,
+    weights: Option<&ArrayView1<f32>>,
+    roots: Option<&[u32]>,
+) -> (Array1<i32>, Array1<i64>) {
+    let adj = Adjacency::from_edges(edges, n_nodes, weights, false);
+    spanning_forest_impl(&adj, roots)
+}
+
+/// `spanning_forest` over a prebuilt adjacency.
+fn spanning_forest_impl(adj: &Adjacency, roots: Option<&[u32]>) -> (Array1<i32>, Array1<i64>) {
+    let n_nodes = adj.n_nodes();
+    // Defaulting to the empty slice rather than to every node: an unrooted component is not an
+    // error here, it just falls to the loop below.
+    let seeds = resolve(roots, &[], n_nodes, "roots");
+
+    let mut parents: Vec<i32> = vec![-1; n_nodes];
+    let mut order: Vec<i64> = Vec::with_capacity(n_nodes);
+    if n_nodes == 0 {
+        return (Array1::from_vec(parents), Array1::from_vec(order));
+    }
+
+    let mut scratch = Scratch::with_pred(n_nodes);
+
+    // Preferred roots first, all in one search, then every node in index order as a fallback —
+    // the same two-tier seeding `geodesic_clusters` uses, and for the same reason: it keeps
+    // "skip what is already claimed" in one place.
+    //
+    // The scratch is deliberately *not* reset between rounds, and that is what keeps the whole
+    // loop O(V + E) rather than O(components x n_nodes): a reset walks everything the previous
+    // sweep touched, so paying it per component is the very cost this function exists to avoid.
+    // Skipping it is sound because components are disjoint and every sweep here is unbounded,
+    // so a later sweep can only ever reach nodes an earlier one left at `INFINITY`. The same
+    // fact makes `dist` the visited flag, so there is no second array to keep in step with it.
+    // Both rest on `limit` being `INFINITY` — a *bounded* sweep could stop short of a node a
+    // later one would have to revisit, and then neither would hold.
+    if !seeds.is_empty() {
+        spanning_sweep(adj, seeds, &mut scratch, &mut parents, &mut order);
+    }
+    for v in 0..n_nodes as u32 {
+        if !scratch.dist[v as usize].is_finite() {
+            spanning_sweep(adj, &[v], &mut scratch, &mut parents, &mut order);
+        }
+    }
+
+    (Array1::from_vec(parents), Array1::from_vec(order))
+}
+
+// ---------------------------------------------------------------------------
+// Minimum spanning tree under the geodesic metric
+// ---------------------------------------------------------------------------
+
+/// Minimum spanning tree over a *subset* of nodes, weighted by geodesic distance between them.
+///
+/// The tree that reconnects a scatter of surviving nodes through the graph they were carved
+/// out of — the last step of a skeletonisation, where the mesh has been thinned to a few
+/// thousand vertices that must be rejoined along the surface rather than through space.
+///
+/// The obvious route is to ask for the `k x k` geodesic matrix and hand it to a matrix MST.
+/// That materialises `k^2` distances to use `k - 1` of them: 400 MB at k = 10k, before the
+/// `O(k^2)` MST itself, and it needs `k` separate searches to fill. This never forms the
+/// matrix. Instead — Mehlhorn's construction for the distance network — one multi-source
+/// search partitions *every* node by which of `nodes` is nearest, and then each graph edge
+/// whose endpoints fall in different cells offers one candidate: joining their two owners at
+/// `d(u) + w(u, v) + d(v)`. An MST over those candidates is an MST of the full distance
+/// network, so one sweep and one Kruskal replace `k` searches and a dense matrix.
+///
+/// The MST's edge weights come back exactly equal to the geodesic distances between the pairs
+/// they join, so they are usable as lengths and not merely as an ordering.
+///
+/// Arguments
+/// ---------
+/// - `adj`:     The graph the distances are measured in.
+/// - `nodes`:   The nodes to span, as indices into the graph. Must be distinct.
+/// - `limit`:   Do not join nodes farther apart than this. The result is then the MST of the
+///   graph on `nodes` keeping only pairs within `limit`, which is a *forest* when that graph
+///   is disconnected — the same trade `scipy.sparse.csgraph.dijkstra(limit=...)` offers, except
+///   that here it also prunes the sweep, so it buys time rather than merely discarding results.
+/// - `threads`: Size of the thread pool, or `None` for all cores.
+///
+/// Returns
+/// -------
+/// - `edges`:   `(M, 2)` i64 rows of *positions in `nodes`*, not node indices — so `nodes[edges]`
+///   maps back, and any per-node data the caller holds indexes the same way. Ascending by
+///   weight, as [`minimum_spanning_tree`].
+/// - `weights`: `(M, )` f32 geodesic distance across each of those edges.
+///
+/// `M` is `nodes.len() - 1` when every node can reach every other within `limit`, and less when
+/// they cannot: nodes in different components of the graph are never joined.
+fn geodesic_mst_impl(
+    adj: &Adjacency,
+    nodes: &[u32],
+    limit: Option<f32>,
+    threads: Option<usize>,
+) -> (Array2<i64>, Array1<f32>) {
+    let n_nodes = adj.n_nodes();
+
+    // Which of `nodes` each graph node *is*, if any — what turns the "nearest source" a search
+    // reports (a node index) back into a position in the caller's array.
+    let term_of = inverse_index(nodes, n_nodes);
+    let limit = limit.unwrap_or(f32::INFINITY);
+    assert!(
+        limit >= 0.0 && !limit.is_nan(),
+        "`limit` must be non-negative, got {limit}"
+    );
+    if nodes.len() < 2 {
+        return (Array2::zeros((0, 2)), Array1::zeros(0)); // nothing to join
+    }
+
+    // --- One sweep: every node's distance to the nearest of `nodes`, and which one that is.
+    //
+    // Both answers stay in the scratch and are read from it below. Copying them into arrays of
+    // our own would cost two `n_nodes`-sized buffers and a scattered pass to fill them, to hold
+    // what the search has already written — the same reason `geodesic_matrix_impl` reads
+    // `scratch.dist` directly. Nothing is reset afterwards for the same reason: the scratch is
+    // local and dies here, so restoring its invariant is pure writes.
+    let mut scratch = Scratch::new(n_nodes);
+    scratch.enable_sources(n_nodes);
+    let mut settled: Vec<u32> = Vec::new();
+    {
+        let mut vis = CollectNodes {
+            nodes: &mut settled,
+        };
+        search_from_many::<true, _>(adj, nodes, limit, &mut vis, &mut scratch);
+    }
+    // Fills `scratch.src`, which is what the candidate loop reads; the returned copy is the
+    // form `ball` wants and is of no use here.
+    scratch.resolve_sources_into(&settled);
+    let (dist, owner) = (&scratch.dist, &scratch.src);
+
+    // --- Candidates: one per graph edge that straddles two cells.
+    //
+    // Interior edges — both ends owned by the same node — are the overwhelming majority on any
+    // real mesh and are rejected on a single integer compare against the *owner node*, so
+    // `term_of` is only consulted for the rare boundary edge and the candidate list is sized by
+    // the cell boundaries rather than by the edge count.
+    let weights = adj.weights.as_deref();
+    let mut cand: Vec<u32> = Vec::new();
+    let mut cand_w: Vec<f32> = Vec::new();
+    for u in 0..n_nodes as u32 {
+        let du = dist[u as usize];
+        if !du.is_finite() {
+            continue; // beyond `limit` of every node, or in a component holding none
+        }
+        let ou = owner[u as usize];
+        let r = adj.row(u);
+        for (k, &v) in adj.nbrs[r.clone()].iter().enumerate() {
+            // Each undirected edge once. The adjacency stores both arcs, and the two would
+            // yield the same candidate.
+            if v <= u {
+                continue;
+            }
+            let dv = dist[v as usize];
+            if !dv.is_finite() || owner[v as usize] == ou {
+                continue;
+            }
+            let w = weights.map_or(1.0, |w| w[r.start + k]);
+            let cw = du + w + dv;
+            // A candidate over `limit` cannot be on the answer: every pair within `limit` still
+            // has a candidate at exactly its distance, which is what makes the prune sound.
+            if cw > limit {
+                continue;
+            }
+            cand.push(term_of[ou as usize]);
+            cand.push(term_of[owner[v as usize] as usize]);
+            cand_w.push(cw);
+        }
+    }
+
+    // --- Kruskal, on the candidates rather than on a matrix. An empty candidate list needs no
+    // special case: Kruskal keeps nothing and the gather below yields the empty tree.
+    let cand = Array2::from_shape_vec((cand_w.len(), 2), cand)
+        .expect("two entries pushed per candidate");
+    let cand_w = Array1::from_vec(cand_w);
+    let keep = minimum_spanning_tree(
+        cand.view(),
+        nodes.len(),
+        Some(&cand_w.view()),
+        false,
+        threads,
+    );
+
+    let mut out_e: Vec<i64> = Vec::with_capacity(keep.len() * 2);
+    let mut out_w: Vec<f32> = Vec::with_capacity(keep.len());
+    for &i in &keep {
+        let e = cand.row(i as usize);
+        out_e.push(e[0] as i64);
+        out_e.push(e[1] as i64);
+        out_w.push(cand_w[i as usize]);
+    }
+    (
+        Array2::from_shape_vec((keep.len(), 2), out_e).expect("two entries pushed per kept edge"),
+        Array1::from_vec(out_w),
+    )
+}
+
+/// Minimum spanning tree over a subset of *mesh vertices*, weighted by geodesic distance.
+///
+/// See [`geodesic_mst_impl`] for what this computes and why it does not build the distance
+/// matrix. Arguments are those of [`geodesic_matrix_mesh`], with `nodes` naming the vertices to
+/// span.
+pub fn geodesic_mst_mesh(
+    faces: ArrayView2<u32>,
+    n_vertices: usize,
+    coords: Option<ArrayView2<f64>>,
+    nodes: &[u32],
+    limit: Option<f32>,
+    threads: Option<usize>,
+) -> (Array2<i64>, Array1<f32>) {
+    let adj = Adjacency::from_faces(faces, n_vertices, coords);
+    geodesic_mst_impl(&adj, nodes, limit, threads)
+}
+
+/// Minimum spanning tree over a subset of nodes of an arbitrary graph, by geodesic distance.
+///
+/// The edge-list form of [`geodesic_mst_mesh`]. Always undirected — a minimum spanning tree of
+/// a directed graph is a different problem (an arborescence) with a different algorithm.
+pub fn geodesic_mst_graph(
+    edges: ArrayView2<u32>,
+    n_nodes: usize,
+    weights: Option<&ArrayView1<f32>>,
+    nodes: &[u32],
+    limit: Option<f32>,
+    threads: Option<usize>,
+) -> (Array2<i64>, Array1<f32>) {
+    let adj = Adjacency::from_edges(edges, n_nodes, weights, false);
+    geodesic_mst_impl(&adj, nodes, limit, threads)
 }
 
 // ---------------------------------------------------------------------------
@@ -3591,6 +4055,444 @@ mod tests {
         // Unweighted behaves the same as all-equal weights.
         let mst = minimum_spanning_tree(edges.view(), 3, None, false, None);
         assert_eq!(mst.to_vec(), vec![0i64, 1]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Bridges
+    // -----------------------------------------------------------------------
+
+    /// The definition, done the slow way: an edge is a bridge iff dropping it raises the
+    /// component count. O(E^2 alpha), so only for small graphs — but it is the property
+    /// itself rather than a re-implementation of Tarjan, which is the point of an oracle.
+    fn bridges_oracle(edges: ArrayView2<u32>, n_nodes: usize) -> Vec<bool> {
+        let base = connected_components_graph(edges, n_nodes);
+        let n_base = base.iter().collect::<std::collections::HashSet<_>>().len();
+        (0..edges.nrows())
+            .map(|drop| {
+                let kept: Vec<u32> = (0..edges.nrows())
+                    .filter(|&i| i != drop)
+                    .flat_map(|i| [edges[[i, 0]], edges[[i, 1]]])
+                    .collect();
+                let kept = Array2::from_shape_vec((kept.len() / 2, 2), kept).unwrap();
+                let c = connected_components_graph(kept.view(), n_nodes);
+                c.iter().collect::<std::collections::HashSet<_>>().len() > n_base
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_edge_of_a_tree_is_a_bridge_and_none_of_a_cycle_is() {
+        // Path 0-1-2-3: removing any edge splits it.
+        let path = array![[0u32, 1], [1, 2], [2, 3]];
+        assert_eq!(bridges(path.view(), 4).to_vec(), vec![true, true, true]);
+
+        // Close it into a ring and every edge has an alternative route.
+        let ring = array![[0u32, 1], [1, 2], [2, 3], [3, 0]];
+        assert_eq!(bridges(ring.view(), 4).to_vec(), vec![false; 4]);
+    }
+
+    #[test]
+    fn bridges_finds_the_single_link_between_two_cycles() {
+        // Two triangles joined by one edge — the classic case, and the only bridge.
+        let edges = array![
+            [0u32, 1],
+            [1, 2],
+            [2, 0], // triangle A
+            [3, 4],
+            [4, 5],
+            [5, 3], // triangle B
+            [2, 3], // the link
+        ];
+        let got = bridges(edges.view(), 6);
+        assert_eq!(
+            got.to_vec(),
+            vec![false, false, false, false, false, false, true]
+        );
+        assert_eq!(got.to_vec(), bridges_oracle(edges.view(), 6));
+    }
+
+    #[test]
+    fn parallel_edges_are_a_cycle_so_neither_is_a_bridge() {
+        // The reason this cannot go through `Adjacency`, which would dedup the pair into one
+        // arc and then quite correctly call that one arc a bridge.
+        let edges = array![[0u32, 1], [0, 1]];
+        assert_eq!(bridges(edges.view(), 2).to_vec(), vec![false, false]);
+        assert_eq!(bridges(edges.view(), 2).to_vec(), bridges_oracle(edges.view(), 2));
+
+        // One copy on its own *is* a bridge, so the doubling is what changed the answer.
+        let single = array![[0u32, 1]];
+        assert_eq!(bridges(single.view(), 2).to_vec(), vec![true]);
+
+        // And a doubled edge hanging off a path leaves the path's own edges bridges.
+        let mixed = array![[0u32, 1], [1, 2], [1, 2]];
+        assert_eq!(bridges(mixed.view(), 3).to_vec(), vec![true, false, false]);
+    }
+
+    #[test]
+    fn self_loops_and_isolated_nodes_are_never_bridges() {
+        let edges = array![[0u32, 0], [0, 1], [2, 2]];
+        assert_eq!(bridges(edges.view(), 4).to_vec(), vec![false, true, false]);
+        assert_eq!(bridges(edges.view(), 4).to_vec(), bridges_oracle(edges.view(), 4));
+    }
+
+    #[test]
+    fn bridges_match_the_brute_force_definition_on_random_graphs() {
+        let mut state = 0x5DEECE66Du64;
+        for case in 0..60 {
+            let n_nodes = 4 + case % 9;
+            let n_edges = 3 + case % 14;
+            let edges = random_edges(&mut state, n_nodes, n_edges);
+            assert_eq!(
+                bridges(edges.view(), n_nodes).to_vec(),
+                bridges_oracle(edges.view(), n_nodes),
+                "case {case}: {edges:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bridges_survive_a_path_deeper_than_the_call_stack() {
+        // The recursive formulation of Tarjan blows up here; the explicit stack must not.
+        let n = 200_000u32;
+        let flat: Vec<u32> = (0..n - 1).flat_map(|i| [i, i + 1]).collect();
+        let edges = Array2::from_shape_vec(((n - 1) as usize, 2), flat).unwrap();
+        let got = bridges(edges.view(), n as usize);
+        assert_eq!(got.len(), (n - 1) as usize);
+        assert!(got.iter().all(|&b| b));
+    }
+
+    // -----------------------------------------------------------------------
+    // Spanning forest
+    // -----------------------------------------------------------------------
+
+    /// Check the two invariants every spanning forest must have, whatever the tie-breaks:
+    /// the parent links are real edges of the input, and `order` lists parents before children.
+    fn check_forest(edges: ArrayView2<u32>, n_nodes: usize, parents: &[i32], order: &[i64]) {
+        let present: std::collections::HashSet<(u32, u32)> = edges
+            .rows()
+            .into_iter()
+            .flat_map(|e| [(e[0], e[1]), (e[1], e[0])])
+            .collect();
+        for (v, &p) in parents.iter().enumerate() {
+            if p >= 0 {
+                assert!(
+                    present.contains(&(p as u32, v as u32)),
+                    "parent link {p} -> {v} is not an edge of the graph"
+                );
+            }
+        }
+
+        assert_eq!(order.len(), n_nodes, "`order` must list every node exactly once");
+        let mut seen = vec![false; n_nodes];
+        for &v in order {
+            let v = v as usize;
+            assert!(!seen[v], "node {v} appears twice in `order`");
+            let p = parents[v];
+            assert!(
+                p < 0 || seen[p as usize],
+                "node {v} settles before its parent {p}"
+            );
+            seen[v] = true;
+        }
+
+        // A forest has exactly one non-root per non-root node, so the edge count pins the
+        // component count — which must be the one the DSU agrees on.
+        let n_roots = parents.iter().filter(|&&p| p < 0).count();
+        let n_comp = connected_components_graph(edges, n_nodes)
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        assert_eq!(n_roots, n_comp, "one root per component");
+    }
+
+    #[test]
+    fn spanning_forest_orients_a_path_away_from_its_lowest_node() {
+        // Edges given "backwards" on purpose: orientation must come from the search, not from
+        // the order the endpoints happen to be written in.
+        let edges = array![[1u32, 0], [2, 1], [3, 2]];
+        let (parents, order) = spanning_forest(edges.view(), 4, None, None);
+        assert_eq!(parents.to_vec(), vec![-1, 0, 1, 2]);
+        assert_eq!(order.to_vec(), vec![0i64, 1, 2, 3]);
+        check_forest(edges.view(), 4, parents.as_slice().unwrap(), order.as_slice().unwrap());
+    }
+
+    #[test]
+    fn spanning_forest_breaks_cycles() {
+        // A 4-ring. Any spanning tree drops exactly one edge; BFS from 0 drops the far one.
+        let edges = array![[0u32, 1], [1, 2], [2, 3], [3, 0]];
+        let (parents, order) = spanning_forest(edges.view(), 4, None, None);
+        check_forest(edges.view(), 4, parents.as_slice().unwrap(), order.as_slice().unwrap());
+        assert_eq!(parents[0], -1);
+        // 1 and 3 are one hop from the root, 2 is two hops via either.
+        assert_eq!((parents[1], parents[3]), (0, 0));
+        assert!(parents[2] == 1 || parents[2] == 3);
+    }
+
+    #[test]
+    fn spanning_forest_roots_each_component_at_its_lowest_node() {
+        // Two paths and an isolated node — the same representatives
+        // `connected_components_graph` labels components by.
+        let edges = array![[2u32, 1], [1, 0], [5, 4]];
+        let (parents, order) = spanning_forest(edges.view(), 7, None, None);
+        assert_eq!(parents.to_vec(), vec![-1, 0, 1, -1, -1, 4, -1]);
+        // Components are swept in ascending order of their lowest node.
+        assert_eq!(order.to_vec(), vec![0i64, 1, 2, 3, 4, 5, 6]);
+        check_forest(edges.view(), 7, parents.as_slice().unwrap(), order.as_slice().unwrap());
+    }
+
+    #[test]
+    fn given_roots_win_and_the_rest_fall_back() {
+        // Path 0-1-2-3 rooted at 3: every link reverses.
+        let edges = array![[0u32, 1], [1, 2], [2, 3]];
+        let (parents, order) = spanning_forest(edges.view(), 4, None, Some(&[3]));
+        assert_eq!(parents.to_vec(), vec![1, 2, 3, -1]);
+        assert_eq!(order.to_vec(), vec![3i64, 2, 1, 0]);
+
+        // A root in one component leaves the other to the fallback rule.
+        let edges = array![[0u32, 1], [1, 2], [5, 6]];
+        let (parents, order) = spanning_forest(edges.view(), 7, None, Some(&[2]));
+        assert_eq!(parents.to_vec(), vec![1, 2, -1, -1, -1, -1, 5]);
+        check_forest(edges.view(), 7, parents.as_slice().unwrap(), order.as_slice().unwrap());
+
+        // Two roots inside one component split it — each node goes to the nearer.
+        let edges = array![[0u32, 1], [1, 2], [2, 3]];
+        let (parents, _) = spanning_forest(edges.view(), 4, None, Some(&[0, 3]));
+        assert_eq!(parents.to_vec(), vec![-1, 0, 3, -1]);
+    }
+
+    #[test]
+    fn weights_give_the_shortest_path_tree_not_the_hop_tree() {
+        // 0-2 direct but expensive; 0-1-2 is two cheap hops. Unweighted picks the direct edge,
+        // weighted routes through 1.
+        let edges = array![[0u32, 1], [1, 2], [0, 2]];
+        let (hops, _) = spanning_forest(edges.view(), 3, None, None);
+        assert_eq!(hops.to_vec(), vec![-1, 0, 0]);
+
+        let w = array![1.0f32, 1.0, 5.0];
+        let (weighted, order) = spanning_forest(edges.view(), 3, Some(&w.view()), None);
+        assert_eq!(weighted.to_vec(), vec![-1, 0, 1]);
+        assert_eq!(order.to_vec(), vec![0i64, 1, 2]);
+    }
+
+    #[test]
+    fn spanning_forest_of_a_shattered_graph_is_one_sweep() {
+        // The case a per-source predecessor call cannot serve: thousands of components. Nothing
+        // here is timed — the point is that the output is a single n_nodes-long column and the
+        // invariants hold across every one of them.
+        let n_small = 3000usize;
+        let mut flat: Vec<u32> = Vec::new();
+        for k in 0..n_small as u32 {
+            let base = k * 4;
+            flat.extend_from_slice(&[base, base + 1, base + 1, base + 2, base + 2, base + 3]);
+        }
+        let n_nodes = n_small * 4;
+        let edges = Array2::from_shape_vec((flat.len() / 2, 2), flat).unwrap();
+        let (parents, order) = spanning_forest(edges.view(), n_nodes, None, None);
+        check_forest(
+            edges.view(),
+            n_nodes,
+            parents.as_slice().unwrap(),
+            order.as_slice().unwrap(),
+        );
+        assert_eq!(parents.iter().filter(|&&p| p < 0).count(), n_small);
+    }
+
+    #[test]
+    fn spanning_forest_matches_its_invariants_on_random_graphs() {
+        let mut state = 0x1234_5678u64;
+        for case in 0..60 {
+            let n_nodes = 5 + case % 20;
+            let n_edges = 4 + case % 30;
+            let edges = random_edges(&mut state, n_nodes, n_edges);
+            let w: Array1<f32> = (0..n_edges).map(|_| rng(&mut state) as f32).collect();
+
+            for weights in [None, Some(&w.view())] {
+                let (parents, order) = spanning_forest(edges.view(), n_nodes, weights, None);
+                check_forest(
+                    edges.view(),
+                    n_nodes,
+                    parents.as_slice().unwrap(),
+                    order.as_slice().unwrap(),
+                );
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Geodesic MST
+    // -----------------------------------------------------------------------
+
+    /// What the caller would otherwise do: materialise the k x k geodesic matrix and Kruskal it.
+    /// Returns the total weight, which is the invariant an MST pins down — the edge *set* need
+    /// not match, since ties have more than one right answer.
+    fn dense_mst_weight(adj: &Adjacency, nodes: &[u32], limit: Option<f32>) -> f64 {
+        let d = geodesic_matrix_impl(adj, Some(nodes), Some(nodes), limit, None);
+        let k = nodes.len();
+        let mut flat: Vec<u32> = Vec::new();
+        let mut w: Vec<f32> = Vec::new();
+        for i in 0..k {
+            for j in i + 1..k {
+                let x = d[[i, j]];
+                if x >= 0.0 && limit.is_none_or(|l| x <= l) {
+                    flat.extend_from_slice(&[i as u32, j as u32]);
+                    w.push(x);
+                }
+            }
+        }
+        let e = Array2::from_shape_vec((w.len(), 2), flat).unwrap();
+        let w = Array1::from_vec(w);
+        minimum_spanning_tree(e.view(), k, Some(&w.view()), false, None)
+            .iter()
+            .map(|&i| w[i as usize] as f64)
+            .sum()
+    }
+
+    #[test]
+    fn geodesic_mst_matches_the_dense_matrix_it_avoids_building() {
+        // A 9x9 grid mesh, sampling a scatter of vertices to span. Both the total weight and
+        // the individual reported distances must match what the k x k route gives.
+        let n = 9usize;
+        let (faces, coords) = grid(n, 1.0);
+        let adj = Adjacency::from_faces(faces.view(), n * n, Some(coords.view()));
+        let nodes: Vec<u32> = vec![0, 8, 40, 72, 80, 13, 55];
+
+        let (edges, weights) = geodesic_mst_impl(&adj, &nodes, None, None);
+        assert_eq!(edges.nrows(), nodes.len() - 1);
+
+        let total: f64 = weights.iter().map(|&x| x as f64).sum();
+        let want = dense_mst_weight(&adj, &nodes, None);
+        assert!((total - want).abs() < 1e-4, "{total} vs {want}");
+
+        // Each reported weight is the true geodesic distance between the pair it joins — the
+        // construction's candidates are upper bounds in general, so this is not automatic.
+        let d = geodesic_matrix_impl(&adj, Some(&nodes), Some(&nodes), None, None);
+        for (e, &w) in edges.rows().into_iter().zip(weights.iter()) {
+            let truth = d[[e[0] as usize, e[1] as usize]];
+            assert!((w - truth).abs() < 1e-4, "{w} vs {truth} for {e:?}");
+        }
+
+        // Spanning: the returned edges connect all k nodes.
+        let flat: Vec<u32> = edges.iter().map(|&x| x as u32).collect();
+        let flat = Array2::from_shape_vec((edges.nrows(), 2), flat).unwrap();
+        let comps = connected_components_graph(flat.view(), nodes.len());
+        assert!(comps.iter().all(|&c| c == 0));
+    }
+
+    #[test]
+    fn geodesic_mst_matches_the_dense_route_on_random_graphs() {
+        let mut state = 0xC0FFEEu64;
+        for case in 0..40 {
+            let n_nodes = 12 + case % 18;
+            let n_edges = n_nodes * 2;
+            let edges = random_edges(&mut state, n_nodes, n_edges);
+            let w: Array1<f32> = (0..n_edges).map(|_| (rng(&mut state) * 10.0) as f32).collect();
+            let adj = Adjacency::from_edges(edges.view(), n_nodes, Some(&w.view()), false);
+
+            // Every third node, so the subset is scattered rather than contiguous.
+            let nodes: Vec<u32> = (0..n_nodes as u32).step_by(3).collect();
+            for limit in [None, Some(6.0f32)] {
+                let (mst, weights) = geodesic_mst_impl(&adj, &nodes, limit, None);
+                let total: f64 = weights.iter().map(|&x| x as f64).sum();
+                let want = dense_mst_weight(&adj, &nodes, limit);
+                assert!(
+                    (total - want).abs() < 1e-3,
+                    "case {case} limit {limit:?}: {total} vs {want}"
+                );
+
+                // The distances are real, and so is the forest.
+                let d = geodesic_matrix_impl(&adj, Some(&nodes), Some(&nodes), None, None);
+                for (e, &x) in mst.rows().into_iter().zip(weights.iter()) {
+                    let truth = d[[e[0] as usize, e[1] as usize]];
+                    assert!((x - truth).abs() < 1e-3, "{x} vs {truth}");
+                }
+                assert!(mst.nrows() < nodes.len());
+            }
+        }
+    }
+
+    #[test]
+    fn geodesic_mst_of_disconnected_nodes_is_a_forest() {
+        // Two separate paths; nothing can join them, so we get k - 2 edges.
+        let edges = array![[0u32, 1], [1, 2], [5, 6], [6, 7]];
+        let w = array![1.0f32, 1.0, 1.0, 1.0];
+        let adj = Adjacency::from_edges(edges.view(), 8, Some(&w.view()), false);
+        let nodes = [0u32, 2, 5, 7];
+        let (mst, weights) = geodesic_mst_impl(&adj, &nodes, None, None);
+        assert_eq!(mst.nrows(), 2);
+        for &x in weights.iter() {
+            assert!((x - 2.0).abs() < 1e-6);
+        }
+
+        // `limit` shorter than either path leaves nothing to join at all.
+        let (mst, _) = geodesic_mst_impl(&adj, &nodes, Some(1.0), None);
+        assert_eq!(mst.nrows(), 0);
+    }
+
+    #[test]
+    fn geodesic_mst_degenerate_inputs() {
+        let edges = array![[0u32, 1], [1, 2]];
+        let adj = Adjacency::from_edges(edges.view(), 3, None, false);
+
+        // Fewer than two nodes: nothing to span.
+        for nodes in [vec![], vec![1u32]] {
+            let (mst, w) = geodesic_mst_impl(&adj, &nodes, None, None);
+            assert_eq!((mst.nrows(), w.len()), (0, 0));
+        }
+
+        // Unweighted graphs measure in hops.
+        let (mst, w) = geodesic_mst_impl(&adj, &[0, 2], None, None);
+        assert_eq!(mst.nrows(), 1);
+        assert_eq!(w[0], 2.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "more than once")]
+    fn geodesic_mst_rejects_duplicate_nodes() {
+        let edges = array![[0u32, 1], [1, 2]];
+        let adj = Adjacency::from_edges(edges.view(), 3, None, false);
+        geodesic_mst_impl(&adj, &[0, 2, 0], None, None);
+    }
+
+    #[test]
+    fn geodesic_mst_mesh_and_graph_agree() {
+        // The mesh entry point is the graph one over the mesh's unique edges, so given the same
+        // metric they must return the same tree.
+        let n = 7usize;
+        let (faces, coords) = grid(n, 1.0);
+        let n_verts = n * n;
+        let nodes: Vec<u32> = vec![0, 6, 24, 42, 48];
+
+        let (mesh_e, mesh_w) =
+            geodesic_mst_mesh(faces.view(), n_verts, Some(coords.view()), &nodes, None, None);
+
+        let (edges, _, _, lengths) =
+            unique_edges(faces.view(), Some(coords.view()), false, false, None);
+        let edges: Array2<u32> = edges.mapv(|v| v as u32);
+        let w: Array1<f32> = lengths.unwrap().mapv(|x| x as f32);
+        let (graph_e, graph_w) =
+            geodesic_mst_graph(edges.view(), n_verts, Some(&w.view()), &nodes, None, None);
+
+        assert_eq!(mesh_e, graph_e);
+        for (a, b) in mesh_w.iter().zip(graph_w.iter()) {
+            assert!((a - b).abs() < 1e-5, "{a} vs {b}");
+        }
+    }
+
+    /// A deterministic xorshift, so the fuzzing above needs no rand dependency.
+    fn rng(state: &mut u64) -> f64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        (*state >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    /// A random edge list over `n_nodes`. Self-loops and parallel edges are left in on
+    /// purpose — they are the cases the primitives above have to get right.
+    fn random_edges(state: &mut u64, n_nodes: usize, n_edges: usize) -> Array2<u32> {
+        let flat: Vec<u32> = (0..n_edges * 2)
+            .map(|_| (rng(state) * n_nodes as f64) as u32)
+            .collect();
+        Array2::from_shape_vec((n_edges, 2), flat).unwrap()
     }
 
     #[test]

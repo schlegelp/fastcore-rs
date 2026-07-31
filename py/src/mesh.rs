@@ -5,10 +5,11 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use fastcore::mesh::{
-    connected_components_graph, contract_vertices, geodesic_clusters, geodesic_farthest_mesh,
-    geodesic_matrix_graph, geodesic_matrix_mesh, geodesic_nearest_mesh, geodesic_path_graph,
-    geodesic_predecessors_graph, level_set_components, mesh_connected_components,
-    minimum_spanning_tree, unique_edges, GeodesicGraph,
+    bridges, connected_components_graph, contract_vertices, geodesic_clusters,
+    geodesic_farthest_mesh, geodesic_matrix_graph, geodesic_matrix_mesh, geodesic_mst_graph,
+    geodesic_mst_mesh, geodesic_nearest_mesh, geodesic_path_graph, geodesic_predecessors_graph,
+    level_set_components, mesh_connected_components, minimum_spanning_tree, spanning_forest,
+    unique_edges, GeodesicGraph,
 };
 
 /// Borrow a 1-D array as a contiguous slice.
@@ -356,6 +357,137 @@ pub fn minimum_spanning_tree_py<'py>(
 ) -> Bound<'py, PyArray1<i64>> {
     let w = weights.as_ref().map(|w| w.as_array());
     minimum_spanning_tree(edges.as_array(), n_nodes, w.as_ref(), maximize, threads).into_pyarray(py)
+}
+
+/// Which edges are bridges — the ones whose removal would disconnect their component.
+///
+/// Tarjan's algorithm, one depth-first sweep. Parallel edges are honoured (two nodes joined
+/// twice are joined by a cycle, so neither edge is a bridge) and self-loops are never bridges.
+///
+/// Arguments
+/// ---------
+/// - `edges`:   (E, 2) uint32 array of undirected edges (node indices).
+/// - `n_nodes`: Total number of nodes.
+///
+/// Returns
+/// -------
+/// A 1-D bool array with one flag per input edge, `True` for a bridge.
+#[pyfunction]
+#[pyo3(name = "bridges")]
+pub fn bridges_py<'py>(
+    py: Python<'py>,
+    edges: PyReadonlyArray2<u32>,
+    n_nodes: usize,
+) -> Bound<'py, PyArray1<bool>> {
+    bridges(edges.as_array(), n_nodes).into_pyarray(py)
+}
+
+/// Orient a graph into a rooted spanning forest — one parent per node, `-1` at the roots.
+///
+/// Cycles are broken; each component contributes a spanning tree of itself. One search covers
+/// the whole graph however finely it is fragmented.
+///
+/// Arguments
+/// ---------
+/// - `edges`:   (E, 2) uint32 array of undirected edges (node indices).
+/// - `n_nodes`: Total number of nodes.
+/// - `weights`: (E, ) float32 edge lengths, or `None` for hop counts (breadth-first tree).
+/// - `roots`:   (R, ) uint32 nodes to root at, or `None` for the lowest node index in each
+///   component. Components holding none of `roots` fall back to that.
+///
+/// Returns
+/// -------
+/// `(parents, order)`: `parents` is a (n_nodes, ) int32 array of parent indices (`-1` at a
+/// root); `order` is a (n_nodes, ) int64 topological order in which every node follows its
+/// parent.
+#[pyfunction]
+#[pyo3(name = "spanning_forest", signature = (edges, n_nodes, weights=None, roots=None))]
+pub fn spanning_forest_py<'py>(
+    py: Python<'py>,
+    edges: PyReadonlyArray2<u32>,
+    n_nodes: usize,
+    weights: Option<PyReadonlyArray1<f32>>,
+    roots: Option<PyReadonlyArray1<u32>>,
+) -> PyResult<(Bound<'py, PyArray1<i32>>, Bound<'py, PyArray1<i64>>)> {
+    let w = weights.as_ref().map(|w| w.as_array());
+    let r = as_opt_slice(&roots, "roots")?;
+    let (parents, order) = spanning_forest(edges.as_array(), n_nodes, w.as_ref(), r);
+    Ok((parents.into_pyarray(py), order.into_pyarray(py)))
+}
+
+/// Minimum spanning tree over a subset of mesh vertices, weighted by geodesic distance.
+///
+/// Never forms the `k x k` distance matrix: one multi-source sweep partitions the mesh by
+/// nearest chosen vertex, and each edge straddling two cells offers one candidate.
+///
+/// Arguments
+/// ---------
+/// - `faces`:      (F, 3) uint32 array of triangular faces (vertex indices).
+/// - `n_vertices`: Total number of vertices.
+/// - `nodes`:      (K, ) uint32 vertices to span. Must be distinct.
+/// - `coords`:     (n_vertices, 3) float64 positions for euclidean edge weights, or `None`
+///   for hop counts.
+/// - `limit`:      Do not join vertices farther apart than this.
+/// - `threads`:    Size of the thread pool, or `None` for all cores.
+///
+/// Returns
+/// -------
+/// `(edges, weights)`: `edges` is an (M, 2) int64 array of *positions in `nodes`*, ascending by
+/// weight; `weights` is the (M, ) float32 geodesic distance across each.
+#[pyfunction]
+#[pyo3(
+    name = "geodesic_mst_mesh",
+    signature = (faces, n_vertices, nodes, coords=None, limit=None, threads=None)
+)]
+pub fn geodesic_mst_mesh_py<'py>(
+    py: Python<'py>,
+    faces: PyReadonlyArray2<u32>,
+    n_vertices: usize,
+    nodes: PyReadonlyArray1<u32>,
+    coords: Option<PyReadonlyArray2<f64>>,
+    limit: Option<f32>,
+    threads: Option<usize>,
+) -> PyResult<(Bound<'py, PyArray2<i64>>, Bound<'py, PyArray1<f32>>)> {
+    let nodes = as_slice(&nodes, "nodes")?;
+    let (edges, weights) = geodesic_mst_mesh(
+        faces.as_array(),
+        n_vertices,
+        coords.as_ref().map(|c| c.as_array()),
+        nodes,
+        limit,
+        threads,
+    );
+    Ok((edges.into_pyarray(py), weights.into_pyarray(py)))
+}
+
+/// Minimum spanning tree over a subset of graph nodes, weighted by geodesic distance.
+///
+/// The edge-list form of `geodesic_mst_mesh`; always undirected.
+#[pyfunction]
+#[pyo3(
+    name = "geodesic_mst_graph",
+    signature = (edges, n_nodes, nodes, weights=None, limit=None, threads=None)
+)]
+pub fn geodesic_mst_graph_py<'py>(
+    py: Python<'py>,
+    edges: PyReadonlyArray2<u32>,
+    n_nodes: usize,
+    nodes: PyReadonlyArray1<u32>,
+    weights: Option<PyReadonlyArray1<f32>>,
+    limit: Option<f32>,
+    threads: Option<usize>,
+) -> PyResult<(Bound<'py, PyArray2<i64>>, Bound<'py, PyArray1<f32>>)> {
+    let nodes = as_slice(&nodes, "nodes")?;
+    let w = weights.as_ref().map(|w| w.as_array());
+    let (mst, mst_w) = geodesic_mst_graph(
+        edges.as_array(),
+        n_nodes,
+        w.as_ref(),
+        nodes,
+        limit,
+        threads,
+    );
+    Ok((mst.into_pyarray(py), mst_w.into_pyarray(py)))
 }
 
 /// For each source, the distance to its farthest target and that target's vertex index.

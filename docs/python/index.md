@@ -75,6 +75,9 @@ Meshes:
 - [`geodesic_matrix_mesh`](mesh.md#navis_fastcore.geodesic_matrix_mesh): parallel geodesic distances across a mesh
 - [`level_set_components`](mesh.md#navis_fastcore.level_set_components): components of every level set at once (wavefront rings)
 - [`contract_vertices`](mesh.md#navis_fastcore.contract_vertices) / [`minimum_spanning_tree`](mesh.md#navis_fastcore.minimum_spanning_tree): collapse a graph onto new nodes, then span it
+- [`spanning_forest`](mesh.md#navis_fastcore.spanning_forest): orient an edge list into a rooted forest — breaks cycles, and hands back the order that makes parents precede children
+- [`bridges`](mesh.md#navis_fastcore.bridges): which edges may not be dropped without disconnecting the graph
+- [`geodesic_mst_mesh`](mesh.md#navis_fastcore.geodesic_mst_mesh) / [`geodesic_mst_graph`](mesh.md#navis_fastcore.geodesic_mst_graph): span a *subset* of nodes by geodesic distance, without building the `k x k` matrix
 - [`geodesic_path`](mesh.md#navis_fastcore.geodesic_path) / [`geodesic_predecessors`](mesh.md#navis_fastcore.geodesic_predecessors): the shortest *route*, not just its length
 - [`geodesic_clusters`](mesh.md#navis_fastcore.geodesic_clusters): greedily partition a graph into clusters of bounded geodesic radius
 - [`GeodesicGraph`](mesh.md#navis_fastcore.GeodesicGraph): a graph prepared once for many small geodesic queries — grow fixed-*size* connected regions, and place evenly-spread seeds by farthest-point sampling

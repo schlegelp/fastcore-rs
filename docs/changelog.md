@@ -57,6 +57,41 @@ answer it costs more than the answer does. See the new
     `find_main_branchpoint(method="betweenness")` — which is that function's *default* —
     is the one caller, and wants `descendant_counts`.
 
+**Three graph primitives**, the ones `skeletor` still needs a graph library for. Where the
+tree primitives above serve navis, these serve mesh skeletonization — see the
+[Meshes](python/mesh.md) page.
+
+- `spanning_forest` — orient an edge list into a rooted forest: one parent per node, `-1`
+  at the roots, cycles broken. `minimum_spanning_tree` picks *which* edges survive; this
+  picks which way they point, which is what turns a bag of undirected edges into something
+  you can walk, root or write out as SWC. It also returns the order the nodes settled in,
+  which is free (the search visits them in it) and is exactly the relabelling that makes
+  parents precede their children. One search covers the whole graph rather than one per
+  component: the shortest-path-tree-per-component construction costs
+  `O(components x n_nodes)` in *output alone*, which on a skeleton shattered into four
+  thousand fragments is a 2 GB array for an answer that is one column. At 100k nodes,
+  2.9 ms against igraph's 14 ms for one arbor — and 2.7 ms against 4370 ms once it
+  fragments, because igraph pays per component and this does not.
+- `bridges` — which edges may not be dropped without disconnecting their component
+  (Tarjan, on an explicit stack, so a 200k-node strip does not overflow). The counterpart
+  to `minimum_spanning_tree` rather than a variant of it: the MST asks what to keep to stay
+  connected, this asks what may not be removed. Parallel edges are honoured — two nodes
+  joined twice are joined by a cycle, so neither edge is a bridge, which is why this does
+  not share the deduplicated adjacency the geodesic searches use. 2.6 ms against igraph's
+  13.5 ms at 100k nodes, 2.2 ms against 207 ms fragmented.
+- `geodesic_mst_mesh` / `geodesic_mst_graph` — the minimum spanning tree over a *subset* of
+  nodes, weighted by geodesic distance through the graph they were carved out of, **without
+  materialising the `k x k` distance matrix**. That matrix is `k**2` distances to use
+  `k - 1` of them — 400 MB at `k = 10_000` before the `O(k^2)` MST itself, and `k` searches
+  to fill it. Following Mehlhorn's distance-network construction, one multi-source sweep
+  partitions every node by nearest subset member and each edge straddling two cells offers
+  one candidate; an MST over those is an MST of the full distance network. The cost is flat
+  in `k` because it is one sweep whatever `k` is: at 100k nodes, 12.7 ms at `k=250` and
+  8.3 ms at `k=4000`, against 187 ms and 7820 ms for the matrix route. Returned weights are
+  exactly the geodesic distances between the pairs they join, so they are usable as lengths.
+  `limit` bounds how far apart two nodes may be and still be joined, and prunes the sweep
+  rather than merely discarding results.
+
 Python and Rust only for now; the R bindings will follow once the signatures have settled.
 
 Every one of these is pinned against igraph in the parity suite and against
@@ -79,10 +114,13 @@ segfault there.
 ### Fixes
 - results carrying a "no such node" sentinel no longer wrap around on `uint64` node IDs.
   `geodesic_nearest`, `geodesic_farthest` and `heal_skeleton` built their output with
-  `dtype=node_ids.dtype` and then wrote `-1` into it, so an unreachable source or a root
-  came back as 18446744073709551615 rather than -1 — on exactly the uint64 IDs
-  segmentation backends hand out. All of them now go through one helper that promotes to
-  `int64` when the ID dtype cannot represent the sentinel.
+  `np.full(..., -1, dtype=node_ids.dtype)` and then wrote `-1` into it, where it wraps —
+  so an unreachable source or a root came back as 18446744073709551615, on exactly the
+  uint64 IDs segmentation backends hand out. All of them now go through the helper that
+  already handled this for `reroot` and friends, which promotes to `int64` when the ID
+  dtype cannot represent the sentinel. The sentinel marks a source with no reachable
+  target (so, any skeleton with more than one component) and the healed skeleton's root,
+  which is what made this easy to hit.
 - `_ids_to_indices` no longer raises on an empty ID array when the node and target dtypes
   differ — it took `max()` of both unconditionally. Reachable from any function taking an
   optional set of node IDs (`descendant_counts(targets=[])` and friends) whenever node IDs
@@ -94,13 +132,6 @@ segfault there.
   — reporting a parent as reachable from its child's direction. Coincident nodes are
   routine in traced and resampled skeletons. The all-by-all backend, `geodesic_nearest`,
   `geodesic_farthest` and `geodesic_pairs` were unaffected.
-- `geodesic_nearest`, `geodesic_farthest` and `heal_skeleton` now return `-1` rather than
-  `18446744073709551615` for their "no such node" sentinel when node IDs are `uint64`.
-  Each built its output with `np.full(..., -1, dtype=node_ids.dtype)`, where `-1` wraps
-  around; they now share the helper that already handled this for `reroot` and friends,
-  which falls back to `int64` for an unsigned ID column. The sentinel marks a source with
-  no reachable target (any skeleton with more than one component) and the healed
-  skeleton's root, so this was easy to hit on segmentation-derived IDs.
 
 ## 0.9.0 (2026-07-28)
 

@@ -161,6 +161,18 @@ mod fastcore {
     use super::minimum_spanning_tree_py;
 
     #[pymodule_export]
+    use super::bridges_py;
+
+    #[pymodule_export]
+    use super::spanning_forest_py;
+
+    #[pymodule_export]
+    use super::geodesic_mst_mesh_py;
+
+    #[pymodule_export]
+    use super::geodesic_mst_graph_py;
+
+    #[pymodule_export]
     use super::geodesic_predecessors_py;
 
     #[pymodule_export]

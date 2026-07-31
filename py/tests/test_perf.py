@@ -94,7 +94,65 @@ def cases(topo):
     }
 
 
-CASE_NAMES = sorted(cases(topologies.synthetic_neuron(16)))
+#: `as_graph` results, keyed by the topology it was derived from. The transform costs
+#: ~70 ms at 1M nodes and every parametrisation of the graph tests asks for the same
+#: handful of graphs, so without this the suite rebuilds them a dozen times over. Safe
+#: to memoise because the derivation is deterministic and nothing here mutates it.
+_GRAPH_CACHE = {}
+
+
+def as_graph(topo):
+    """The same skeleton as a cyclic, undirected edge list.
+
+    `cases` above works in parent arrays; the primitives below work in edge lists,
+    so they need the skeleton transposed into one. Chords are added on purpose: over
+    a plain tree `bridges` would return all-true without ever walking a back edge,
+    and `spanning_forest` would have no cycle to break — so a tree would time the
+    two functions on the paths they are *not* being guarded for.
+    """
+    if topo.name in _GRAPH_CACHE:
+        return _GRAPH_CACHE[topo.name]
+
+    ids = np.asarray(topo.node_ids)
+    parents = np.asarray(topo.parent_ids)
+    n = len(ids)
+
+    # `synthetic_neuron` and `fragmented_neuron` both number nodes 0..n-1, so a
+    # parent id is already a parent index.
+    child = np.flatnonzero(parents >= 0)
+    tree = np.column_stack((child, parents[child]))
+
+    # One chord per 20 nodes, within the same component so the graph does not gain
+    # connectivity the parent array did not have.
+    rng = np.random.default_rng(0)
+    comp = fastcore.connected_components(ids, parents)
+    order = np.argsort(comp, kind="stable")
+    shifted = np.roll(order, -7)
+    ok = comp[order] == comp[shifted]
+    chords = np.column_stack((order[ok], shifted[ok]))
+    chords = chords[rng.permutation(len(chords))[: max(1, n // 20)]]
+
+    edges = np.vstack((tree, chords)).astype(np.uint32)
+    # `random()` is [0, 1), so this is [0.1, 1.1) — positive by construction.
+    weights = rng.random(len(edges)).astype(np.float32) + np.float32(0.1)
+
+    _GRAPH_CACHE[topo.name] = (edges, weights, n)
+    return _GRAPH_CACHE[topo.name]
+
+
+def graph_cases(topo):
+    """The edge-list primitives, as zero-argument callables."""
+    edges, weights, n = as_graph(topo)
+    # 1000 nodes to span: the scale skeletor's `mst_over_mesh` works at, and enough
+    # that the k x k route it replaces would be a million-cell matrix.
+    span = np.linspace(0, n - 1, 1000, dtype=np.uint32)
+    return {
+        "spanning_forest": lambda: fastcore.spanning_forest(edges, n),
+        "bridges": lambda: fastcore.bridges(edges, n),
+        "geodesic_mst_graph": lambda: fastcore.geodesic_mst_graph(
+            edges, n, span, weights=weights
+        ),
+    }
 
 
 def best_of(fn, repeats=5):
@@ -183,15 +241,31 @@ def baseline(request, calibration):
     yield json.loads(BASELINE_PATH.read_text())
 
 
+#: Every guarded operation, as `(baseline key prefix, builder, case name)`.
+#:
+#: The two suites are parametrised together rather than given a test apiece: they gate
+#: on exactly the same thing and differ only in which builder turns a topology into
+#: callables. `graph_cases` still runs only for its own cases, which is what the
+#: separation was ever for — it transposes the skeleton into an edge list, and the
+#: parent-array cases would pay for that without looking at it.
+SUITES = [("", cases), ("graph/", graph_cases)]
+GUARDED = [(prefix, build, case)
+           for prefix, build in SUITES
+           for case in sorted(build(topologies.synthetic_neuron(64)))]
+
+#: Readable ids, so a failure names the case rather than a tuple.
+GUARDED_IDS = [f"{prefix}{case}" for prefix, _, case in GUARDED]
+
+
 # --------------------------------------------------------------------- regression
 
 
 @pytest.mark.parametrize("shape", SHAPES)
-@pytest.mark.parametrize("case", CASE_NAMES)
-def test_no_regression(case, shape, topos, baseline, calibration, request):
+@pytest.mark.parametrize("prefix,build,case", GUARDED, ids=GUARDED_IDS)
+def test_no_regression(prefix, build, case, shape, topos, baseline, calibration, request):
     """Each operation stays within `REGRESSION_FACTOR` of its recorded time."""
-    key = f"{shape}/{case}"
-    elapsed = best_of(cases(topos(shape, N))[case])
+    key = f"{prefix}{shape}/{case}"
+    elapsed = best_of(build(topos(shape, N))[case])
 
     if request.config.getoption("--baseline"):
         baseline["cases"][key] = elapsed
@@ -217,20 +291,20 @@ def test_no_regression(case, shape, topos, baseline, calibration, request):
 
 
 @pytest.mark.parametrize("shape", SHAPES)
-@pytest.mark.parametrize("case", CASE_NAMES)
-def test_scaling_is_subquadratic(case, shape, topos):
+@pytest.mark.parametrize("prefix,build,case", GUARDED, ids=GUARDED_IDS)
+def test_scaling_is_subquadratic(prefix, build, case, shape, topos):
     """10x the nodes must not cost ~100x the time.
 
     Run against the fragmented shape too: there 10x the nodes is also ~10x the
-    *components*, so anything quadratic in component count shows up here and nowhere
-    else.
+    *components*, so anything quadratic in component count — a per-component search,
+    a root sweep — shows up here and nowhere else.
     """
-    t_n = best_of(cases(topos(shape, N))[case], repeats=3)
-    t_10n = best_of(cases(topos(shape, N10))[case], repeats=3)
+    t_n = best_of(build(topos(shape, N))[case], repeats=3)
+    t_10n = best_of(build(topos(shape, N10))[case], repeats=3)
 
     ratio = t_10n / t_n
     assert ratio < MAX_SCALING_RATIO, (
-        f"{shape}/{case}: {N} -> {N10} nodes cost {ratio:.1f}x more time "
+        f"{prefix}{shape}/{case}: {N} -> {N10} nodes cost {ratio:.1f}x more time "
         f"({t_n * 1e3:.1f} -> {t_10n * 1e3:.1f} ms); "
         f"that is worse than O(N log N) and suggests a quadratic path"
     )
@@ -316,6 +390,80 @@ def test_report_speedup_vs_igraph(big, capsys):
             print(
                 f"  {name:<24}{t_ours * 1e3:>10.1f}ms{t_theirs * 1e3:>10.1f}ms"
                 f"{t_theirs / t_ours:>9.1f}x{mark}"
+            )
+
+
+def test_report_graph_primitives_vs_igraph(topos, capsys):
+    """Print the edge-list primitives against igraph. Reports only; never fails.
+
+    Unlike the table above these *are* like-for-like: `bridges` is igraph's own
+    `Graph.bridges()`, and the spanning-forest reference is the per-component
+    `Graph.bfs()` loop skeletor's `edges_to_graph` is a networkx spelling of. The
+    fragmented shape is included because that is where the two diverge in kind
+    rather than in constant: igraph pays per component, fastcore does not.
+    """
+    igraph = pytest.importorskip("igraph")
+
+    with capsys.disabled():
+        print(f"\n  {'shape':<12}{'case':<20}{'fastcore':>12}{'igraph':>12}{'ratio':>10}")
+        for shape in SHAPES:
+            # One topology per shape, so both columns time the same graph.
+            topo = topos(shape, N)
+            edges, _, n = as_graph(topo)
+            g = igraph.Graph(n=n, edges=edges.tolist(), directed=False)
+
+            theirs = {
+                "bridges": lambda g=g: g.bridges(),
+                # One BFS per component, which is what any graph library forces —
+                # and the reason `spanning_forest` sweeps them into one column.
+                "spanning_forest": lambda g=g: [
+                    g.bfs(int(c[0])) for c in g.connected_components()
+                ],
+            }
+            ours = graph_cases(topo)
+            for name, fn in theirs.items():
+                t_ours = best_of(ours[name], repeats=3)
+                t_theirs = best_of(fn, repeats=1)
+                print(
+                    f"  {shape:<12}{name:<20}{t_ours * 1e3:>10.1f}ms"
+                    f"{t_theirs * 1e3:>10.1f}ms{t_theirs / t_ours:>9.1f}x"
+                )
+
+
+def test_report_geodesic_mst_vs_dense_matrix(big, capsys):
+    """Print the matrix-free MST against the route it replaces. Reports only.
+
+    The reference is exactly what a caller would otherwise write: ask for the
+    `k x k` geodesic matrix, hand it to scipy's matrix MST. The point of the table
+    is the *shape* of the two columns — ours is flat in `k` because it is one
+    sweep whatever `k` is, theirs is quadratic.
+    """
+    from scipy.sparse.csgraph import minimum_spanning_tree as scipy_mst
+
+    edges, weights, n = as_graph(big)
+
+    with capsys.disabled():
+        print(f"\n  {'k':>7}{'fastcore':>12}{'k x k + MST':>15}{'ratio':>10}{'matrix':>10}")
+        for k in (250, 1_000, 4_000):
+            span = np.linspace(0, n - 1, k, dtype=np.uint32)
+
+            def dense(span=span):
+                d = fastcore.geodesic_matrix_graph(
+                    edges, n, weights=weights, sources=span, targets=span
+                )
+                d = np.where(d < 0, np.inf, d).astype(np.float64)
+                return scipy_mst(d, overwrite=True)
+
+            t_ours = best_of(
+                lambda span=span: fastcore.geodesic_mst_graph(
+                    edges, n, span, weights=weights
+                ),
+                repeats=3,
+            )
+            t_theirs = best_of(dense, repeats=1)
+            print(
+                f"  {k:>7,}{t_ours * 1e3:>10.1f}ms{t_theirs * 1e3:>13.1f}ms"
+                f"{t_theirs / t_ours:>9.1f}x{k * k * 4 / 1e6:>8.0f} MB"
             )
 
 

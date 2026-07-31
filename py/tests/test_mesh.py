@@ -592,6 +592,11 @@ def as_partition(labels):
     return {frozenset(v) for v in out.values()}
 
 
+def n_components(edges, n_nodes):
+    """How many connected components the edge list leaves over `n_nodes` nodes."""
+    return len(set(fastcore.connected_components_graph(edges, n_nodes).tolist()))
+
+
 def test_connected_components_graph_matches_igraph():
     ig = pytest.importorskip("igraph")
 
@@ -779,7 +784,7 @@ def test_minimum_spanning_tree_of_a_forest():
     """Disconnected input yields one tree per component: n_nodes - n_components edges."""
     edges = random_graph(n_nodes=200, n_edges=300, seed=8)
     n = 200
-    n_comp = len(set(fastcore.connected_components_graph(edges, n).tolist()))
+    n_comp = n_components(edges, n)
 
     keep = fastcore.minimum_spanning_tree(edges, n)
     assert len(keep) == n - n_comp
@@ -805,13 +810,388 @@ def test_graph_primitives_validation():
         fastcore.minimum_spanning_tree(np.zeros((2, 3), dtype=np.uint32), 3)
 
 
+# -----------------------------------------------------------------------------
+# Bridges
+#
+# Oracle: igraph's `bridges()`, which is the call skeletor's `by_wavefront_exact`
+# makes, plus the brute-force definition for the cases igraph disagrees on.
+# -----------------------------------------------------------------------------
+
+
+def bridges_oracle(edges, n_nodes):
+    """An edge is a bridge iff dropping it raises the component count."""
+    n_base = n_components(edges, n_nodes)
+    out = np.zeros(len(edges), dtype=bool)
+    for i in range(len(edges)):
+        kept = np.delete(edges, i, axis=0)
+        n = n_components(kept, n_nodes)
+        out[i] = n > n_base
+    return out
+
+
+def test_bridges_matches_igraph():
+    ig = pytest.importorskip("igraph")
+
+    edges = random_graph(n_nodes=120, n_edges=200, seed=11)
+    n = 120
+
+    ours = fastcore.bridges(edges, n)
+
+    g = ig.Graph(n=n, edges=edges.tolist(), directed=False)
+    ref = np.zeros(len(edges), dtype=bool)
+    ref[g.bridges()] = True
+
+    np.testing.assert_array_equal(ours, ref)
+    # Not a vacuous match: this graph genuinely has some of each.
+    assert ours.any() and not ours.all()
+
+
+def test_bridges_matches_the_brute_force_definition():
+    for seed in range(6):
+        edges = random_graph(n_nodes=25, n_edges=40, seed=seed)
+        np.testing.assert_array_equal(
+            fastcore.bridges(edges, 25), bridges_oracle(edges, 25)
+        )
+
+
+def test_bridges_of_a_tree_and_of_a_ring():
+    path = np.array([[0, 1], [1, 2], [2, 3]], dtype=np.uint32)
+    assert fastcore.bridges(path, 4).all()
+
+    ring = np.array([[0, 1], [1, 2], [2, 3], [3, 0]], dtype=np.uint32)
+    assert not fastcore.bridges(ring, 4).any()
+
+    # A mesh is 2-edge-connected everywhere except its boundary spurs; a closed
+    # grid interior has no bridges at all.
+    faces, verts = grid_mesh(n=8)
+    edges = fastcore.unique_edges(faces).astype(np.uint32)
+    assert not fastcore.bridges(edges, len(verts)).any()
+
+
+def test_bridges_handles_parallel_edges_and_self_loops():
+    """The case that rules out routing this through a deduplicating adjacency:
+    two nodes joined twice are joined by a cycle, so neither edge is a bridge."""
+    doubled = np.array([[0, 1], [0, 1]], dtype=np.uint32)
+    assert not fastcore.bridges(doubled, 2).any()
+
+    # One copy on its own *is* a bridge, so the doubling is what changed the answer.
+    assert fastcore.bridges(doubled[:1], 2).tolist() == [True]
+
+    # Self-loops are never bridges; the real edge beside them still is.
+    loops = np.array([[0, 0], [0, 1], [1, 1]], dtype=np.uint32)
+    np.testing.assert_array_equal(fastcore.bridges(loops, 2), [False, True, False])
+
+
+def test_bridges_are_exactly_the_edges_not_on_a_cycle():
+    """Cross-check against the MST: every bridge must be in *every* spanning
+    forest, so it survives an MST run that is told to avoid it if it can."""
+    edges = random_graph(n_nodes=80, n_edges=140, seed=12)
+    n = 80
+    mask = fastcore.bridges(edges, n)
+
+    # Make the bridges maximally expensive. Kruskal still has to take them.
+    w = np.where(mask, 1000.0, 1.0).astype(np.float32)
+    keep = set(fastcore.minimum_spanning_tree(edges, n, w).tolist())
+    assert set(np.flatnonzero(mask).tolist()) <= keep
+
+
+def test_bridges_empty_and_edgeless():
+    empty = np.zeros((0, 2), dtype=np.uint32)
+    assert fastcore.bridges(empty, 5).shape == (0,)
+    assert fastcore.bridges(empty, 0).shape == (0,)
+
+
+# -----------------------------------------------------------------------------
+# Spanning forest
+#
+# Oracles: networkx's `bfs_tree` (what skeletor's `edges_to_graph` uses) and
+# scipy's `dijkstra(..., min_only=True, return_predecessors=True)`.
+# -----------------------------------------------------------------------------
+
+
+def check_forest(edges, n_nodes, parents, order):
+    """The invariants any spanning forest must have, whatever the tie-breaks."""
+    present = set()
+    for a, b in edges.tolist():
+        present.add((a, b))
+        present.add((b, a))
+    for v, p in enumerate(parents.tolist()):
+        if p >= 0:
+            assert (p, v) in present, f"parent link {p} -> {v} is not an edge"
+
+    assert sorted(order.tolist()) == list(range(n_nodes))
+    seen = np.zeros(n_nodes, dtype=bool)
+    for v in order.tolist():
+        p = parents[v]
+        assert p < 0 or seen[p], f"node {v} settles before its parent {p}"
+        seen[v] = True
+
+    n_comp = n_components(edges, n_nodes)
+    assert int((parents < 0).sum()) == n_comp
+
+
+def test_spanning_forest_matches_networkx_bfs_tree():
+    """The oracle is the call this replaces: `nx.bfs_tree` per component, then
+    reverse to child -> parent."""
+    nx = pytest.importorskip("networkx")
+
+    edges = random_graph(n_nodes=150, n_edges=400, seed=13)
+    n = 150
+    parents, order = fastcore.spanning_forest(edges, n)
+    check_forest(edges, n, parents, order)
+
+    g = nx.Graph()
+    g.add_nodes_from(range(n))
+    g.add_edges_from(edges.tolist())
+
+    for cc in nx.connected_components(g):
+        root = min(cc)
+        # Same root rule: the lowest node index in the component.
+        assert parents[root] == -1
+
+        # A BFS tree is not unique, so the parent itself may differ between the
+        # two -- but the depths are unique, and a BFS parent is by definition
+        # exactly one level closer to the root. That pins the tree down to the
+        # arbitrary choice, which is all either implementation promises.
+        depth = nx.single_source_shortest_path_length(g, root)
+        ref_parents = {c: p for p, c in nx.bfs_tree(g, source=root).edges()}
+        for v in cc - {root}:
+            assert depth[int(parents[v])] == depth[v] - 1
+            assert depth[ref_parents[v]] == depth[v] - 1
+
+
+def test_spanning_forest_matches_scipy_min_only():
+    """scipy's `min_only` predecessor sweep is the vectorised route skeletor
+    currently takes; the trees must have identical depths."""
+    from scipy.sparse.csgraph import dijkstra
+
+    edges = random_graph(n_nodes=200, n_edges=500, seed=14)
+    n = 200
+    rng = np.random.default_rng(15)
+    w = rng.random(len(edges)).astype(np.float32) + 0.1
+
+    comp = fastcore.connected_components_graph(edges, n)
+    roots = np.unique(comp, return_index=True)[1].astype(np.uint32)
+
+    parents, order = fastcore.spanning_forest(edges, n, weights=w, roots=roots)
+    check_forest(edges, n, parents, order)
+
+    dist_ref, pred_ref, _ = dijkstra(
+        as_csr(edges, n, w), directed=False, indices=roots,
+        min_only=True, return_predecessors=True,
+    )
+    # Distinct random weights make the shortest-path tree unique, so this is an
+    # exact comparison (scipy's "no predecessor" sentinel is -9999, ours is -1).
+    np.testing.assert_array_equal(parents, np.where(pred_ref < 0, -1, pred_ref))
+
+    # `order` sorts by distance from the root, which is what makes it topological.
+    assert np.all(np.diff(dist_ref[order]) >= -1e-6)
+
+
+def test_spanning_forest_roots_and_fallback():
+    edges = np.array([[0, 1], [1, 2], [5, 6]], dtype=np.uint32)
+
+    # No roots: the lowest node index of each component.
+    parents, order = fastcore.spanning_forest(edges, 7)
+    np.testing.assert_array_equal(parents, [-1, 0, 1, -1, -1, -1, 5])
+
+    # A root in one component; the other falls back.
+    parents, _ = fastcore.spanning_forest(edges, 7, roots=[2])
+    np.testing.assert_array_equal(parents, [1, 2, -1, -1, -1, -1, 5])
+
+    # Two roots inside one component split it — each node goes to the nearer.
+    path = np.array([[0, 1], [1, 2], [2, 3]], dtype=np.uint32)
+    parents, _ = fastcore.spanning_forest(path, 4, roots=[0, 3])
+    np.testing.assert_array_equal(parents, [-1, 0, 3, -1])
+
+
+def test_spanning_forest_breaks_cycles():
+    """Cyclic input still yields a forest: exactly n - n_components parent links."""
+    edges = random_graph(n_nodes=100, n_edges=400, seed=16)
+    n = 100
+    parents, order = fastcore.spanning_forest(edges, n)
+    check_forest(edges, n, parents, order)
+
+    n_comp = n_components(edges, n)
+    assert int((parents >= 0).sum()) == n - n_comp
+
+
+def test_spanning_forest_of_a_shattered_graph_is_one_column():
+    """The case a per-source predecessor call cannot serve: the equivalent
+    `geodesic_predecessors` call would allocate one row per component."""
+    n_small, size = 4000, 5
+    blocks = np.arange(n_small)[:, None] * size
+    chain = np.array([[0, 1], [1, 2], [2, 3], [3, 4]], dtype=np.int64)
+    edges = (blocks[:, :, None] + chain[None]).reshape(-1, 2).astype(np.uint32)
+    n = n_small * size
+
+    parents, order = fastcore.spanning_forest(edges, n)
+    check_forest(edges, n, parents, order)
+    assert int((parents < 0).sum()) == n_small
+    # The output is two n-long columns, not n_components x n.
+    assert parents.shape == (n,) and order.shape == (n,)
+
+
+def test_spanning_forest_order_relabels_parents_before_children():
+    """The SWC requirement, which is why `order` is returned at all."""
+    edges = random_graph(n_nodes=300, n_edges=700, seed=17)
+    n = 300
+    parents, order = fastcore.spanning_forest(edges, n)
+
+    new_ids = np.empty(n, dtype=np.int64)
+    new_ids[order] = np.arange(n)
+    new_parents = np.where(parents < 0, -1, new_ids[parents])
+    # Both sides are indexed by *old* node id: each node's parent must have been
+    # given a lower new id than the node itself.
+    assert np.all(new_parents < new_ids)
+
+
+def test_spanning_forest_weights_change_the_tree():
+    edges = np.array([[0, 1], [1, 2], [0, 2]], dtype=np.uint32)
+
+    # Unweighted takes the direct 0-2 edge...
+    parents, _ = fastcore.spanning_forest(edges, 3)
+    np.testing.assert_array_equal(parents, [-1, 0, 0])
+
+    # ...weighted routes around it when that is shorter.
+    parents, _ = fastcore.spanning_forest(edges, 3, weights=[1.0, 1.0, 5.0])
+    np.testing.assert_array_equal(parents, [-1, 0, 1])
+
+
+def test_spanning_forest_validation():
+    edges = np.array([[0, 1], [1, 2]], dtype=np.uint32)
+    with pytest.raises(ValueError):
+        fastcore.spanning_forest(edges, 2)  # node 2 out of range
+    with pytest.raises(ValueError):
+        fastcore.spanning_forest(edges, 3, weights=[1.0])  # weights too short
+    with pytest.raises(ValueError):
+        fastcore.spanning_forest(edges, 3, roots=[9])  # root out of range
+
+
+# -----------------------------------------------------------------------------
+# Geodesic MST
+#
+# Oracle: the route this exists to replace -- materialise the k x k geodesic
+# matrix and hand it to scipy's matrix MST.
+# -----------------------------------------------------------------------------
+
+
+def dense_mst_total(d):
+    """Total weight of the MST of a dense distance matrix, the way skeletor's
+    `mst_over_mesh` builds it: unreachable to infinity, then scipy's matrix MST."""
+    from scipy.sparse.csgraph import minimum_spanning_tree as scipy_mst
+
+    d = np.where(d < 0, np.inf, d).astype(np.float64)
+    return scipy_mst(d).tocoo().data.sum()
+
+
+def test_geodesic_mst_matches_the_dense_matrix_route():
+    faces, verts = grid_mesh(n=13)
+    rng = np.random.default_rng(18)
+    nodes = np.sort(rng.choice(len(verts), size=25, replace=False)).astype(np.uint32)
+
+    edges, weights = fastcore.geodesic_mst_mesh(faces, nodes, verts)
+    assert len(edges) == len(nodes) - 1
+
+    d = fastcore.geodesic_matrix_mesh(
+        faces, vertices=verts, sources=nodes, targets=nodes
+    )
+    np.testing.assert_allclose(weights.sum(), dense_mst_total(d), rtol=1e-5)
+
+    # Each reported weight is the *true* geodesic distance between the pair it
+    # joins. The construction's candidates are upper bounds in general, so this
+    # is a real claim about the result and not a restatement of the algorithm.
+    np.testing.assert_allclose(d[edges[:, 0], edges[:, 1]], weights, rtol=1e-5)
+
+    # Ascending by weight, and spanning.
+    assert np.all(np.diff(weights) >= -1e-6)
+    assert n_components(edges.astype(np.uint32), len(nodes)) == 1
+
+
+def test_geodesic_mst_graph_matches_the_dense_matrix_route():
+    edges = random_graph(n_nodes=120, n_edges=350, seed=19)
+    n = 120
+    rng = np.random.default_rng(20)
+    w = (rng.random(len(edges)) * 5 + 0.5).astype(np.float32)
+    nodes = np.arange(0, n, 6, dtype=np.uint32)
+
+    mst, weights = fastcore.geodesic_mst_graph(edges, n, nodes, weights=w)
+
+    d = fastcore.geodesic_matrix_graph(
+        edges, n, weights=w, sources=nodes, targets=nodes
+    )
+    np.testing.assert_allclose(weights.sum(), dense_mst_total(d), rtol=1e-5)
+    np.testing.assert_allclose(d[mst[:, 0], mst[:, 1]], weights, rtol=1e-5)
+
+
+def test_geodesic_mst_respects_limit():
+    """`limit` bounds the *pair* distance, so the result is the MST of the graph
+    on `nodes` keeping only pairs within it -- a forest when that disconnects."""
+    faces, verts = grid_mesh(n=11)
+    nodes = np.array([0, 5, 10, 55, 60, 65, 110, 115, 120], dtype=np.uint32)
+
+    full, full_w = fastcore.geodesic_mst_mesh(faces, nodes, verts)
+    limit = float(np.median(full_w))
+
+    cut, cut_w = fastcore.geodesic_mst_mesh(faces, nodes, verts, limit=limit)
+    assert (cut_w <= limit + 1e-5).all()
+    # Bounding the MST is the same as pruning the full one, since Kruskal takes
+    # edges in ascending order.
+    np.testing.assert_allclose(cut_w.sum(), full_w[full_w <= limit].sum(), rtol=1e-5)
+
+    d = fastcore.geodesic_matrix_mesh(
+        faces, vertices=verts, sources=nodes, targets=nodes, limit=limit
+    )
+    np.testing.assert_allclose(cut_w.sum(), dense_mst_total(d), rtol=1e-5)
+
+
+def test_geodesic_mst_of_disconnected_nodes_is_a_forest():
+    faces = np.array([[0, 1, 2], [3, 4, 5]], dtype=np.uint32)
+    verts = np.array(
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0], [9, 9, 9], [10, 9, 9], [9, 10, 9]],
+        dtype=float,
+    )
+    edges, weights = fastcore.geodesic_mst_mesh(faces, [0, 1, 3, 4], verts)
+    # Two components of two nodes each: 4 - 2 = 2 edges.
+    assert len(edges) == 2
+    np.testing.assert_allclose(weights, [1.0, 1.0], rtol=1e-5)
+
+
+def test_geodesic_mst_unweighted_is_hop_count():
+    edges = np.array([[0, 1], [1, 2], [2, 3]], dtype=np.uint32)
+    mst, w = fastcore.geodesic_mst_graph(edges, 4, nodes=[0, 3])
+    assert mst.tolist() == [[0, 1]]
+    assert w.tolist() == [3.0]
+
+
+def test_geodesic_mst_degenerate_and_validation():
+    faces, verts = grid_mesh(n=5)
+
+    for nodes in ([], [3]):
+        e, w = fastcore.geodesic_mst_mesh(faces, nodes, verts)
+        assert e.shape == (0, 2) and w.shape == (0,)
+
+    with pytest.raises(ValueError):
+        fastcore.geodesic_mst_mesh(faces, [0, 1, 0], verts)  # duplicate node
+    with pytest.raises(ValueError):
+        fastcore.geodesic_mst_mesh(faces, [0, 999], verts)  # out of range
+    with pytest.raises(ValueError):
+        fastcore.geodesic_mst_mesh(faces, [0, 1], verts, limit=-1)
+
+
 def test_graph_primitives_threads_do_not_change_the_result():
     edges = random_graph()
     mapping = (np.arange(200) // 5).astype(np.uint32)
     rng = np.random.default_rng(9)
     w = rng.random(len(edges)).astype(np.float32)
+    span = np.arange(0, 200, 9, dtype=np.uint32)
 
     for t in (1, 2, 4):
+        for got, ref in zip(
+            fastcore.geodesic_mst_graph(edges, 200, span, weights=w, threads=t),
+            fastcore.geodesic_mst_graph(edges, 200, span, weights=w, threads=1),
+        ):
+            np.testing.assert_array_equal(got, ref)
         np.testing.assert_array_equal(
             fastcore.contract_vertices(edges, mapping, threads=t),
             fastcore.contract_vertices(edges, mapping, threads=1),
