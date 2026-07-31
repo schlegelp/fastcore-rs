@@ -72,6 +72,15 @@ surface and how they spell it. `—` means that surface doesn't expose it direct
 | Strahler index | `dag::strahler_index` | `strahler_index` | `strahler_index` |
 | Prune twigs | `dag::prune_twigs` | `prune_twigs` | `prune_twigs`[^1] |
 | Classify nodes (root/leaf/branch/slab) | `dag::classify_nodes` | `classify_nodes` | `classify_nodes` |
+| Sub-tree below a node | `dag::descendants` | `descendants` | — |
+| Path from a node to its root | `dag::paths_to_root` | `paths_to_root` | — |
+| Re-root | `dag::reroot` | `reroot` | — |
+| Contract nodes | `dag::contract_nodes` | `contract_nodes` | — |
+| Simplify to roots/leafs/branches | `dag::simplify_skeleton` | `simplify_skeleton` | — |
+| Adjacency matrix (CSR) | `dag::adjacency` | `adjacency` | — |
+| Longest path(s) | `dag::longest_path`, `dag::longest_paths` | `longest_path`, `longest_paths` | — |
+| Betweenness centrality | `dag::betweenness` | `betweenness` | — |
+| Descendant counts | `dag::descendant_counts` | `descendant_counts` | — |
 | Synapse flow centrality | `dag::synapse_flow_centrality` | `synapse_flow_centrality` | `synapse_flow_centrality` |
 | Cycle detection | `dag::has_cycles` | — | `has_cycles` |
 | Node ID → index mapping | — | — (done internally) | `node_indices` |

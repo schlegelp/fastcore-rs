@@ -19,6 +19,7 @@ nav = [
     { "Connected components" = "python/cc.md" },
     { "Morphology" = "python/morphology.md" },
     { "Segments" = "python/segments.md" },
+    { "Topology" = "python/topology.md" },
     { "Mesh" = "python/mesh.md" },
     { "Healing" = "python/healing.md" },
     { "NBLAST" = "python/nblast.md" },

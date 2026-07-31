@@ -12,3 +12,7 @@ Functions related to analysing or manipulating neuron morphology.
 ::: navis_fastcore.subtree_height
 
 ::: navis_fastcore.prune_twigs
+
+::: navis_fastcore.betweenness
+
+::: navis_fastcore.descendant_counts

@@ -45,3 +45,7 @@ jobs:
       # session, so a slower runner shifts the budget rather than failing.
       - run: pytest -m benchmark -s --verbose
         name: Run performance guards
+      # The per-commit suite runs hypothesis at 50 examples to stay fast. Nightly is
+      # where the tail cases are worth the minutes.
+      - run: pytest tests/test_properties.py --hypothesis-profile=thorough --verbose
+        name: Run property tests (thorough)

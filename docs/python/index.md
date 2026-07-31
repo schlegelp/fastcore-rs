@@ -54,6 +54,15 @@ Operations on [rooted trees](../concepts/trees.md):
 - [`break_segments`](segments.md#navis_fastcore.break_segments): break the neuron into the linear segments connecting leafs, branches and roots
 - [`generate_segments`](segments.md#navis_fastcore.generate_segments): same as `break_segments` but maximizing segment lengths, i.e. the longest segment goes from the most distal leaf to the root and so on
 - [`segment_coords`](segments.md#navis_fastcore.segment_coords): coordinates per linear segment (useful for plotting)
+- [`descendants`](topology.md#navis_fastcore.descendants): the sub-tree distal to a node
+- [`paths_to_root`](topology.md#navis_fastcore.paths_to_root): the node sequence from a node up to its root
+- [`reroot`](topology.md#navis_fastcore.reroot): re-root the skeleton, reversing only the edges that have to move
+- [`contract_nodes`](topology.md#navis_fastcore.contract_nodes): collapse groups of nodes onto a representative and rewire
+- [`simplify_skeleton`](topology.md#navis_fastcore.simplify_skeleton): keep only roots, leafs and branch points, preserving cable length
+- [`adjacency`](topology.md#navis_fastcore.adjacency): the skeleton's adjacency matrix as a CSR triple
+- [`longest_path`](topology.md#navis_fastcore.longest_path) / [`longest_paths`](topology.md#navis_fastcore.longest_paths): the longest path from a node to its root, and the `n` longest taken in turn
+- [`betweenness`](morphology.md#navis_fastcore.betweenness): betweenness centrality, in O(N) rather than Brandes' O(V*E)
+- [`descendant_counts`](morphology.md#navis_fastcore.descendant_counts): how many nodes (or how many of a given set) lie below each node
 
 Repairing fragmented skeletons:
 

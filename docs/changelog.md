@@ -10,6 +10,60 @@ Tags, source archives and the original announcements are on
 
 ## Unreleased
 
+**Six new tree primitives**, filling the gap between what `navis` asks igraph for
+internally and what `fastcore` could answer. Each looks like a general graph algorithm but
+is a linear pass over the parent vector on a rooted forest, so building a graph object to
+answer it costs more than the answer does. See the new
+[Topology](python/topology.md) page.
+
+- `descendants` / `paths_to_root` — the two directions of the same walk: everything below a
+  node, and everything above it. `descendants` replaces igraph's
+  `subcomponent(v, mode="IN")` and is what makes "cut the skeleton here" a masking
+  operation rather than a graph rebuild.
+- `reroot` — re-orient a forest at given nodes, reversing only the edges between each new
+  root and the old one. Components nobody names are left byte-identical. Generalises
+  `topo::reroot_rewire`, which takes one preferred root plus a set of new edges.
+- `contract_nodes` — collapse groups of nodes onto a representative and rewire what is
+  left. Edges internal to a group are dropped rather than turned into self-loops; a mapping
+  that would close a cycle is refused rather than silently returning a non-forest.
+- `simplify_skeleton` — keep only roots, leafs and branch points, with each replacement edge
+  carrying the total length of the chain it stands in for, so cable length is preserved
+  exactly. On the example skeleton that is 4332 nodes down to 1290.
+- `adjacency` — the CSR triple (`indptr`, `indices`, `data`) of the skeleton's adjacency
+  matrix, with column indices sorted within each row. Handing back the raw arrays rather
+  than a matrix keeps this package free of a scipy dependency.
+
+**Four more**, completing the set navis needs:
+
+- `longest_path` / `longest_paths` — the longest path from a node to its root, and the `n`
+  longest taken in turn with each peeled off before the next is sought. Not the NP-hard
+  general problem: in a rooted forest every maximal path is fixed by its start node, so this
+  is a distances-to-root question. Ties break towards the lowest index, matching
+  `numpy.argmax`, which is what navis' implementation relies on for a stable answer.
+- `betweenness` — betweenness centrality in **O(N)** rather than Brandes' O(V·E). Shortest
+  paths in a tree are unique, so the count through a node is a closed form: descendants ×
+  ancestors when directed, and a sum of products over the parts it separates when not.
+  Counts are `int64`, because an undirected 100k-node skeleton reaches ~5e9.
+- `descendant_counts` — how many nodes, or how many of a given set, lie strictly below each
+  node. See the note below on why this exists.
+
+!!! note "`betweenness` is *not* navis' `betweeness_centrality(from_=...)`"
+
+    navis' `from_` branch does not compute betweenness at all. It walks root→source paths
+    and tallies every node except the source, which counts, for each node, **how many of
+    `from_` lie below it** — a descendant count. That is why `descendant_counts` is a
+    separate function rather than a `sources` argument here: naming it `betweenness` would
+    have made the two behaviours indistinguishable at the call site. navis'
+    `find_main_branchpoint(method="betweenness")` — which is that function's *default* —
+    is the one caller, and wants `descendant_counts`.
+
+Python and Rust only for now; the R bindings will follow once the signatures have settled.
+
+Every one of these is pinned against igraph in the parity suite and against
+brute-force references under `hypothesis`, across a fixture matrix that includes
+100k-deep chains — the traversals are iterative precisely because the recursive versions
+segfault there.
+
 ### Breaking
 - `generate_segments` now measures a segment's length from its **first node to its last**.
   It previously summed the weight vector over *every* node in the segment, including the
@@ -23,6 +77,16 @@ Tags, source archives and the original announcements are on
   surfaces.
 
 ### Fixes
+- results carrying a "no such node" sentinel no longer wrap around on `uint64` node IDs.
+  `geodesic_nearest`, `geodesic_farthest` and `heal_skeleton` built their output with
+  `dtype=node_ids.dtype` and then wrote `-1` into it, so an unreachable source or a root
+  came back as 18446744073709551615 rather than -1 — on exactly the uint64 IDs
+  segmentation backends hand out. All of them now go through one helper that promotes to
+  `int64` when the ID dtype cannot represent the sentinel.
+- `_ids_to_indices` no longer raises on an empty ID array when the node and target dtypes
+  differ — it took `max()` of both unconditionally. Reachable from any function taking an
+  optional set of node IDs (`descendant_counts(targets=[])` and friends) whenever node IDs
+  are `uint64` and the target array is `int64`, which is navis' normal convention.
 - `geodesic_matrix(directed=True)` no longer leaks across zero-weight edges when `sources`
   or `targets` are given. The partial backend used depth as a proxy for ancestry, which
   holds only while every edge weight is strictly positive: a zero-weight edge gives an
@@ -30,6 +94,13 @@ Tags, source archives and the original announcements are on
   — reporting a parent as reachable from its child's direction. Coincident nodes are
   routine in traced and resampled skeletons. The all-by-all backend, `geodesic_nearest`,
   `geodesic_farthest` and `geodesic_pairs` were unaffected.
+- `geodesic_nearest`, `geodesic_farthest` and `heal_skeleton` now return `-1` rather than
+  `18446744073709551615` for their "no such node" sentinel when node IDs are `uint64`.
+  Each built its output with `np.full(..., -1, dtype=node_ids.dtype)`, where `-1` wraps
+  around; they now share the helper that already handled this for `reroot` and friends,
+  which falls back to `int64` for an unsigned ID column. The sentinel marks a source with
+  no reachable target (any skeleton with more than one component) and the healed
+  skeleton's root, so this was easy to hit on segmentation-derived IDs.
 
 ## 0.9.0 (2026-07-28)
 

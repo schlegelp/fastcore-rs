@@ -19,6 +19,8 @@ Two conventions, both matching navis' `neuron2igraph`
   vector indexed by the child. `as_igraph` does that translation.
 """
 
+import warnings
+
 import igraph
 import numpy as np
 
@@ -31,6 +33,15 @@ __all__ = [
     "geodesic_matrix",
     "break_segments",
     "generate_segments",
+    "descendants",
+    "paths_to_root",
+    "reroot",
+    "simplify_skeleton",
+    "adjacency",
+    "vertex_of",
+    "longest_path",
+    "betweenness",
+    "descendant_counts",
 ]
 
 
@@ -241,3 +252,228 @@ def generate_segments(g, weighted=True):
         [ids[sequences[i]] for i in order],
         np.array([lengths[i] for i in order], dtype=np.float64),
     )
+
+
+# ------------------------------------------------------------- sub-trees and paths
+
+
+def vertex_of(g):
+    """`{node_id: vertex index}` - the inverse of the `node_id` attribute.
+
+    The oracle speaks node IDs at both ends so callers never have to build this
+    themselves; `as_igraph` keeps vertex index == row index.
+    """
+    return {nid: i for i, nid in enumerate(g.vs["node_id"])}
+
+
+def descendants(g, sources):
+    """Vertices of the sub-tree distal to each source, by node ID.
+
+    Edges run child -> parent, so "everything below `v`" is everything that reaches
+    `v` going *against* the arrows - igraph's `subcomponent(v, mode="IN")`.
+    """
+    ids = np.asarray(g.vs["node_id"])
+    ix = vertex_of(g)
+    return [np.sort(ids[g.subcomponent(ix[v], mode="IN")]) for v in sources]
+
+
+def paths_to_root(g, sources):
+    """Node sequence from each source up to its root, source first. By node ID."""
+    roots = np.flatnonzero(np.asarray(g.outdegree()) == 0).tolist()
+    ids = np.asarray(g.vs["node_id"])
+    ix = vertex_of(g)
+
+    out = []
+    for source in sources:
+        v = ix[source]
+        # Only one root is reachable, so exactly one of these paths is non-empty -
+        # except for a source that *is* a root, where igraph returns [v] itself.
+        # On a fragmented skeleton the other roots are genuinely unreachable, and
+        # igraph warns about that; it is the expected answer here, not a problem.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            paths = g.get_shortest_paths(int(v), to=roots, mode="OUT")
+        best = max(paths, key=len)
+        out.append(ids[best])
+    return out
+
+
+def reroot(g, new_roots):
+    """Parent ID per node after re-rooting, by node ID.
+
+    Re-rooting is just "orient every edge away from the new root", so a BFS over the
+    *undirected* graph gives it directly - which is also how navis' `edges2neuron`
+    orients a raw edge list (navis: `graph/converters.py:812-818`).
+    """
+    ids = np.asarray(g.vs["node_id"])
+    ix = vertex_of(g)
+    new_roots = [ix[r] for r in new_roots]
+    und = g.as_undirected()
+
+    parent_ix = np.full(g.vcount(), -1, dtype=np.int64)
+    claimed = np.zeros(g.vcount(), dtype=bool)
+
+    def orient(start):
+        # igraph's `bfs` returns (vids, layer starts, parents). `vids` holds only the
+        # start's own component - it does not restart in the others - and the start's
+        # own parent comes back as -1, which is already fastcore's root marker.
+        vids, _, parents = und.bfs(int(start))
+        for v in vids:
+            claimed[v] = True
+            parent_ix[v] = parents[v]
+
+    for root in new_roots:
+        if not claimed[int(root)]:
+            orient(root)
+
+    # Components nobody named keep their original orientation.
+    for v in range(g.vcount()):
+        if not claimed[v] and g.outdegree(v) == 0:
+            orient(v)
+
+    return np.where(parent_ix < 0, -1, ids[parent_ix])
+
+
+# ------------------------------------------------------------------ simplification
+
+
+def simplify_skeleton(g, weighted=True):
+    """Keep only roots, leafs and branch points, preserving path lengths.
+
+    Transcribed from navis' `simplify_graph` igraph branch
+    (navis: `graph/converters.py:403-431`): the kept set is exactly its
+    `roots | leafs | branches`, and each survivor is walked up to the next survivor.
+
+    The replacement edge's weight is asked of igraph (`distances` along the chain)
+    rather than accumulated here, so the number is arrived at independently.
+    """
+    ids = np.asarray(g.vs["node_id"])
+    indeg = np.asarray(g.indegree())
+    outdeg = np.asarray(g.outdegree())
+
+    leafs = set(np.flatnonzero((indeg == 0) & (outdeg != 0)).tolist())
+    branches = set(np.flatnonzero((indeg > 1) & (outdeg != 0)).tolist())
+    roots = set(np.flatnonzero(outdeg == 0).tolist())
+    keep = sorted(roots | leafs | branches)
+
+    parents, weights = [], []
+    for v in keep:
+        if v in roots:
+            parents.append(-1)
+            weights.append(0.0)
+            continue
+
+        # Walk up to the next kept node.
+        node = g.successors(v)[0]
+        while node not in roots and node not in leafs and node not in branches:
+            node = g.successors(node)[0]
+
+        parents.append(ids[node])
+        weights.append(
+            g.distances(int(v), int(node), mode="OUT", weights=_w(weighted))[0][0]
+        )
+
+    return ids[keep], np.asarray(parents), np.asarray(weights, dtype=np.float64)
+
+
+# ---------------------------------------------------------------------- adjacency
+
+
+def adjacency(g, weighted=True, directed=True, transpose=False):
+    """Dense adjacency, in fastcore's row/column convention.
+
+    Transcribed from navis' `_igraph_to_sparse`
+    (navis: `graph/graph_utils.py:2433-2450`), densified so a test can compare it
+    without depending on scipy's sparse internals. Small fixtures only.
+    """
+    n = g.vcount()
+    edges = np.asarray(g.get_edgelist(), dtype=np.int64).reshape(-1, 2)
+    w = (
+        np.asarray(g.es["weight"], dtype=np.float64)
+        if weighted and g.ecount()
+        else np.ones(len(edges))
+    )
+
+    rows, cols = edges[:, 0], edges[:, 1]
+    if not directed:
+        rows, cols = np.concatenate([rows, cols]), np.concatenate([cols, rows])
+        w = np.concatenate([w, w])
+    if transpose:
+        rows, cols = cols, rows
+
+    out = np.zeros((n, n), dtype=np.float64)
+    out[rows, cols] = w
+    return out
+
+
+# ------------------------------------------------------------------- longest path
+
+
+def longest_path(g, weighted=True):
+    """The longest weighted path from a node to its root, as node IDs.
+
+    Transcribed from navis' `_longest_weighted_path`
+    (navis: `graph/graph_utils.py:1741-1773`): join every root to one virtual
+    super-sink at zero cost, run a *single* search to find the node farthest from
+    its own root, then ask igraph for the route back.
+
+    Its `np.argmax` breaks ties towards the lowest vertex index, which is the
+    behaviour fastcore has to reproduce for a stable answer.
+    """
+    n = g.vcount()
+    sinks = np.flatnonzero(np.asarray(g.outdegree()) == 0)
+    if not len(sinks):
+        return np.empty(0, dtype=np.int64)
+
+    h = g.copy()
+    h.add_vertices(1)
+    h.add_edges([(int(s), n) for s in sinks])
+    if weighted:
+        h.es["weight"] = np.concatenate(
+            [np.asarray(g.es["weight"]), np.zeros(len(sinks))]
+        ).tolist()
+
+    dists = np.asarray(
+        h.distances(source=[n], weights=_w(weighted), mode="IN")[0][:n], dtype=np.float64
+    )
+    dists[~np.isfinite(dists)] = -1
+    start = int(np.argmax(dists))
+
+    path = h.get_shortest_paths(start, to=n, weights=_w(weighted), mode="OUT")[0]
+
+    ids = np.asarray(g.vs["node_id"])
+    return ids[path[:-1]]  # drop the virtual super-sink
+
+
+# ------------------------------------------------------------------- betweenness
+
+
+def betweenness(g, directed=True):
+    """igraph's own betweenness centrality.
+
+    Unlike most of this module this is not a transcription of navis - navis'
+    `betweeness_centrality(from_=None)` simply forwards to `g.betweenness()`, so
+    this *is* the reference.
+    """
+    return np.asarray(g.betweenness(directed=directed))
+
+
+def descendant_counts(g, targets=None):
+    """For each vertex, how many `targets` lie strictly below it.
+
+    This is what navis' `betweeness_centrality(from_=...)` branch actually
+    computes (navis: `morpho/mmetrics.py:1741-1757`), despite the name: it walks
+    root -> source paths and tallies every node *except* the source itself, which
+    counts a node once per target below it.
+    """
+    ix = vertex_of(g)
+    targets = range(g.vcount()) if targets is None else [ix[t] for t in targets]
+
+    out = np.zeros(g.vcount(), dtype=np.int64)
+    for t in targets:
+        # Every strict ancestor of `t` gains one.
+        node = g.successors(int(t))
+        while node:
+            out[node[0]] += 1
+            node = g.successors(node[0])
+    return out

@@ -2253,6 +2253,843 @@ pub fn has_cycles(parents: &ArrayView1<i32>) -> bool {
     false
 }
 
+/// Nodes of the sub-tree distal to each source (the source itself included).
+///
+/// This is the rooted-tree answer to "everything below this node" -- igraph's
+/// `subcomponent(v, mode="IN")` on a child->parent graph.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent indices (roots are negative)
+/// - `sources`: node indices to collect the sub-tree of
+///
+/// Returns:
+///
+/// One vector per source, in `sources` order. Each is in depth-first pre-order starting at
+/// the source, with children visited in ascending index order, so the output is
+/// deterministic and a caller that wants the tree structure back can rely on a node
+/// preceding all of its descendants.
+///
+/// The traversal is iterative. A recursive one is the natural way to write this and it
+/// segfaults on a real neuron: a 100k-node axon is a 100k-deep chain.
+pub fn descendants(parents: &ArrayView1<i32>, sources: &ArrayView1<i32>) -> Vec<Vec<i32>> {
+    let children = extract_parent_child(parents);
+    let n = parents.len();
+
+    let mut out: Vec<Vec<i32>> = Vec::with_capacity(sources.len());
+    let mut stack: Vec<i32> = Vec::new();
+
+    // A cycle would make the walk revisit forever. One stamp array, bumped per source,
+    // costs nothing to reset and keeps a malformed input from hanging (`subtree_height`
+    // guards the same way). Use `has_cycles` if you need to know rather than survive.
+    let mut seen: Vec<u32> = vec![0; n];
+    let mut generation: u32 = 0;
+
+    for &source in sources.iter() {
+        if source < 0 || (source as usize) >= n {
+            out.push(vec![]);
+            continue;
+        }
+
+        generation += 1;
+        let mut sub: Vec<i32> = Vec::new();
+        stack.clear();
+        stack.push(source);
+
+        while let Some(node) = stack.pop() {
+            if seen[node as usize] == generation {
+                continue;
+            }
+            seen[node as usize] = generation;
+            sub.push(node);
+            // Pushed in reverse so the lowest-index child is popped first.
+            for &child in children.children(node as usize).iter().rev() {
+                stack.push(child);
+            }
+        }
+
+        out.push(sub);
+    }
+
+    out
+}
+
+/// Node sequence from each source up to its root, source first.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent indices (roots are negative)
+/// - `sources`: node indices to walk up from
+///
+/// Returns:
+///
+/// One vector per source, in `sources` order, ordered source-first / root-last -- matching
+/// [`crate::mesh::geodesic_path_graph`]'s "source first, target last" convention. A source
+/// that is itself a root yields a single-element path; an out-of-range source yields an
+/// empty one.
+///
+/// A cycle would make the walk run forever, so the path is capped at the node count. That
+/// makes a malformed input return a truncated path rather than hang; use [`has_cycles`] if
+/// you need to know.
+pub fn paths_to_root(parents: &ArrayView1<i32>, sources: &ArrayView1<i32>) -> Vec<Vec<i32>> {
+    let n = parents.len();
+    let mut out: Vec<Vec<i32>> = Vec::with_capacity(sources.len());
+
+    for &source in sources.iter() {
+        if source < 0 || (source as usize) >= n {
+            out.push(vec![]);
+            continue;
+        }
+
+        let mut path: Vec<i32> = vec![source];
+        let mut node = source;
+        while path.len() <= n {
+            let parent = parents[node as usize];
+            if parent < 0 {
+                break;
+            }
+            path.push(parent);
+            node = parent;
+        }
+
+        out.push(path);
+    }
+
+    out
+}
+
+/// Re-orient a forest so that each of `new_roots` becomes its component's root.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent indices (roots are negative)
+/// - `new_roots`: node indices to root their components at
+///
+/// Returns:
+///
+/// A new length-`N` parent array (roots negative).
+///
+/// Components that do not contain any of `new_roots` are left exactly as they were -- this
+/// re-roots, it does not renumber the rest of the forest. Where two `new_roots` fall in the
+/// same component the first one wins, matching a caller that loops over candidate roots.
+///
+/// Differs from [`crate::topo::reroot_rewire`] in taking *many* roots and in preserving
+/// untouched components; `reroot_rewire` takes one preferred root plus a set of new edges
+/// and re-roots everything else at its lowest index.
+pub fn reroot(parents: &ArrayView1<i32>, new_roots: &ArrayView1<i32>) -> Array1<i32> {
+    let n = parents.len();
+    // Not a copy of `parents`: the three seeding sweeps below between them call `orient` on
+    // every component, and `orient` writes every node it visits, so nothing of a copy would
+    // survive. Untouched components still come back byte-identical -- a BFS from a
+    // component's existing root re-derives the orientation it already had.
+    let mut out: Array1<i32> = Array::from_elem(n, -1);
+    if n == 0 {
+        return out;
+    }
+
+    // Undirected adjacency: children plus the parent edge.
+    let children = extract_parent_child(parents);
+
+    let mut visited: Vec<bool> = vec![false; n];
+    let mut queue: Vec<i32> = Vec::new();
+
+    // BFS out from `start`, orienting every edge away from it.
+    let mut orient = |start: usize, visited: &mut Vec<bool>, out: &mut Array1<i32>| {
+        visited[start] = true;
+        out[start] = -1;
+        queue.clear();
+        queue.push(start as i32);
+        let mut head = 0;
+        while head < queue.len() {
+            let node = queue[head] as usize;
+            head += 1;
+
+            // Neighbours are this node's children plus its original parent.
+            for &child in children.children(node) {
+                if !visited[child as usize] {
+                    visited[child as usize] = true;
+                    out[child as usize] = node as i32;
+                    queue.push(child);
+                }
+            }
+            let parent = parents[node];
+            if parent >= 0 && !visited[parent as usize] {
+                visited[parent as usize] = true;
+                out[parent as usize] = node as i32;
+                queue.push(parent);
+            }
+        }
+    };
+
+    for &root in new_roots.iter() {
+        if root < 0 || (root as usize) >= n || visited[root as usize] {
+            continue;
+        }
+        orient(root as usize, &mut visited, &mut out);
+    }
+
+    // Everything not reached above keeps its own orientation, so we only need to re-seed
+    // components we have not touched -- from their existing root, which leaves them
+    // byte-identical. A component with no root at all (i.e. a cycle) is rooted at its
+    // lowest index so the result is still a valid forest.
+    for idx in 0..n {
+        if !visited[idx] && parents[idx] < 0 {
+            orient(idx, &mut visited, &mut out);
+        }
+    }
+    for idx in 0..n {
+        if !visited[idx] {
+            orient(idx, &mut visited, &mut out);
+        }
+    }
+
+    out
+}
+
+/// Collapse groups of nodes onto a representative and rewire what is left.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent indices (roots are negative)
+/// - `mapping`: length-`N` array giving, for each node, the index of the node it collapses
+///   into. `mapping[i] == i` marks a survivor; a group of nodes sharing one representative
+///   is merged into it.
+///
+/// Returns:
+///
+/// `(kept, new_parents)` where `kept` lists the surviving node indices in ascending order
+/// and `new_parents[i]` is the parent of `kept[i]` **as an index into `kept`** (negative for
+/// roots). Returning positions rather than original indices means the caller can build the
+/// new node table by taking `node_ids[kept]` and using `new_parents` unchanged.
+///
+/// An edge that ends up inside a group becomes a self-loop and is dropped, so collapsing a
+/// connected sub-tree leaves its representative attached to whatever the group hung off.
+///
+/// Note this does **not** re-root: the representative keeps the group's orientation. Follow
+/// with [`reroot`] to root the result somewhere specific.
+///
+/// Errors with [`ContractError::Cycle`] if `mapping` collapses a node onto one of its own
+/// descendants, which closes a loop. That check lives here rather than in the bindings
+/// because "the result is a forest" is this operation's invariant, and a caller handed a
+/// cyclic parent array would only discover it later, as a truncated traversal.
+pub fn contract_nodes(
+    parents: &ArrayView1<i32>,
+    mapping: &ArrayView1<i32>,
+) -> Result<(Vec<i32>, Array1<i32>), ContractError> {
+    let n = parents.len();
+    let (kept, position) = compact(n, |idx| mapping[idx] == idx as i32);
+
+    let mut new_parents: Array1<i32> = Array::from_elem(kept.len(), -1);
+    for (slot, &node) in kept.iter().enumerate() {
+        let parent = parents[node as usize];
+        if parent < 0 {
+            continue;
+        }
+        // Follow the parent into its group's representative.
+        let rep = mapping[parent as usize];
+        if rep < 0 || rep == node {
+            // Self-loop: the edge was internal to this group. The representative becomes a
+            // root unless something else re-parents it.
+            continue;
+        }
+        new_parents[slot] = position[rep as usize];
+    }
+
+    if has_cycles(&new_parents.view()) {
+        return Err(ContractError::Cycle);
+    }
+
+    Ok((kept, new_parents))
+}
+
+/// Why a [`contract_nodes`] call could not be applied as asked.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ContractError {
+    /// The mapping collapsed a node onto one of its own descendants, which closes a loop.
+    /// The result would not be a forest, so it is refused rather than returned.
+    Cycle,
+}
+
+impl std::fmt::Display for ContractError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            ContractError::Cycle => write!(
+                f,
+                "`mapping` produces a cycle - a node was collapsed onto one of its own \
+                 descendants"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ContractError {}
+
+/// Reduce a skeleton to its roots, leafs and branch points, preserving cable length.
+///
+/// The slab nodes in between carry no topological information, so dropping them leaves the
+/// same tree at a fraction of the size -- provided the edges that replace each removed chain
+/// carry that chain's total length, which is what this returns.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent indices (roots are negative)
+/// - `weights`: optional per-node length of the child->parent edge; `None` counts edges
+///
+/// Returns:
+///
+/// `(kept, new_parents, new_weights)`, with `kept` in ascending order and `new_parents`
+/// indexing into `kept` (negative for roots) -- the same convention as [`contract_nodes`].
+/// `new_weights[i]` is the summed length of the chain from `kept[i]` up to its new parent,
+/// and is `None` exactly when `weights` was.
+///
+/// Total cable length is preserved: every original edge is counted into exactly one output
+/// edge. Summation runs along each chain in traversal order, so the result is reproducible.
+pub fn simplify_skeleton<T>(
+    parents: &ArrayView1<i32>,
+    weights: &Option<Array1<T>>,
+) -> (Vec<i32>, Array1<i32>, Option<Vec<T>>)
+where
+    T: Float + AddAssign,
+{
+    let n = parents.len();
+
+    // Keep everything that is not a slab. A slab is the only node type with both a parent
+    // and exactly one child, which is cheaper to test directly than to read out of
+    // `classify_nodes` -- that would allocate the child counts *and* a second N-array of
+    // type codes, of which we want one bit. Roots fall out for free: they have no parent,
+    // so a root with one child is kept, as `classify_nodes` also ranks it.
+    let n_children = number_of_children(parents);
+    let is_slab = |idx: usize| parents[idx] >= 0 && n_children[idx] == 1;
+    let (kept, position) = compact(n, |idx| !is_slab(idx));
+
+    let mut new_parents: Array1<i32> = Array::from_elem(kept.len(), -1);
+    let mut new_weights: Option<Vec<T>> = weights.as_ref().map(|_| vec![T::zero(); kept.len()]);
+
+    for (slot, &node) in kept.iter().enumerate() {
+        let mut current = node;
+        let mut total = T::zero();
+
+        // Walk up through the slabs to the next kept node, accumulating as we go.
+        // Bounded by the node count: a cycle of slabs with a branch point hanging off it
+        // would otherwise spin here forever.
+        for _ in 0..=n {
+            let parent = parents[current as usize];
+            if parent < 0 {
+                break; // reached a root: `node` is in a root's chain, so it is a root here
+            }
+            if let Some(w) = weights.as_ref() {
+                total += w[current as usize];
+            } else {
+                total += T::one();
+            }
+            if !is_slab(parent as usize) {
+                new_parents[slot] = position[parent as usize];
+                break;
+            }
+            current = parent;
+        }
+
+        if let Some(nw) = new_weights.as_mut() {
+            // A root spans nothing; leave it at 0 rather than at the chain it walked.
+            nw[slot] = if new_parents[slot] < 0 { T::zero() } else { total };
+        }
+    }
+
+    (kept, new_parents, new_weights)
+}
+
+/// Adjacency of a skeleton in CSR form.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent indices (roots are negative)
+/// - `weights`: optional per-node length of the child->parent edge; `None` weighs every
+///   edge 1
+/// - `directed`: `true` emits only the child->parent edge, `false` emits both directions
+/// - `transpose`: flip every edge, so rows are parents and columns children
+///
+/// Returns:
+///
+/// `(indptr, indices, data)` -- the three arrays of a `scipy.sparse.csr_matrix`, with
+/// column indices ascending within each row. Handing back the raw triple rather than a
+/// matrix object is what keeps this crate free of a scipy dependency.
+pub fn adjacency<T>(
+    parents: &ArrayView1<i32>,
+    weights: &Option<Array1<T>>,
+    directed: bool,
+    transpose: bool,
+) -> (Vec<i32>, Vec<i32>, Vec<T>)
+where
+    T: Float,
+{
+    let n = parents.len();
+    let children = extract_parent_child(parents);
+
+    let mut indptr: Vec<i32> = Vec::with_capacity(n + 1);
+    let mut indices: Vec<i32> = Vec::new();
+    let mut data: Vec<T> = Vec::new();
+    indptr.push(0);
+
+    // Emit one row at a time rather than counting, scattering and then sorting. A node's
+    // neighbours are its children -- which `ChildList` already holds in ascending order --
+    // plus its parent, so merging the parent into that ascending run gives scipy the sorted
+    // column indices it expects by construction, with no per-row scratch at all.
+    for row in 0..n {
+        let parent = parents[row];
+
+        // Which edges land in this row depends on the orientation. Untransposed, an edge is
+        // filed under its child; transposed, under its parent.
+        let (down, up) = if transpose {
+            // Row = parent: its children, and (undirected only) its own parent.
+            (true, !directed)
+        } else {
+            // Row = child: its parent, and (undirected only) its children.
+            (!directed, true)
+        };
+
+        // The edge to the parent carries this node's own weight; an edge down to a child
+        // carries the child's.
+        let mut parent_placed = !(up && parent >= 0);
+        if down {
+            for &child in children.children(row) {
+                if !parent_placed && parent < child {
+                    indices.push(parent);
+                    data.push(weight_at(weights, row));
+                    parent_placed = true;
+                }
+                indices.push(child);
+                data.push(weight_at(weights, child as usize));
+            }
+        }
+        if !parent_placed {
+            // No children to merge into, or the parent sorts after all of them.
+            indices.push(parent);
+            data.push(weight_at(weights, row));
+        }
+
+        indptr.push(indices.len() as i32);
+    }
+
+    (indptr, indices, data)
+}
+
+/// Survivors of a node filter, plus where each one lands in the compacted output.
+///
+/// Returns `(kept, position)`: `kept` lists the surviving indices in ascending order and
+/// `position[node]` is that node's slot in `kept` (`-1` for the dropped ones). Both
+/// [`contract_nodes`] and [`simplify_skeleton`] return parents indexed into their own
+/// `kept`, so stating that convention once is what keeps the two from drifting.
+fn compact(n: usize, keep: impl Fn(usize) -> bool) -> (Vec<i32>, Vec<i32>) {
+    let mut kept: Vec<i32> = Vec::with_capacity(n);
+    let mut position: Vec<i32> = vec![-1; n];
+    for idx in 0..n {
+        if keep(idx) {
+            position[idx] = kept.len() as i32;
+            kept.push(idx as i32);
+        }
+    }
+    (kept, position)
+}
+
+/// The weight of a node's edge to its parent, or 1 when no weights were given.
+#[inline]
+fn weight_at<T: Float>(weights: &Option<Array1<T>>, node: usize) -> T {
+    match weights {
+        Some(w) => w[node],
+        None => T::one(),
+    }
+}
+
+/// Breadth-first order, seeded from every root.
+///
+/// Every node appears after its parent, so iterating forwards is a valid topological order
+/// and iterating *backwards* is a post-order -- which is what the subtree accumulations
+/// below need. Nodes in a cycle are unreachable from any root and are simply absent.
+fn bfs_order(parents: &ArrayView1<i32>, children: &ChildList) -> Vec<i32> {
+    let n = parents.len();
+    let mut order: Vec<i32> = Vec::with_capacity(n);
+
+    for (idx, &parent) in parents.iter().enumerate() {
+        if parent < 0 {
+            order.push(idx as i32);
+        }
+    }
+
+    let mut head = 0;
+    while head < order.len() {
+        let node = order[head] as usize;
+        head += 1;
+        order.extend_from_slice(children.children(node));
+    }
+
+    order
+}
+
+/// Depth of each node below its root, given a parent-before-child `order`.
+///
+/// Split out from [`bfs_order`] because only `betweenness(directed=true)` wants it, and
+/// filling it costs an N-element allocation plus a write per node.
+fn depths(parents: &ArrayView1<i32>, order: &[i32]) -> Vec<i32> {
+    let mut depth: Vec<i32> = vec![0; parents.len()];
+    for &node in order.iter() {
+        let parent = parents[node as usize];
+        if parent >= 0 {
+            depth[node as usize] = depth[parent as usize] + 1;
+        }
+    }
+    depth
+}
+
+/// Fold each node's value into its parent, children first.
+///
+/// The one accumulation both [`descendant_counts`] and [`betweenness`] need. `seed` gives
+/// each node's own contribution: ones make this sub-tree sizes, a 0/1 target mask makes it
+/// a count of marked descendants.
+fn accumulate_up(parents: &ArrayView1<i32>, order: &[i32], seed: impl Fn(usize) -> i64) -> Vec<i64> {
+    let mut total: Vec<i64> = (0..parents.len()).map(&seed).collect();
+    // Backwards through a parent-before-child order = children before parents.
+    for &node in order.iter().rev() {
+        let parent = parents[node as usize];
+        if parent >= 0 {
+            total[parent as usize] += total[node as usize];
+        }
+    }
+    total
+}
+
+/// Number of nodes in each node's sub-tree, itself included.
+fn subtree_sizes(parents: &ArrayView1<i32>, order: &[i32]) -> Vec<i64> {
+    accumulate_up(parents, order, |_| 1)
+}
+
+/// The longest weighted path in the forest, running from a node to its root.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent indices (roots are negative)
+/// - `weights`: optional per-node length of the child->parent edge; `None` counts edges
+///
+/// Returns:
+///
+/// The node indices of the path, **distal first** (so `path[0]` is the far end and
+/// `path.last()` is a root). Empty only if there are no roots at all.
+///
+/// Not the NP-hard longest-path problem: in an in-forest every maximal path is fixed by
+/// its start node -- follow the parents to the sink -- so the longest one starts at
+/// whichever node is farthest from its own root. That makes this a distances-to-root
+/// problem.
+///
+/// Ties go to the lowest node index, matching `numpy.argmax`, which is what the navis
+/// implementation this replaces relies on.
+pub fn longest_path<T>(parents: &ArrayView1<i32>, weights: &Option<Array1<T>>) -> Vec<i32>
+where
+    T: Float + AddAssign,
+{
+    let mut scratch = LongestPathScratch::new(parents.len());
+    longest_path_alive(parents, weights, None, &mut scratch)
+}
+
+/// Reusable buffers for [`longest_path_alive`].
+///
+/// `longest_paths` calls it once per round; without this each round would allocate and
+/// zero a fresh `dist` (4N bytes) and `done` (N bytes) -- 25 MB of churn for the five
+/// rounds navis asks for on a 1M-node skeleton.
+struct LongestPathScratch<T> {
+    dist: Vec<T>,
+    /// Generation stamps rather than booleans, so resetting between rounds is free -- the
+    /// same trick `descendants` uses for its `seen` array.
+    done: Vec<u32>,
+    generation: u32,
+    chain: Vec<usize>,
+}
+
+impl<T: Float> LongestPathScratch<T> {
+    fn new(n: usize) -> Self {
+        LongestPathScratch {
+            dist: vec![T::zero(); n],
+            done: vec![0; n],
+            generation: 0,
+            chain: Vec::new(),
+        }
+    }
+}
+
+/// `longest_path` restricted to the nodes still marked alive.
+///
+/// Deleting a node makes its children roots, which is exactly igraph's `delete_vertices`
+/// semantics -- so `longest_paths` can peel a path off simply by clearing its flags.
+fn longest_path_alive<T>(
+    parents: &ArrayView1<i32>,
+    weights: &Option<Array1<T>>,
+    alive: Option<&[bool]>,
+    scratch: &mut LongestPathScratch<T>,
+) -> Vec<i32>
+where
+    T: Float + AddAssign,
+{
+    let n = parents.len();
+    let is_alive = |idx: usize| alive.map_or(true, |a| a[idx]);
+
+    // Distance to the (live) root, memoized: nodes on a shared trunk would otherwise
+    // re-walk it once per leaf, which is quadratic on a neuron.
+    scratch.generation += 1;
+    let generation = scratch.generation;
+    let LongestPathScratch { dist, done, chain, .. } = scratch;
+
+    for idx in 0..n {
+        if !is_alive(idx) || done[idx] == generation {
+            continue;
+        }
+        chain.clear();
+        let mut node = idx;
+        // A cycle would spin here forever. A valid walk visits each node at most once, so
+        // overshooting `n` means we are going round in circles -- the same bail-out
+        // `all_dists_to_root` uses.
+        while chain.len() <= n {
+            let parent = parents[node];
+            // A dead parent is no parent: `node` is a root of what is left.
+            if parent < 0 || !is_alive(parent as usize) {
+                dist[node] = T::zero();
+                done[node] = generation;
+                break;
+            }
+            // Push before testing the parent: stopping at an already-solved parent still
+            // leaves `node` itself to be filled in on the way back down.
+            chain.push(node);
+            if done[parent as usize] == generation {
+                break;
+            }
+            node = parent as usize;
+        }
+        // Unwind, adding each node's own edge to its parent's distance.
+        while let Some(node) = chain.pop() {
+            let parent = parents[node] as usize;
+            dist[node] = dist[parent] + weight_at(weights, node);
+            done[node] = generation;
+        }
+    }
+
+    // First maximum wins, matching `numpy.argmax`.
+    let mut start: Option<usize> = None;
+    let mut best = T::zero();
+    for idx in 0..n {
+        if !is_alive(idx) {
+            continue;
+        }
+        if start.is_none() || dist[idx] > best {
+            start = Some(idx);
+            best = dist[idx];
+        }
+    }
+
+    let mut path: Vec<i32> = Vec::new();
+    let mut node = match start {
+        Some(node) => node,
+        None => return path,
+    };
+    loop {
+        path.push(node as i32);
+        let parent = parents[node];
+        if parent < 0 || !is_alive(parent as usize) {
+            break;
+        }
+        node = parent as usize;
+    }
+    path
+}
+
+/// The `n` longest paths, peeling each one off before looking for the next.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent indices (roots are negative)
+/// - `n`: how many paths to take
+/// - `weights`: optional per-node length of the child->parent edge; `None` counts edges
+/// - `min_length`: stop early once a path measures no more than this
+///
+/// Returns:
+///
+/// Up to `n` paths, longest first, each distal-first and pairwise disjoint.
+///
+/// Folding the loop in here rather than leaving it to the caller is the point: the
+/// alternative is rebuilding the graph minus the last path on every iteration.
+///
+/// **`min_length` measures the path's whole catchment**, not just its own edges: every
+/// edge whose *parent* lies on the path counts, so each twig hanging off the path
+/// contributes its first edge too. That is inherited from the navis implementation this
+/// replaces, where it is flagged as "preserved as-is from the networkx implementation",
+/// and it is kept deliberately so results do not shift. Note the comparison is `<=` and it
+/// **stops** the whole search rather than skipping that one path.
+pub fn longest_paths<T>(
+    parents: &ArrayView1<i32>,
+    n: usize,
+    weights: &Option<Array1<T>>,
+    min_length: Option<T>,
+) -> Vec<Vec<i32>>
+where
+    T: Float + AddAssign,
+{
+    let mut alive = vec![true; parents.len()];
+    let mut out: Vec<Vec<i32>> = Vec::new();
+    let mut on_path = vec![false; parents.len()];
+    let mut scratch = LongestPathScratch::new(parents.len());
+
+    for _ in 0..n {
+        let path = longest_path_alive(parents, weights, Some(&alive), &mut scratch);
+        if path.is_empty() {
+            break;
+        }
+
+        if let Some(limit) = min_length {
+            for &node in path.iter() {
+                on_path[node as usize] = true;
+            }
+            // Every live edge pointing *into* the path -- see the note above.
+            let mut total = T::zero();
+            for (child, &parent) in parents.iter().enumerate() {
+                if alive[child] && parent >= 0 && alive[parent as usize] && on_path[parent as usize]
+                {
+                    total += weight_at(weights, child);
+                }
+            }
+            for &node in path.iter() {
+                on_path[node as usize] = false;
+            }
+            if total <= limit {
+                break;
+            }
+        }
+
+        for &node in path.iter() {
+            alive[node as usize] = false;
+        }
+        out.push(path);
+    }
+
+    out
+}
+
+/// For each node, how many of `targets` lie strictly below it.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent indices (roots are negative)
+/// - `targets`: optional node indices to count; `None` counts every node
+///
+/// Returns:
+///
+/// A length-`N` array. A node is never counted as its own descendant, so a leaf that is
+/// itself a target still scores 0.
+///
+/// With `targets = None` this is simply each node's sub-tree size minus one.
+pub fn descendant_counts(
+    parents: &ArrayView1<i32>,
+    targets: &Option<Array1<i32>>,
+) -> Array1<i64> {
+    let n = parents.len();
+    let children = extract_parent_child(parents);
+    let order = bfs_order(parents, &children);
+
+    // A subset arrives as indices and is expanded here, matching how
+    // `geodesic_distances_partial` takes its sources and targets -- the bindings hand this
+    // module indices, not masks.
+    let mask: Option<Vec<bool>> = targets.as_ref().map(|ix| {
+        let mut mask = vec![false; n];
+        for &node in ix.iter() {
+            if node >= 0 && (node as usize) < n {
+                mask[node as usize] = true;
+            }
+        }
+        mask
+    });
+
+    // Accumulating the mask gives "targets in my sub-tree, including me"; subtracting a
+    // node's own seed leaves the strict descendants.
+    let seed = |idx: usize| -> i64 {
+        match &mask {
+            Some(mask) => mask[idx] as i64,
+            None => 1,
+        }
+    };
+    let mut totals = accumulate_up(parents, &order, &seed);
+    for (idx, total) in totals.iter_mut().enumerate() {
+        *total -= seed(idx);
+    }
+    Array1::from(totals)
+}
+
+/// Betweenness centrality on a rooted forest.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent indices (roots are negative)
+/// - `directed`: `true` counts only root-ward paths (child -> parent), `false` counts
+///   every unordered pair once
+///
+/// Returns:
+///
+/// A length-`N` array of path counts.
+///
+/// O(N), not Brandes' O(V*E): shortest paths in a tree are *unique*, so the number
+/// passing through a node is a closed form rather than a search.
+///
+/// - Directed, where a path can only run from a node to one of its ancestors, node `v`
+///   sits on one for every (strict descendant, strict ancestor) pair: `desc(v) * anc(v)`.
+/// - Undirected, removing `v` splits its component into its children's sub-trees plus
+///   everything above it; `v` lies between every pair drawn from two different parts, so
+///   the count is the sum of products over distinct parts.
+///
+/// Counts are `i64` because they grow as the square of the component size: an undirected
+/// 100k-node skeleton reaches ~5e9, which overflows `i32`.
+pub fn betweenness(parents: &ArrayView1<i32>, directed: bool) -> Array1<i64> {
+    let n = parents.len();
+    let children = extract_parent_child(parents);
+    let order = bfs_order(parents, &children);
+    let size = subtree_sizes(parents, &order);
+
+    if directed {
+        // Strict descendants times strict ancestors.
+        let depth = depths(parents, &order);
+        return (0..n)
+            .map(|idx| (size[idx] - 1) * depth[idx] as i64)
+            .collect();
+    }
+
+    // Component size, pushed down from each root along the BFS order. Only the undirected
+    // branch needs it, so it is not built above.
+    let mut component: Vec<i64> = vec![0; n];
+    for &node in order.iter() {
+        let node = node as usize;
+        let parent = parents[node];
+        component[node] = if parent < 0 {
+            size[node]
+        } else {
+            component[parent as usize]
+        };
+    }
+
+    let mut out: Array1<i64> = Array::from_elem(n, 0);
+    for idx in 0..n {
+        {
+            // The parts `idx` separates: one per child sub-tree, plus everything else.
+            let mut sum_parts: i64 = 0;
+            let mut sum_squares: i64 = 0;
+            for &child in children.children(idx) {
+                let part = size[child as usize];
+                sum_parts += part;
+                sum_squares += part * part;
+            }
+            let above = component[idx] - 1 - sum_parts;
+            sum_parts += above;
+            sum_squares += above * above;
+
+            out[idx] = (sum_parts * sum_parts - sum_squares) / 2;
+        }
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2835,5 +3672,583 @@ mod tests {
 
         assert_eq!(height[0], (n - 1) as f32);
         assert_eq!(height[n - 1], 0.0);
+    }
+
+    // ------------------------------------------------------------------ descendants
+
+    /// The sub-tree below a node, and nothing above or beside it.
+    #[test]
+    fn descendants_collects_the_subtree_below_each_source() {
+        //   0 - 1 - 2 - 3
+        //        \   \
+        //         4    5
+        let parents = arr1(&[-1, 0, 1, 2, 1, 2]);
+        let sources = arr1(&[1, 2, 4]);
+
+        let got = descendants(&parents.view(), &sources.view());
+
+        // Depth-first pre-order, lowest-index child first.
+        assert_eq!(got[0], vec![1, 2, 3, 5, 4]);
+        assert_eq!(got[1], vec![2, 3, 5]);
+        assert_eq!(got[2], vec![4]); // a leaf is its own only descendant
+    }
+
+    /// A root's sub-tree is its whole component -- and only its component.
+    #[test]
+    fn descendants_of_a_root_is_its_component() {
+        //  component A: 0 - 1     component B: 2 - 3
+        let parents = arr1(&[-1, 0, -1, 2]);
+        let sources = arr1(&[0]);
+
+        let got = descendants(&parents.view(), &sources.view());
+
+        assert_eq!(got[0], vec![0, 1]);
+    }
+
+    /// A 200k-deep chain: the recursive version of this segfaults.
+    #[test]
+    fn descendants_survives_a_very_deep_chain() {
+        let n = 200_000;
+        let mut parents: Vec<i32> = (0..n as i32 - 1).collect();
+        parents.insert(0, -1);
+        let parents = Array1::from(parents);
+        let sources = arr1(&[0]);
+
+        let got = descendants(&parents.view(), &sources.view());
+
+        assert_eq!(got[0].len(), n);
+    }
+
+    /// A malformed input must return, not hang.
+    #[test]
+    fn descendants_does_not_hang_on_a_cycle() {
+        // 0 -> 1 -> 2 -> 0
+        let parents = arr1(&[2, 0, 1]);
+        let sources = arr1(&[0]);
+
+        let got = descendants(&parents.view(), &sources.view());
+
+        assert_eq!(got[0].len(), 3);
+    }
+
+    // ---------------------------------------------------------------- paths_to_root
+
+    #[test]
+    fn paths_to_root_walks_source_first() {
+        //   0 - 1 - 2 - 3
+        let parents = arr1(&[-1, 0, 1, 2]);
+        let sources = arr1(&[3, 1, 0]);
+
+        let got = paths_to_root(&parents.view(), &sources.view());
+
+        assert_eq!(got[0], vec![3, 2, 1, 0]);
+        assert_eq!(got[1], vec![1, 0]);
+        assert_eq!(got[2], vec![0]); // a root is a path of one
+    }
+
+    #[test]
+    fn paths_to_root_follows_each_source_to_its_own_root() {
+        //  component A: 0 - 1     component B: 2 - 3
+        let parents = arr1(&[-1, 0, -1, 2]);
+        let sources = arr1(&[1, 3]);
+
+        let got = paths_to_root(&parents.view(), &sources.view());
+
+        assert_eq!(got[0], vec![1, 0]);
+        assert_eq!(got[1], vec![3, 2]);
+    }
+
+    #[test]
+    fn paths_to_root_does_not_hang_on_a_cycle() {
+        let parents = arr1(&[2, 0, 1]);
+        let sources = arr1(&[0]);
+
+        let got = paths_to_root(&parents.view(), &sources.view());
+
+        assert!(got[0].len() <= 4);
+    }
+
+    // --------------------------------------------------------------------- reroot
+
+    /// Re-rooting reverses exactly the edges on the path from the new root to the old.
+    #[test]
+    fn reroot_reverses_the_path_to_the_old_root() {
+        //   0 - 1 - 2 - 3      rerooted at 3:  3 - 2 - 1 - 0
+        //        \                                  \
+        //         4                                   4
+        let parents = arr1(&[-1, 0, 1, 2, 1]);
+        let new_roots = arr1(&[3]);
+
+        let got = reroot(&parents.view(), &new_roots.view());
+
+        assert_eq!(got.to_vec(), vec![1, 2, 3, -1, 1]);
+    }
+
+    /// Re-rooting at the existing root is a no-op.
+    #[test]
+    fn reroot_at_the_current_root_changes_nothing() {
+        let parents = arr1(&[-1, 0, 1, 2, 1]);
+        let new_roots = arr1(&[0]);
+
+        let got = reroot(&parents.view(), &new_roots.view());
+
+        assert_eq!(got.to_vec(), parents.to_vec());
+    }
+
+    /// Components nobody named keep their own root -- this re-roots, it does not renumber.
+    #[test]
+    fn reroot_leaves_unnamed_components_alone() {
+        //  component A: 0 - 1 - 2     component B: 3 - 4 - 5
+        let parents = arr1(&[-1, 0, 1, -1, 3, 4]);
+        let new_roots = arr1(&[2]);
+
+        let got = reroot(&parents.view(), &new_roots.view());
+
+        assert_eq!(got.to_vec(), vec![1, 2, -1, -1, 3, 4]);
+    }
+
+    /// Several roots at once, one per component.
+    #[test]
+    fn reroot_handles_one_root_per_component() {
+        let parents = arr1(&[-1, 0, 1, -1, 3, 4]);
+        let new_roots = arr1(&[2, 5]);
+
+        let got = reroot(&parents.view(), &new_roots.view());
+
+        assert_eq!(got.to_vec(), vec![1, 2, -1, 4, 5, -1]);
+    }
+
+    /// Two candidates in one component: the first wins, matching a caller looping over
+    /// candidate roots and expecting the earlier one to take effect.
+    #[test]
+    fn reroot_first_candidate_wins_within_a_component() {
+        let parents = arr1(&[-1, 0, 1]);
+        let new_roots = arr1(&[2, 1]);
+
+        let got = reroot(&parents.view(), &new_roots.view());
+
+        assert_eq!(got.to_vec(), vec![1, 2, -1]);
+    }
+
+    #[test]
+    fn reroot_survives_a_very_deep_chain() {
+        let n = 200_000;
+        let mut parents: Vec<i32> = (0..n as i32 - 1).collect();
+        parents.insert(0, -1);
+        let parents = Array1::from(parents);
+        let new_roots = arr1(&[n as i32 - 1]);
+
+        let got = reroot(&parents.view(), &new_roots.view());
+
+        assert_eq!(got[n - 1], -1);
+        assert_eq!(got[0], 1);
+    }
+
+    // -------------------------------------------------------------- contract_nodes
+
+    /// Collapsing a connected sub-tree leaves its representative hanging off whatever the
+    /// group hung off, with the group's children re-attached to it.
+    #[test]
+    fn contract_nodes_collapses_a_group_onto_its_representative() {
+        //   0 - 1 - 2 - 3       collapse {1, 2} onto 1
+        //            \
+        //             4
+        let parents = arr1(&[-1, 0, 1, 2, 2]);
+        let mapping = arr1(&[0, 1, 1, 3, 4]);
+
+        let (kept, new_parents) = contract_nodes(&parents.view(), &mapping.view()).unwrap();
+
+        assert_eq!(kept, vec![0, 1, 3, 4]);
+        // positions:      0  1  2  3
+        assert_eq!(new_parents.to_vec(), vec![-1, 0, 1, 1]);
+    }
+
+    /// An edge wholly inside a group is a self-loop and is dropped, not turned into a cycle.
+    #[test]
+    fn contract_nodes_drops_internal_edges() {
+        let parents = arr1(&[-1, 0, 1]);
+        let mapping = arr1(&[0, 0, 0]); // everything into node 0
+
+        let (kept, new_parents) = contract_nodes(&parents.view(), &mapping.view()).unwrap();
+
+        assert_eq!(kept, vec![0]);
+        assert_eq!(new_parents.to_vec(), vec![-1]);
+    }
+
+    /// Collapsing a node onto its own descendant closes a loop; refuse rather than hand
+    /// back something that is not a forest.
+    #[test]
+    fn contract_nodes_rejects_a_mapping_that_closes_a_cycle() {
+        //   0 - 1 - 2, with node 0 mapped onto its grandchild
+        let parents = arr1(&[-1, 0, 1]);
+        let mapping = arr1(&[2, 1, 2]);
+
+        assert_eq!(
+            contract_nodes(&parents.view(), &mapping.view()),
+            Err(ContractError::Cycle)
+        );
+    }
+
+    /// Nothing collapsed = the same forest, renumbered by the identity.
+    #[test]
+    fn contract_nodes_identity_mapping_is_a_no_op() {
+        let parents = arr1(&[-1, 0, 1, 1]);
+        let mapping = arr1(&[0, 1, 2, 3]);
+
+        let (kept, new_parents) = contract_nodes(&parents.view(), &mapping.view()).unwrap();
+
+        assert_eq!(kept, vec![0, 1, 2, 3]);
+        assert_eq!(new_parents.to_vec(), parents.to_vec());
+    }
+
+    // ----------------------------------------------------------- simplify_skeleton
+
+    /// Slabs go, roots/leafs/branches stay, and the replacement edges carry the cable.
+    #[test]
+    fn simplify_skeleton_keeps_topology_and_cable() {
+        //   0 - 1 - 2 - 3      0 is the root, 2 a branch point, 3 and 4 leafs;
+        //            \          1 is the only slab (one child, one parent)
+        //             4
+        let parents = arr1(&[-1, 0, 1, 2, 2]);
+        let weights = Some(arr1(&[0.0f32, 1.0, 2.0, 4.0, 8.0]));
+
+        let (kept, new_parents, new_weights) = simplify_skeleton(&parents.view(), &weights);
+        let new_weights = new_weights.unwrap();
+
+        // Node 1 is the only slab (one child, one parent).
+        assert_eq!(kept, vec![0, 2, 3, 4]);
+        assert_eq!(new_parents.to_vec(), vec![-1, 0, 1, 1]);
+        // 2 -> 0 spans the 2->1 and 1->0 edges: 2.0 + 1.0
+        assert_eq!(new_weights, vec![0.0, 3.0, 4.0, 8.0]);
+    }
+
+    /// Total cable length is conserved: every original edge lands in exactly one output edge.
+    #[test]
+    fn simplify_skeleton_conserves_total_cable() {
+        let parents = arr1(&[-1, 0, 1, 2, 2, 4, 5, 1]);
+        let weights = Some(arr1(&[0.0f32, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5]));
+
+        let (_, _, new_weights) = simplify_skeleton(&parents.view(), &weights);
+
+        let before: f32 = weights.as_ref().unwrap().iter().skip(1).sum();
+        let after: f32 = new_weights.unwrap().iter().sum();
+        assert!((before - after).abs() < 1e-5, "{before} != {after}");
+    }
+
+    /// Unweighted, the replacement edge counts the edges it replaces.
+    #[test]
+    fn simplify_skeleton_unweighted_counts_edges() {
+        //   0 - 1 - 2 - 3 - 4  (a chain: only the root and the leaf survive)
+        let parents = arr1(&[-1, 0, 1, 2, 3]);
+        let weights: Option<Array1<f32>> = None;
+
+        let (kept, new_parents, new_weights) = simplify_skeleton(&parents.view(), &weights);
+
+        assert_eq!(kept, vec![0, 4]);
+        assert_eq!(new_parents.to_vec(), vec![-1, 0]);
+        assert!(new_weights.is_none());
+    }
+
+    /// A branching root is kept once, as a root -- not duplicated as a branch point.
+    #[test]
+    fn simplify_skeleton_keeps_a_branching_root_once() {
+        let parents = arr1(&[-1, 0, 0]);
+        let weights: Option<Array1<f32>> = None;
+
+        let (kept, new_parents, _) = simplify_skeleton(&parents.view(), &weights);
+
+        assert_eq!(kept, vec![0, 1, 2]);
+        assert_eq!(new_parents.to_vec(), vec![-1, 0, 0]);
+    }
+
+    // ------------------------------------------------------------------- adjacency
+
+    #[test]
+    fn adjacency_directed_has_one_entry_per_child() {
+        //   0 - 1 - 2
+        let parents = arr1(&[-1, 0, 1]);
+        let weights = Some(arr1(&[0.0f32, 2.0, 3.0]));
+
+        let (indptr, indices, data) = adjacency(&parents.view(), &weights, true, false);
+
+        // Row i holds i's edge to its parent; the root's row is empty.
+        assert_eq!(indptr, vec![0, 0, 1, 2]);
+        assert_eq!(indices, vec![0, 1]);
+        assert_eq!(data, vec![2.0, 3.0]);
+    }
+
+    #[test]
+    fn adjacency_undirected_emits_both_directions_sorted() {
+        //   0 - 1 - 2, plus 3 hanging off 1
+        let parents = arr1(&[-1, 0, 1, 1]);
+        let weights = Some(arr1(&[0.0f32, 2.0, 3.0, 4.0]));
+
+        let (indptr, indices, data) = adjacency(&parents.view(), &weights, false, false);
+
+        assert_eq!(indptr, vec![0, 1, 4, 5, 6]);
+        // Node 1 neighbours 0, 2 and 3 -- ascending, as scipy requires.
+        assert_eq!(indices, vec![1, 0, 2, 3, 1, 1]);
+        assert_eq!(data, vec![2.0, 2.0, 3.0, 4.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn adjacency_transpose_flips_every_edge() {
+        let parents = arr1(&[-1, 0, 1]);
+        let weights: Option<Array1<f32>> = None;
+
+        let (indptr, indices, _) = adjacency(&parents.view(), &weights, true, true);
+
+        // Now row i holds i's *children*, so the leaf's row is the empty one.
+        assert_eq!(indptr, vec![0, 1, 2, 2]);
+        assert_eq!(indices, vec![1, 2]);
+    }
+
+    #[test]
+    fn adjacency_unweighted_is_all_ones() {
+        let parents = arr1(&[-1, 0, 1]);
+        let weights: Option<Array1<f32>> = None;
+
+        let (_, _, data) = adjacency(&parents.view(), &weights, false, false);
+
+        assert!(data.iter().all(|&d| d == 1.0));
+    }
+
+    // ---------------------------------------------------------------- longest_path
+
+    #[test]
+    fn longest_path_runs_distal_to_root() {
+        //   0 - 1 - 2 - 3      the 3->0 chain is longer than the 4->0 twig
+        //        \
+        //         4
+        let parents = arr1(&[-1, 0, 1, 2, 1]);
+        let weights: Option<Array1<f32>> = None;
+
+        assert_eq!(longest_path(&parents.view(), &weights), vec![3, 2, 1, 0]);
+    }
+
+    /// Weights, not hop count, decide which path is longest.
+    #[test]
+    fn longest_path_uses_weights() {
+        //   0 - 1 - 2      two hops but light
+        //        \
+        //         3        one hop but heavy
+        let parents = arr1(&[-1, 0, 1, 1]);
+        let weights = Some(arr1(&[0.0f32, 1.0, 1.0, 50.0]));
+
+        assert_eq!(longest_path(&parents.view(), &weights), vec![3, 1, 0]);
+
+        // Unweighted the two-hop path wins instead.
+        let none: Option<Array1<f32>> = None;
+        assert_eq!(longest_path(&parents.view(), &none), vec![2, 1, 0]);
+    }
+
+    /// Ties go to the lowest index, matching `numpy.argmax` - which is what the navis
+    /// implementation this replaces relies on for a reproducible answer.
+    #[test]
+    fn longest_path_breaks_ties_by_lowest_index() {
+        //   0 - 1     and    0 - 2      equally long
+        let parents = arr1(&[-1, 0, 0]);
+        let weights: Option<Array1<f32>> = None;
+
+        assert_eq!(longest_path(&parents.view(), &weights), vec![1, 0]);
+    }
+
+    #[test]
+    fn longest_path_picks_the_longest_across_components() {
+        //  component A: 0 - 1      component B: 2 - 3 - 4
+        let parents = arr1(&[-1, 0, -1, 2, 3]);
+        let weights: Option<Array1<f32>> = None;
+
+        assert_eq!(longest_path(&parents.view(), &weights), vec![4, 3, 2]);
+    }
+
+    /// An isolated node is a path of one, not an empty path.
+    #[test]
+    fn longest_path_of_isolated_nodes_is_a_single_node() {
+        let parents = arr1(&[-1, -1]);
+        let weights: Option<Array1<f32>> = None;
+
+        assert_eq!(longest_path(&parents.view(), &weights), vec![0]);
+    }
+
+    #[test]
+    fn longest_path_survives_a_very_deep_chain() {
+        let n = 200_000;
+        let mut parents: Vec<i32> = (0..n as i32 - 1).collect();
+        parents.insert(0, -1);
+        let parents = Array1::from(parents);
+        let weights: Option<Array1<f32>> = None;
+
+        let path = longest_path(&parents.view(), &weights);
+
+        assert_eq!(path.len(), n);
+        assert_eq!(path[0], n as i32 - 1);
+        assert_eq!(*path.last().unwrap(), 0);
+    }
+
+    // --------------------------------------------------------------- longest_paths
+
+    /// Each path is peeled off before the next is sought, so they are disjoint and the
+    /// second is the longest of what remains - not the second-longest of the original.
+    #[test]
+    fn longest_paths_peels_each_path_off() {
+        //   0 - 1 - 2 - 3
+        //        \
+        //         4 - 5
+        let parents = arr1(&[-1, 0, 1, 2, 1, 4]);
+        let weights: Option<Array1<f32>> = None;
+
+        let got = longest_paths(&parents.view(), 2, &weights, None);
+
+        assert_eq!(got[0], vec![3, 2, 1, 0]);
+        // 1 is gone, so 5's walk stops at 4 -- the root of what is left.
+        assert_eq!(got[1], vec![5, 4]);
+    }
+
+    #[test]
+    fn longest_paths_stops_when_the_forest_runs_out() {
+        let parents = arr1(&[-1, 0]);
+        let weights: Option<Array1<f32>> = None;
+
+        // Asked for 5, but one path consumes everything.
+        assert_eq!(longest_paths(&parents.view(), 5, &weights, None).len(), 1);
+    }
+
+    #[test]
+    fn longest_paths_are_pairwise_disjoint() {
+        let parents = arr1(&[-1, 0, 1, 2, 1, 4, 2, 6]);
+        let weights: Option<Array1<f32>> = None;
+
+        let got = longest_paths(&parents.view(), 3, &weights, None);
+
+        let mut seen = std::collections::HashSet::new();
+        for path in got.iter() {
+            for &node in path.iter() {
+                assert!(seen.insert(node), "node {node} appears twice");
+            }
+        }
+    }
+
+    /// `min_length` measures the path's whole catchment: every edge whose *parent* is on
+    /// the path, so the twig hanging off it contributes its first edge too. Inherited
+    /// from navis and kept deliberately.
+    #[test]
+    fn longest_paths_min_length_counts_edges_into_the_path() {
+        //   0 - 1 - 2     with 3 hanging off 1
+        let parents = arr1(&[-1, 0, 1, 1]);
+        let weights = Some(arr1(&[0.0f32, 1.0, 1.0, 10.0]));
+
+        // The path 2-1-0 owns edges 2->1 (1.0) and 1->0 (1.0) = 2.0, but node 3's edge
+        // also points into the path, taking the measured total to 12.0.
+        let got = longest_paths(&parents.view(), 1, &weights, Some(11.0));
+        assert_eq!(got.len(), 1, "12.0 > 11.0, so the path is kept");
+
+        let got = longest_paths(&parents.view(), 1, &weights, Some(12.0));
+        assert!(got.is_empty(), "the comparison is <=, so 12.0 stops the search");
+    }
+
+    // ----------------------------------------------------------- descendant_counts
+
+    #[test]
+    fn descendant_counts_counts_strictly_below() {
+        //   0 - 1 - 2 - 3
+        //        \
+        //         4
+        let parents = arr1(&[-1, 0, 1, 2, 1]);
+
+        let got = descendant_counts(&parents.view(), &None);
+
+        // 0 has 4 below it, 1 has 3, 2 has 1, and the leafs have none.
+        assert_eq!(got.to_vec(), vec![4, 3, 1, 0, 0]);
+    }
+
+    /// A node is never its own descendant, even when it is itself a target.
+    #[test]
+    fn descendant_counts_respects_targets() {
+        let parents = arr1(&[-1, 0, 1, 2, 1]);
+        let targets = Some(arr1(&[3, 4])); // the two leafs
+
+        let got = descendant_counts(&parents.view(), &targets);
+
+        assert_eq!(got.to_vec(), vec![2, 2, 1, 0, 0]);
+    }
+
+    #[test]
+    fn descendant_counts_is_subtree_size_minus_one() {
+        //  component A: 0 - 1 - {2, 3 - 4}      component B: 5 - 6
+        let parents = arr1(&[-1, 0, 1, 1, 3, -1, 5]);
+
+        let counts = descendant_counts(&parents.view(), &None);
+
+        // Written out rather than derived from `subtree_sizes`: comparing against the
+        // helper this is built on would only restate the implementation.
+        assert_eq!(counts.to_vec(), vec![4, 3, 0, 1, 0, 1, 0]);
+    }
+
+    // ------------------------------------------------------------------ betweenness
+
+    /// On a chain every interior node separates everything left of it from everything
+    /// right, so the counts form the familiar parabola.
+    #[test]
+    fn betweenness_undirected_on_a_chain() {
+        //  0 - 1 - 2 - 3 - 4
+        let parents = arr1(&[-1, 0, 1, 2, 3]);
+
+        let got = betweenness(&parents.view(), false);
+
+        // node 1 separates {0} from {2,3,4} -> 3; node 2 splits 2/2 -> 4; node 3 -> 3.
+        assert_eq!(got.to_vec(), vec![0, 3, 4, 3, 0]);
+    }
+
+    /// Directed, paths only run root-ward, so a node scores descendants x ancestors.
+    #[test]
+    fn betweenness_directed_is_descendants_times_ancestors() {
+        let parents = arr1(&[-1, 0, 1, 2, 3]);
+
+        let got = betweenness(&parents.view(), true);
+
+        // node 2 has 2 below and 2 above -> 4.
+        assert_eq!(got.to_vec(), vec![0, 3, 4, 3, 0]);
+    }
+
+    /// A leaf and a root are never *between* anything.
+    #[test]
+    fn betweenness_of_leafs_and_roots_is_zero() {
+        //   0 - 1 - 2, 0 - 3
+        let parents = arr1(&[-1, 0, 1, 0]);
+
+        let undirected = betweenness(&parents.view(), false);
+        let directed = betweenness(&parents.view(), true);
+
+        assert_eq!(undirected[2], 0); // leaf
+        assert_eq!(directed[2], 0);
+        assert_eq!(directed[0], 0); // root: nothing above it
+    }
+
+    /// Pairs are only counted within a component.
+    #[test]
+    fn betweenness_does_not_pair_across_components() {
+        //  component A: 0 - 1 - 2      component B: 3 - 4 - 5
+        let parents = arr1(&[-1, 0, 1, -1, 3, 4]);
+
+        let got = betweenness(&parents.view(), false);
+
+        // Each middle node separates one node from one node -> 1, not 4.
+        assert_eq!(got.to_vec(), vec![0, 1, 0, 0, 1, 0]);
+    }
+
+    /// Counts grow as the square of the component size, so they must not be i32.
+    #[test]
+    fn betweenness_does_not_overflow_on_a_large_component() {
+        let n = 100_000;
+        let mut parents: Vec<i32> = (0..n as i32 - 1).collect();
+        parents.insert(0, -1);
+        let parents = Array1::from(parents);
+
+        let got = betweenness(&parents.view(), false);
+
+        // The midpoint of a chain of 100k separates 50k from 50k.
+        let peak = *got.iter().max().unwrap();
+        assert!(peak > i32::MAX as i64, "peak {peak} should overflow i32");
     }
 }

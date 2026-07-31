@@ -46,7 +46,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: |
           pip install -U pip wheel
-          pip install pandas numpy scipy pytest maturin igraph
+          pip install pandas numpy scipy pytest maturin igraph hypothesis
         name: Install dependencies
       - run: |
           mkdir -p $TGT_DIR
@@ -74,7 +74,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: |
           pip install -U pip wheel
-          pip install pandas numpy scipy pytest maturin igraph
+          pip install pandas numpy scipy pytest maturin igraph hypothesis
         name: Install dependencies
       - run: |
           mkdir -p $TGT_DIR
@@ -99,7 +99,7 @@ jobs:
           python-version: "3.11"
       - run: |
           pip install -U pip wheel
-          pip install pandas numpy scipy pytest maturin igraph
+          pip install pandas numpy scipy pytest maturin igraph hypothesis
         name: Install dependencies
       - run: |
           mkdir -p dist

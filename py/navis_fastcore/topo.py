@@ -1,7 +1,7 @@
 import numpy as np
 
 from . import _fastcore
-from .dag import _ids_to_indices
+from .dag import _ids_to_indices, _indices_to_ids_sentinel
 
 __all__ = [
     "stitch_fragments",
@@ -259,8 +259,4 @@ def heal_skeleton(
     new_parent_ix = _fastcore.reroot_rewire(parent_ix, edges_ix, preferred_root)
 
     # 3. Map parent indices back to IDs (-1 stays -1 for roots).
-    new_parent_ids = np.full(len(node_ids), -1, dtype=node_ids.dtype)
-    is_child = new_parent_ix >= 0
-    new_parent_ids[is_child] = node_ids[new_parent_ix[is_child]]
-
-    return new_parent_ids
+    return _indices_to_ids_sentinel(node_ids, new_parent_ix)

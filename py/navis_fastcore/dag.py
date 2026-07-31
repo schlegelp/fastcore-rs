@@ -17,6 +17,16 @@ __all__ = [
     "subtree_height",
     "dist_to_root",
     "classify_nodes",
+    "descendants",
+    "paths_to_root",
+    "reroot",
+    "contract_nodes",
+    "simplify_skeleton",
+    "adjacency",
+    "longest_path",
+    "longest_paths",
+    "descendant_counts",
+    "betweenness",
 ]
 
 
@@ -415,9 +425,7 @@ def geodesic_nearest(
         nearest_ix = nearest_ix[order]
 
     # Translate the nearest target node indices back into node IDs (-1 = no target)
-    found = nearest_ix >= 0
-    nearest = np.full(len(nearest_ix), -1, dtype=node_ids.dtype)
-    nearest[found] = node_ids[nearest_ix[found]]
+    nearest = _indices_to_ids_sentinel(node_ids, nearest_ix)
 
     return distances, nearest
 
@@ -530,9 +538,7 @@ def geodesic_farthest(
         farthest_ix = farthest_ix[order]
 
     # Translate the farthest target node indices back into node IDs (-1 = no target)
-    found = farthest_ix >= 0
-    farthest = np.full(len(farthest_ix), -1, dtype=node_ids.dtype)
-    farthest[found] = node_ids[farthest_ix[found]]
+    farthest = _indices_to_ids_sentinel(node_ids, farthest_ix)
 
     return distances, farthest
 
@@ -773,9 +779,11 @@ def _ids_to_indices(node_ids, to_map):
     # Cast to the smallest safe signed integer type.
     # This whole block should not take more than a few tens of microseconds
     if fix_dtypes:
-        # Finding the max value takes only a few microseconds even for large arrays
-        max_node_ids = node_ids.max()
-        max_to_map = to_map.max()
+        # Finding the max value takes only a few microseconds even for large arrays.
+        # `initial=0` covers the empty case: asking for nothing is a legitimate call
+        # (e.g. `descendant_counts(targets=[])`), and `max()` on an empty array raises.
+        max_node_ids = node_ids.max(initial=0)
+        max_to_map = to_map.max(initial=0)
         for dtype in (np.int16, np.int32, np.int64):
             if (
                 np.iinfo(dtype).max >= max_node_ids
@@ -1072,3 +1080,641 @@ def classify_nodes(node_ids, parent_ids):
     parent_ix = _ids_to_indices(node_ids, parent_ids)
 
     return _fastcore.classify_nodes(parent_ix)
+
+
+def _sources_to_indices(node_ids, sources, what="sources"):
+    """Map a list of node IDs to indices, preserving order and duplicates.
+
+    Not `np.isin`: that de-duplicates *and* sorts, which would silently reorder a
+    caller's request. `_ids_to_indices` keeps the sequence intact and flags anything
+    it cannot find with a negative index.
+    """
+    indices = _ids_to_indices(node_ids, np.asarray(sources))
+    missing = indices < 0
+    if missing.any():
+        bad = np.asarray(sources)[missing]
+        raise ValueError(
+            f"{len(bad)} {what} not found in `node_ids` (e.g. {bad[0]})"
+        )
+    return indices
+
+
+def _prep_weights(weights, node_ids):
+    """Coerce optional per-node weights to a contiguous float32 array of the right length.
+
+    Mirrors `mesh._prep_weights`. Extracted because this block had been copy-pasted to
+    fourteen call sites in this module, half of them raising `AssertionError` (which
+    `python -O` removes) where the rest raise `ValueError`.
+    """
+    if weights is None:
+        return None
+    weights = np.ascontiguousarray(np.asarray(weights, dtype=np.float32).ravel())
+    if len(weights) != len(node_ids):
+        raise ValueError(
+            f"`weights` must have one entry per node: got {len(weights)} "
+            f"for {len(node_ids)} nodes"
+        )
+    return weights
+
+
+def _indices_to_ids(node_ids, indices):
+    """Map node indices back to node IDs."""
+    return np.asarray(node_ids)[indices]
+
+
+def _runs_to_ids(node_ids, runs):
+    """Map a list of index runs back to node IDs, one array per run."""
+    node_ids = np.asarray(node_ids)
+    # Empty runs come back as float64 arrays from numpy's default dtype, which cannot
+    # index; `intp` keeps them usable without copying the non-empty ones.
+    return [node_ids[np.asarray(run, dtype=np.intp)] for run in runs]
+
+
+def _indices_to_ids_sentinel(node_ids, indices):
+    """Map indices back to node IDs, keeping -1 where the index is negative.
+
+    Used wherever a result carries a "no such node" sentinel: roots in a parent
+    array, or sources with no reachable target.
+    """
+    node_ids = np.asarray(node_ids)
+    dtype = node_ids.dtype
+    if not np.issubdtype(dtype, np.signedinteger):
+        # -1 has no unsigned representation. This mirrors the convention navis uses:
+        # a uint64 `node_id` column alongside an int64 `parent_id` column.
+        dtype = np.int64
+
+    out = np.full(len(indices), -1, dtype=dtype)
+    found = indices >= 0
+    out[found] = node_ids[indices[found]].astype(dtype, copy=False)
+    return out
+
+
+def _walk(fn, node_ids, parent_ids, sources):
+    """Run a per-source traversal and map both ends between IDs and indices.
+
+    `descendants` and `paths_to_root` are the two directions of the same walk and differ
+    only in which core function they call.
+    """
+    parent_ix = _ids_to_indices(node_ids, parent_ids)
+    sources_ix = _sources_to_indices(node_ids, sources)
+
+    return _runs_to_ids(node_ids, fn(parent_ix, sources_ix))
+
+
+def descendants(node_ids, parent_ids, sources):
+    """Find the nodes distal to each source, i.e. its sub-tree.
+
+    Parameters
+    ----------
+    node_ids :   (N, ) array
+                 Array of node IDs.
+    parent_ids : (N, ) array
+                 Array of parent IDs for each node. Root nodes' parents
+                 must be -1.
+    sources :    iterable
+                 Node IDs to collect the sub-tree of.
+
+    Returns
+    -------
+    subtrees :   list of arrays
+                 One array of node IDs per source, in `sources` order. Each starts
+                 with the source itself and is in depth-first pre-order, so a node
+                 always precedes its own descendants.
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> node_ids = np.arange(6)
+    >>> parent_ids = np.array([-1, 0, 1, 2, 1, 2])
+    >>> fastcore.descendants(node_ids, parent_ids, [2])
+    [array([2, 3, 5])]
+
+    A leaf is its own only descendant:
+
+    >>> fastcore.descendants(node_ids, parent_ids, [3, 4])
+    [array([3]), array([4])]
+
+    See Also
+    --------
+    [`navis_fastcore.paths_to_root`][]
+                 The same walk in the opposite direction.
+
+    """
+    return _walk(_fastcore.descendants, node_ids, parent_ids, sources)
+
+
+def paths_to_root(node_ids, parent_ids, sources):
+    """Walk from each source up to its root.
+
+    Parameters
+    ----------
+    node_ids :   (N, ) array
+                 Array of node IDs.
+    parent_ids : (N, ) array
+                 Array of parent IDs for each node. Root nodes' parents
+                 must be -1.
+    sources :    iterable
+                 Node IDs to walk up from.
+
+    Returns
+    -------
+    paths :      list of arrays
+                 One array of node IDs per source, in `sources` order, ordered
+                 source-first / root-last. A source that is itself a root gives a
+                 single-element path.
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> node_ids = np.arange(6)
+    >>> parent_ids = np.array([-1, 0, 1, 2, 1, 2])
+    >>> fastcore.paths_to_root(node_ids, parent_ids, [3, 4])
+    [array([3, 2, 1, 0]), array([4, 1, 0])]
+
+    A root is a path of one:
+
+    >>> fastcore.paths_to_root(node_ids, parent_ids, [0])
+    [array([0])]
+
+    """
+    return _walk(_fastcore.paths_to_root, node_ids, parent_ids, sources)
+
+
+def reroot(node_ids, parent_ids, new_roots):
+    """Re-root the skeleton at the given node(s).
+
+    Every edge on the path from a new root to its component's old root is reversed;
+    the rest of the tree is untouched.
+
+    Parameters
+    ----------
+    node_ids :   (N, ) array
+                 Array of node IDs.
+    parent_ids : (N, ) array
+                 Array of parent IDs for each node. Root nodes' parents
+                 must be -1.
+    new_roots :  iterable
+                 Node IDs to root their components at. Components containing none
+                 of these are left exactly as they were - this re-roots, it does
+                 not renumber the rest of the forest. Where two new roots fall in
+                 the same component, the first one wins.
+
+    Returns
+    -------
+    parent_ids : (N, ) array
+                 New parent IDs, aligned with `node_ids`. Roots are -1.
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> node_ids = np.arange(5)
+    >>> parent_ids = np.array([-1, 0, 1, 2, 1])
+    >>> fastcore.reroot(node_ids, parent_ids, [3])
+    array([ 1,  2,  3, -1,  1])
+
+    Re-rooting at the existing root is a no-op:
+
+    >>> fastcore.reroot(node_ids, parent_ids, [0])
+    array([-1,  0,  1,  2,  1])
+
+    """
+    parent_ix = _ids_to_indices(node_ids, parent_ids)
+    roots_ix = _sources_to_indices(node_ids, new_roots, what="new roots")
+
+    new_parent_ix = _fastcore.reroot(parent_ix, roots_ix)
+
+    return _indices_to_ids_sentinel(node_ids, new_parent_ix)
+
+
+def contract_nodes(node_ids, parent_ids, mapping):
+    """Collapse groups of nodes onto a representative and rewire.
+
+    Parameters
+    ----------
+    node_ids :   (N, ) array
+                 Array of node IDs.
+    parent_ids : (N, ) array
+                 Array of parent IDs for each node. Root nodes' parents
+                 must be -1.
+    mapping :    (N, ) array
+                 For each node, the ID of the node it collapses into. A node
+                 mapped to itself survives; nodes sharing a representative are
+                 merged into it. Edges that end up inside a group are dropped.
+
+    Returns
+    -------
+    node_ids :   (M, ) array
+                 The surviving node IDs, in their original relative order.
+    parent_ids : (M, ) array
+                 Their new parent IDs. Roots are -1.
+
+    Raises
+    ------
+    ValueError
+                 If the contraction would produce a cycle - which happens when a
+                 node is mapped onto one of its own descendants.
+
+    Examples
+    --------
+    Collapse nodes 1 and 2 onto node 1:
+
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> node_ids = np.arange(5)
+    >>> parent_ids = np.array([-1, 0, 1, 2, 2])
+    >>> mapping = np.array([0, 1, 1, 3, 4])
+    >>> fastcore.contract_nodes(node_ids, parent_ids, mapping)
+    (array([0, 1, 3, 4]), array([-1,  0,  1,  1]))
+
+    Note this does not re-root; follow with
+    [`navis_fastcore.reroot`][] if you need the result rooted somewhere specific.
+
+    """
+    parent_ix = _ids_to_indices(node_ids, parent_ids)
+
+    mapping = np.asarray(mapping)
+    if len(mapping) != len(node_ids):
+        raise ValueError(
+            f"`mapping` must have the same length as `node_ids` "
+            f"({len(mapping)} vs {len(node_ids)})"
+        )
+    mapping_ix = _sources_to_indices(node_ids, mapping, what="mapping targets")
+
+    # A mapping that collapses a node onto one of its own descendants closes a loop; the
+    # core refuses it rather than returning something that is not a forest.
+    kept, new_parent_ix = _fastcore.contract_nodes(parent_ix, mapping_ix)
+
+    new_node_ids = _indices_to_ids(node_ids, kept)
+
+    return new_node_ids, _indices_to_ids_sentinel(new_node_ids, new_parent_ix)
+
+
+def simplify_skeleton(node_ids, parent_ids, weights=None):
+    """Reduce a skeleton to its roots, leafs and branch points.
+
+    The slab nodes in between carry no topological information. Dropping them
+    leaves the same tree at a fraction of the size, with each replacement edge
+    carrying the total length of the chain it stands in for - so total cable
+    length is preserved.
+
+    Parameters
+    ----------
+    node_ids :   (N, ) array
+                 Array of node IDs.
+    parent_ids : (N, ) array
+                 Array of parent IDs for each node. Root nodes' parents
+                 must be -1.
+    weights :    (N, ) float32 array, optional
+                 Array of distances for each child -> parent connection.
+                 If ``None`` all node-to-node distances are set to 1.
+
+    Returns
+    -------
+    node_ids :   (M, ) array
+                 The surviving node IDs, in their original relative order.
+    parent_ids : (M, ) array
+                 Their new parent IDs. Roots are -1.
+    weights :    (M, ) float32 array or None
+                 Length of each node's edge to its new parent, i.e. the summed
+                 length of the chain it replaces. Roots are 0. ``None`` exactly
+                 when `weights` was ``None``.
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> node_ids = np.arange(5)
+    >>> parent_ids = np.array([-1, 0, 1, 2, 2])
+    >>> weights = np.array([0, 1, 2, 4, 8], dtype=np.float32)
+    >>> ids, parents, w = fastcore.simplify_skeleton(
+    ...     node_ids, parent_ids, weights=weights
+    ... )
+
+    Node 1 was the only slab, so it is gone and nodes 3 and 4 now hang off node 2
+    directly. Node 2's new edge carries both the 2 -> 1 and 1 -> 0 lengths:
+
+    >>> ids
+    array([0, 2, 3, 4])
+    >>> parents
+    array([-1,  0,  2,  2])
+    >>> w
+    array([0., 3., 4., 8.], dtype=float32)
+
+    """
+    parent_ix = _ids_to_indices(node_ids, parent_ids)
+
+    weights = _prep_weights(weights, node_ids)
+
+    kept, new_parent_ix, new_weights = _fastcore.simplify_skeleton(
+        parent_ix, weights=weights
+    )
+
+    new_node_ids = _indices_to_ids(node_ids, kept)
+
+    return (
+        new_node_ids,
+        _indices_to_ids_sentinel(new_node_ids, new_parent_ix),
+        new_weights,
+    )
+
+
+def adjacency(node_ids, parent_ids, weights=None, directed=True, transpose=False):
+    """Build the skeleton's adjacency matrix in CSR form.
+
+    Parameters
+    ----------
+    node_ids :   (N, ) array
+                 Array of node IDs.
+    parent_ids : (N, ) array
+                 Array of parent IDs for each node. Root nodes' parents
+                 must be -1.
+    weights :    (N, ) float32 array, optional
+                 Array of distances for each child -> parent connection.
+                 If ``None`` all edges weigh 1.
+    directed :   bool
+                 If ``True`` only the child -> parent edge is emitted. If
+                 ``False`` both directions are.
+    transpose :  bool
+                 If ``True`` flip every edge, so rows are parents and columns
+                 children.
+
+    Returns
+    -------
+    indptr :     (N + 1, ) int32 array
+    indices :    (nnz, ) int32 array
+    data :       (nnz, ) float32 array
+                 The three arrays of a `scipy.sparse.csr_matrix`. Rows and columns
+                 follow `node_ids` order, i.e. index `i` is `node_ids[i]`. Column
+                 indices are ascending within each row.
+
+    Notes
+    -----
+    Returning the raw triple rather than a matrix keeps this package free of a
+    scipy dependency. To build the matrix - note scipy takes the three arrays in
+    the *opposite* order to the conventional CSR description used here::
+
+        from scipy.sparse import csr_matrix
+        n = len(node_ids)
+        indptr, indices, data = fastcore.adjacency(node_ids, parent_ids)
+        A = csr_matrix((data, indices, indptr), shape=(n, n))
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> node_ids = np.arange(3)
+    >>> parent_ids = np.array([-1, 0, 1])
+    >>> indptr, indices, data = fastcore.adjacency(node_ids, parent_ids)
+
+    Row `i` holds node `i`'s edge to its parent, so the root's row is empty:
+
+    >>> indptr
+    array([0, 0, 1, 2], dtype=int32)
+    >>> indices
+    array([0, 1], dtype=int32)
+
+    """
+    parent_ix = _ids_to_indices(node_ids, parent_ids)
+
+    weights = _prep_weights(weights, node_ids)
+
+    return _fastcore.adjacency(parent_ix, weights, bool(directed), bool(transpose))
+
+
+def longest_path(node_ids, parent_ids, weights=None):
+    """Find the longest path in the skeleton.
+
+    Parameters
+    ----------
+    node_ids :   (N, ) array
+                 Array of node IDs.
+    parent_ids : (N, ) array
+                 Array of parent IDs for each node. Root nodes' parents
+                 must be -1.
+    weights :    (N, ) float32 array, optional
+                 Array of distances for each child -> parent connection.
+                 If ``None`` all node-to-node distances are set to 1.
+
+    Returns
+    -------
+    path :       (L, ) array
+                 Node IDs along the path, **distal first** - so `path[0]` is the
+                 far end and `path[-1]` is a root. Ties are broken towards the
+                 node that comes first in `node_ids`.
+
+    Notes
+    -----
+    This is not the (NP-hard) general longest-path problem. In a rooted forest
+    every maximal path is fixed by its start node - just follow the parents up -
+    so the longest one starts at whichever node is farthest from its own root.
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> node_ids = np.arange(5)
+    >>> parent_ids = np.array([-1, 0, 1, 2, 1])
+    >>> fastcore.longest_path(node_ids, parent_ids)
+    array([3, 2, 1, 0])
+
+    Weights change which path is longest - here one heavy hop beats two light ones:
+
+    >>> weights = np.array([0, 1, 1, 1, 50], dtype=np.float32)
+    >>> fastcore.longest_path(node_ids, parent_ids, weights=weights)
+    array([4, 1, 0])
+
+    See Also
+    --------
+    [`navis_fastcore.longest_paths`][]
+                 The `n` longest paths, each peeled off before the next.
+
+    """
+    parent_ix = _ids_to_indices(node_ids, parent_ids)
+
+    weights = _prep_weights(weights, node_ids)
+
+    return _indices_to_ids(
+        node_ids, _fastcore.longest_path(parent_ix, weights=weights)
+    )
+
+
+def longest_paths(node_ids, parent_ids, n, weights=None, min_length=None):
+    """Find the `n` longest paths, peeling each one off before the next.
+
+    Each path is removed from the skeleton before the next is sought, so the
+    second path is the longest of what *remains* rather than the second-longest
+    of the original - and the paths are pairwise disjoint. Removing a path turns
+    the children hanging off it into roots of their own.
+
+    Parameters
+    ----------
+    node_ids :   (N, ) array
+                 Array of node IDs.
+    parent_ids : (N, ) array
+                 Array of parent IDs for each node. Root nodes' parents
+                 must be -1.
+    n :          int
+                 How many paths to take. Fewer are returned if the skeleton runs
+                 out, or if `min_length` stops the search.
+    weights :    (N, ) float32 array, optional
+                 Array of distances for each child -> parent connection.
+                 If ``None`` all node-to-node distances are set to 1.
+    min_length : float, optional
+                 Stop as soon as a path measures no more than this.
+
+    Returns
+    -------
+    paths :      list of arrays
+                 Up to `n` arrays of node IDs, longest first, each distal-first.
+
+    Warnings
+    --------
+    `min_length` measures the path's **whole catchment**, not just its own edges:
+    every edge whose *parent* lies on the path counts, so each twig hanging off
+    the path contributes its first edge too. The comparison is `<=`, and hitting
+    it **stops** the search rather than skipping that one path.
+
+    That is inherited from navis' `split_into_fragments`, where it is flagged as
+    "preserved as-is from the networkx implementation", and it is kept here
+    deliberately so that results do not shift.
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> node_ids = np.arange(6)
+    >>> parent_ids = np.array([-1, 0, 1, 2, 1, 4])
+    >>> fastcore.longest_paths(node_ids, parent_ids, 2)
+    [array([3, 2, 1, 0]), array([5, 4])]
+
+    Note the second path stops at node 4: node 1 went with the first path, so 4
+    is the root of what was left.
+
+    """
+    parent_ix = _ids_to_indices(node_ids, parent_ids)
+
+    weights = _prep_weights(weights, node_ids)
+
+    n = int(n)
+    if n < 0:
+        raise ValueError(f"`n` must be non-negative, got {n}")
+
+    paths = _fastcore.longest_paths(
+        parent_ix,
+        n,
+        weights=weights,
+        min_length=None if min_length is None else float(min_length),
+    )
+
+    return _runs_to_ids(node_ids, paths)
+
+
+def descendant_counts(node_ids, parent_ids, targets=None):
+    """Count, for each node, how many nodes lie strictly below it.
+
+    Parameters
+    ----------
+    node_ids :   (N, ) array
+                 Array of node IDs.
+    parent_ids : (N, ) array
+                 Array of parent IDs for each node. Root nodes' parents
+                 must be -1.
+    targets :    iterable, optional
+                 Restrict the count to these node IDs. If ``None`` every node
+                 counts.
+
+    Returns
+    -------
+    counts :     (N, ) int64 array
+                 Aligned with `node_ids`. A node is never its own descendant, so
+                 a leaf scores 0 even when it is itself a target.
+
+    Notes
+    -----
+    With `targets=None` this is each node's sub-tree size minus one.
+
+    This is what navis' `betweeness_centrality(from_=...)` actually computed,
+    under a name that suggested otherwise - see
+    [`navis_fastcore.betweenness`][].
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> node_ids = np.arange(5)
+    >>> parent_ids = np.array([-1, 0, 1, 2, 1])
+    >>> fastcore.descendant_counts(node_ids, parent_ids)
+    array([4, 3, 1, 0, 0])
+
+    Counting only the leafs below each node:
+
+    >>> fastcore.descendant_counts(node_ids, parent_ids, targets=[3, 4])
+    array([2, 2, 1, 0, 0])
+
+    """
+    parent_ix = _ids_to_indices(node_ids, parent_ids)
+
+    target_ix = None
+    if targets is not None:
+        target_ix = _sources_to_indices(node_ids, targets, what="targets")
+
+    return _fastcore.descendant_counts(parent_ix, targets=target_ix)
+
+
+def betweenness(node_ids, parent_ids, directed=True):
+    """Calculate betweenness centrality.
+
+    Parameters
+    ----------
+    node_ids :   (N, ) array
+                 Array of node IDs.
+    parent_ids : (N, ) array
+                 Array of parent IDs for each node. Root nodes' parents
+                 must be -1.
+    directed :   bool
+                 If ``True`` only count paths running towards the root, i.e. from
+                 a node to one of its ancestors. If ``False`` count every
+                 unordered pair once.
+
+    Returns
+    -------
+    betweenness : (N, ) int64 array
+                 Number of shortest paths through each node, aligned with
+                 `node_ids`. Pairs are only counted within a connected component.
+
+    Notes
+    -----
+    O(N), not Brandes' O(V*E): shortest paths in a tree are *unique*, so the
+    number passing through a node is a closed form rather than a search. Directed,
+    a node lies on one path per (strict descendant, strict ancestor) pair.
+    Undirected, removing it splits its component into its children's sub-trees
+    plus everything above, and it lies between every pair drawn from two
+    different parts.
+
+    Counts are `int64` because they grow as the square of the component size - an
+    undirected 100k-node skeleton reaches ~5e9, which overflows `int32`.
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> node_ids = np.arange(5)
+    >>> parent_ids = np.array([-1, 0, 1, 2, 3])
+    >>> fastcore.betweenness(node_ids, parent_ids)
+    array([0, 3, 4, 3, 0])
+
+    Leafs and roots are never *between* anything.
+
+    See Also
+    --------
+    [`navis_fastcore.descendant_counts`][]
+                 What you want if you are counting how much hangs below a node
+                 rather than how much routes through it.
+
+    """
+    parent_ix = _ids_to_indices(node_ids, parent_ids)
+
+    return _fastcore.betweenness(parent_ix, bool(directed))

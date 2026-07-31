@@ -51,10 +51,18 @@ MAX_SCALING_RATIO = 20.0
 
 
 def cases(topo):
-    """The operations under guard, as zero-argument callables."""
+    """The operations under guard, as zero-argument callables.
+
+    Anything set up here (the source samples, the contraction mapping) is built
+    once, outside the timed callable, so the measurement is of the function and
+    not of the fixture.
+    """
     nid, pid, w = topo.node_ids, topo.parent_ids, topo.weights
     sources = nid[:200]
     targets = nid[200:400]
+    # Collapse every node onto its component's root: an O(N) contraction that
+    # actually removes nodes, rather than an identity mapping that does nothing.
+    to_roots = fastcore.connected_components(nid, pid)
     return {
         "classify_nodes": lambda: fastcore.classify_nodes(nid, pid),
         "connected_components": lambda: fastcore.connected_components(nid, pid),
@@ -64,6 +72,25 @@ def cases(topo):
         "geodesic_matrix_partial": lambda: fastcore.geodesic_matrix(
             nid, pid, sources=sources, targets=targets, weights=w
         ),
+        # Fewer sources than the rest: cost here is proportional to *total sub-tree
+        # size*, and `nid[:200]` all sit near the top of the backbone, so each one
+        # spans almost the whole tree. Asking for 200 of those measures numpy
+        # building 20M node IDs rather than the traversal. Both navis call sites
+        # (`cut_skeleton`, `split_into_fragments`) pass a handful.
+        "descendants": lambda: fastcore.descendants(nid, pid, sources[:20]),
+        "paths_to_root": lambda: fastcore.paths_to_root(nid, pid, sources),
+        "reroot": lambda: fastcore.reroot(nid, pid, nid[-1:]),
+        "contract_nodes": lambda: fastcore.contract_nodes(nid, pid, to_roots),
+        "simplify_skeleton": lambda: fastcore.simplify_skeleton(nid, pid, weights=w),
+        "adjacency": lambda: fastcore.adjacency(nid, pid, weights=w, directed=False),
+        "longest_path": lambda: fastcore.longest_path(nid, pid, weights=w),
+        # 5 paths, which is the scale `split_into_fragments` works at. Each round
+        # re-scans what is left, so this is where an accidental O(n * N^2) would show.
+        "longest_paths": lambda: fastcore.longest_paths(nid, pid, 5, weights=w),
+        # The whole point of the closed form is that this is O(N), not Brandes'
+        # O(V*E) - which at 1M nodes would not finish.
+        "betweenness": lambda: fastcore.betweenness(nid, pid, directed=False),
+        "descendant_counts": lambda: fastcore.descendant_counts(nid, pid),
     }
 
 
@@ -96,17 +123,42 @@ def calibrate():
     return best_of(lambda: np.sqrt(a).sum(), repeats=5)
 
 
+#: The two shapes every case is measured against.
+#:
+#: "dense" is one arbor. "fragmented" is what a segmentation-derived skeleton actually
+#: looks like - one large component plus several thousand small ones - and is the shape
+#: that catches work scaling with the number of *components* rather than nodes: root
+#: sweeps, per-component bookkeeping, anything that re-seeds a traversal per root.
+SHAPES = ("dense", "fragmented")
+
+
 # ------------------------------------------------------------------------ fixtures
 
 
 @pytest.fixture(scope="session")
-def big():
-    return topologies.synthetic_neuron(N)
+def topos():
+    """Session-cached topology builder, keyed by (shape, size).
+
+    Built lazily so a `-k` selection only pays for the shapes it actually runs; cached
+    because the 1M-node builds are shared by several tests.
+    """
+    cache = {}
+
+    def get(shape, n):
+        if (shape, n) not in cache:
+            cache[shape, n] = (
+                topologies.synthetic_neuron(n)
+                if shape == "dense"
+                else topologies.fragmented_neuron(n)
+            )
+        return cache[shape, n]
+
+    return get
 
 
 @pytest.fixture(scope="session")
-def bigger():
-    return topologies.synthetic_neuron(N10)
+def big(topos):
+    return topos("dense", N)
 
 
 @pytest.fixture(scope="session")
@@ -134,27 +186,29 @@ def baseline(request, calibration):
 # --------------------------------------------------------------------- regression
 
 
+@pytest.mark.parametrize("shape", SHAPES)
 @pytest.mark.parametrize("case", CASE_NAMES)
-def test_no_regression(case, big, baseline, calibration, request):
+def test_no_regression(case, shape, topos, baseline, calibration, request):
     """Each operation stays within `REGRESSION_FACTOR` of its recorded time."""
-    elapsed = best_of(cases(big)[case])
+    key = f"{shape}/{case}"
+    elapsed = best_of(cases(topos(shape, N))[case])
 
     if request.config.getoption("--baseline"):
-        baseline["cases"][case] = elapsed
+        baseline["cases"][key] = elapsed
         pytest.skip("recording baseline")
 
-    if case not in baseline["cases"]:
-        pytest.skip(f"{case} is not in the baseline; re-record with --baseline")
+    if key not in baseline["cases"]:
+        pytest.skip(f"{key} is not in the baseline; re-record with --baseline")
     if baseline["n"] != N:
         pytest.skip(f"baseline was recorded at n={baseline['n']}, now n={N}")
 
     # Scale the recorded time by how much slower/faster this machine is.
     speed = calibration / baseline["calibration"]
-    budget = baseline["cases"][case] * speed * REGRESSION_FACTOR
+    budget = baseline["cases"][key] * speed * REGRESSION_FACTOR
 
     assert elapsed < budget, (
-        f"{case}: {elapsed * 1e3:.1f} ms exceeds budget {budget * 1e3:.1f} ms "
-        f"(baseline {baseline['cases'][case] * 1e3:.1f} ms, "
+        f"{key}: {elapsed * 1e3:.1f} ms exceeds budget {budget * 1e3:.1f} ms "
+        f"(baseline {baseline['cases'][key] * 1e3:.1f} ms, "
         f"machine factor {speed:.2f}x)"
     )
 
@@ -162,15 +216,21 @@ def test_no_regression(case, big, baseline, calibration, request):
 # --------------------------------------------------------------------- complexity
 
 
+@pytest.mark.parametrize("shape", SHAPES)
 @pytest.mark.parametrize("case", CASE_NAMES)
-def test_scaling_is_subquadratic(case, big, bigger):
-    """10x the nodes must not cost ~100x the time."""
-    t_n = best_of(cases(big)[case], repeats=3)
-    t_10n = best_of(cases(bigger)[case], repeats=3)
+def test_scaling_is_subquadratic(case, shape, topos):
+    """10x the nodes must not cost ~100x the time.
+
+    Run against the fragmented shape too: there 10x the nodes is also ~10x the
+    *components*, so anything quadratic in component count shows up here and nowhere
+    else.
+    """
+    t_n = best_of(cases(topos(shape, N))[case], repeats=3)
+    t_10n = best_of(cases(topos(shape, N10))[case], repeats=3)
 
     ratio = t_10n / t_n
     assert ratio < MAX_SCALING_RATIO, (
-        f"{case}: {N} -> {N10} nodes cost {ratio:.1f}x more time "
+        f"{shape}/{case}: {N} -> {N10} nodes cost {ratio:.1f}x more time "
         f"({t_n * 1e3:.1f} -> {t_10n * 1e3:.1f} ms); "
         f"that is worse than O(N log N) and suggests a quadratic path"
     )
@@ -256,4 +316,36 @@ def test_report_speedup_vs_igraph(big, capsys):
             print(
                 f"  {name:<24}{t_ours * 1e3:>10.1f}ms{t_theirs * 1e3:>10.1f}ms"
                 f"{t_theirs / t_ours:>9.1f}x{mark}"
+            )
+
+
+def test_report_betweenness_vs_brandes(capsys):
+    """Print the betweenness comparison. Reports only; never fails.
+
+    Kept out of the table above because it cannot be run at the same size. igraph
+    computes betweenness with Brandes' algorithm, which is O(V*E) - measurably
+    quadratic on a tree, where E ~ V. Extrapolating the numbers below, a
+    like-for-like run at `N` = 100,000 would take minutes per repeat, so the
+    comparison is made where Brandes is still tractable and the *trend* is the
+    point: fastcore is O(N), so its column barely moves.
+    """
+    igraph = pytest.importorskip("igraph")  # noqa: F841
+    import igraph_oracle as oracle
+
+    with capsys.disabled():
+        print(f"\n  {'nodes':>8}{'fastcore':>12}{'igraph (Brandes)':>20}{'ratio':>10}")
+        for n in (2_000, 5_000, 10_000):
+            topo = topologies.synthetic_neuron(n)
+            g = oracle.as_igraph(topo)
+
+            ours = best_of(
+                lambda: fastcore.betweenness(
+                    topo.node_ids, topo.parent_ids, directed=False
+                ),
+                repeats=3,
+            )
+            theirs = best_of(lambda: g.betweenness(directed=False), repeats=1)
+            print(
+                f"  {n:>8,}{ours * 1e3:>10.2f}ms{theirs * 1e3:>18.1f}ms"
+                f"{theirs / ours:>9.0f}x"
             )

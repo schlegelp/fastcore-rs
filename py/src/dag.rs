@@ -2,13 +2,27 @@ use ndarray::{Array, Array1, Array2, ArrayView1};
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1};
 use pyo3::prelude::Python;
 use pyo3::prelude::*;
+use pyo3::exceptions::PyValueError;
 use rustc_hash::FxHashMap;
 
+/// Move a list of per-source node runs into numpy arrays.
+///
+/// Handing pyo3 a `Vec<Vec<i32>>` builds one `PyLong` per element, which for a function
+/// whose output is millions of node indices costs far more than producing them did.
+/// `into_pyarray` moves each buffer straight into numpy instead.
+fn into_pyarrays(py: Python<'_>, runs: Vec<Vec<i32>>) -> Vec<Bound<'_, PyArray1<i32>>> {
+    runs.into_iter()
+        .map(|run| Array1::from(run).into_pyarray(py))
+        .collect()
+}
+
 use fastcore::dag::{
-    all_dists_to_root, break_segments, classify_nodes, connected_components, dist_to_root,
+    adjacency, all_dists_to_root, betweenness, break_segments, classify_nodes,
+    connected_components, contract_nodes, descendant_counts, descendants, dist_to_root,
     generate_segments, geodesic_distances_all_by_all, geodesic_distances_partial,
-    geodesic_farthest, geodesic_nearest, geodesic_pairs, prune_twigs, strahler_index,
-    subtree_height, synapse_flow_centrality, has_cycles,
+    geodesic_farthest, geodesic_nearest, geodesic_pairs, longest_path, longest_paths,
+    paths_to_root, prune_twigs, reroot, simplify_skeleton, strahler_index, subtree_height,
+    synapse_flow_centrality, has_cycles,
 };
 
 /// For each node ID in `parents` find its index in `nodes`.
@@ -613,4 +627,254 @@ pub fn classify_nodes_py<'py>(
 #[pyo3(name = "has_cycles")]
 pub fn has_cycles_py(parents: PyReadonlyArray1<i32>) -> bool {
     has_cycles(&parents.as_array())
+}
+/// Nodes of the sub-tree distal to each source (source included).
+///
+/// Arguments:
+///
+/// - `parents`: array of parent indices
+/// - `sources`: node indices to collect the sub-tree of
+///
+/// Returns:
+///
+/// One vector of node indices per source, in depth-first pre-order.
+///
+#[pyfunction]
+#[pyo3(name = "descendants")]
+pub fn descendants_py<'py>(
+    py: Python<'py>,
+    parents: PyReadonlyArray1<i32>,
+    sources: PyReadonlyArray1<i32>,
+) -> Vec<Bound<'py, PyArray1<i32>>> {
+    into_pyarrays(py, descendants(&parents.as_array(), &sources.as_array()))
+}
+
+/// Node sequence from each source up to its root, source first.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent indices
+/// - `sources`: node indices to walk up from
+///
+/// Returns:
+///
+/// One vector of node indices per source.
+///
+#[pyfunction]
+#[pyo3(name = "paths_to_root")]
+pub fn paths_to_root_py<'py>(
+    py: Python<'py>,
+    parents: PyReadonlyArray1<i32>,
+    sources: PyReadonlyArray1<i32>,
+) -> Vec<Bound<'py, PyArray1<i32>>> {
+    into_pyarrays(py, paths_to_root(&parents.as_array(), &sources.as_array()))
+}
+
+/// Re-orient a forest so each of `new_roots` becomes its component's root.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent indices
+/// - `new_roots`: node indices to root their components at
+///
+/// Returns:
+///
+/// A new array of parent indices.
+///
+#[pyfunction]
+#[pyo3(name = "reroot")]
+pub fn reroot_py<'py>(
+    py: Python<'py>,
+    parents: PyReadonlyArray1<i32>,
+    new_roots: PyReadonlyArray1<i32>,
+) -> Bound<'py, PyArray1<i32>> {
+    reroot(&parents.as_array(), &new_roots.as_array()).into_pyarray(py)
+}
+
+/// Collapse groups of nodes onto a representative and rewire.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent indices
+/// - `mapping`: for each node, the index of the node it collapses into
+///
+/// Returns:
+///
+/// `(kept, new_parents)`; `new_parents` indexes into `kept`.
+///
+#[pyfunction]
+#[pyo3(name = "contract_nodes")]
+pub fn contract_nodes_py<'py>(
+    py: Python<'py>,
+    parents: PyReadonlyArray1<i32>,
+    mapping: PyReadonlyArray1<i32>,
+) -> PyResult<(Bound<'py, PyArray1<i32>>, Bound<'py, PyArray1<i32>>)> {
+    // The forest invariant is the core's to enforce; this only translates the error.
+    let (kept, new_parents) = contract_nodes(&parents.as_array(), &mapping.as_array())
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok((
+        Array1::from(kept).into_pyarray(py),
+        new_parents.into_pyarray(py),
+    ))
+}
+
+/// Reduce a skeleton to roots, leafs and branch points, preserving cable length.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent indices
+/// - `weights`: optional per-node length of the child -> parent edge
+///
+/// Returns:
+///
+/// `(kept, new_parents, new_weights)`; `new_parents` indexes into `kept`.
+///
+#[pyfunction]
+#[pyo3(name = "simplify_skeleton")]
+pub fn simplify_skeleton_py<'py>(
+    py: Python<'py>,
+    parents: PyReadonlyArray1<i32>,
+    weights: Option<PyReadonlyArray1<f32>>,
+) -> (
+    Bound<'py, PyArray1<i32>>,
+    Bound<'py, PyArray1<i32>>,
+    Option<Bound<'py, PyArray1<f32>>>,
+) {
+    let weights: Option<Array1<f32>> = weights.map(|w| w.as_array().to_owned());
+    let (kept, new_parents, new_weights) = simplify_skeleton(&parents.as_array(), &weights);
+    (
+        Array1::from(kept).into_pyarray(py),
+        new_parents.into_pyarray(py),
+        new_weights.map(|w| Array1::from(w).into_pyarray(py)),
+    )
+}
+
+/// CSR adjacency of a skeleton.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent indices
+/// - `weights`: optional per-node length of the child -> parent edge
+/// - `directed`: emit only child -> parent edges
+/// - `transpose`: flip every edge
+///
+/// Returns:
+///
+/// `(indptr, indices, data)` -- the three arrays of a `scipy.sparse.csr_matrix`.
+///
+#[pyfunction]
+#[pyo3(name = "adjacency")]
+pub fn adjacency_py<'py>(
+    py: Python<'py>,
+    parents: PyReadonlyArray1<i32>,
+    weights: Option<PyReadonlyArray1<f32>>,
+    directed: bool,
+    transpose: bool,
+) -> (
+    Bound<'py, PyArray1<i32>>,
+    Bound<'py, PyArray1<i32>>,
+    Bound<'py, PyArray1<f32>>,
+) {
+    let weights: Option<Array1<f32>> = weights.map(|w| w.as_array().to_owned());
+    let (indptr, indices, data) =
+        adjacency(&parents.as_array(), &weights, directed, transpose);
+    (
+        Array1::from(indptr).into_pyarray(py),
+        Array1::from(indices).into_pyarray(py),
+        Array1::from(data).into_pyarray(py),
+    )
+}
+
+/// The longest weighted path in the forest, running from a node to its root.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent indices
+/// - `weights`: optional per-node length of the child -> parent edge
+///
+/// Returns:
+///
+/// Node indices, distal first.
+///
+#[pyfunction]
+#[pyo3(name = "longest_path")]
+pub fn longest_path_py<'py>(
+    py: Python<'py>,
+    parents: PyReadonlyArray1<i32>,
+    weights: Option<PyReadonlyArray1<f32>>,
+) -> Bound<'py, PyArray1<i32>> {
+    let weights: Option<Array1<f32>> = weights.map(|w| w.as_array().to_owned());
+    Array1::from(longest_path(&parents.as_array(), &weights)).into_pyarray(py)
+}
+
+/// The `n` longest paths, peeling each one off before looking for the next.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent indices
+/// - `n`: how many paths to take
+/// - `weights`: optional per-node length of the child -> parent edge
+/// - `min_length`: stop once a path's catchment measures no more than this
+///
+/// Returns:
+///
+/// Up to `n` paths, longest first, each distal first.
+///
+#[pyfunction]
+#[pyo3(name = "longest_paths")]
+pub fn longest_paths_py<'py>(
+    py: Python<'py>,
+    parents: PyReadonlyArray1<i32>,
+    n: usize,
+    weights: Option<PyReadonlyArray1<f32>>,
+    min_length: Option<f32>,
+) -> Vec<Bound<'py, PyArray1<i32>>> {
+    let weights: Option<Array1<f32>> = weights.map(|w| w.as_array().to_owned());
+    into_pyarrays(
+        py,
+        longest_paths(&parents.as_array(), n, &weights, min_length),
+    )
+}
+
+/// For each node, how many of `targets` lie strictly below it.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent indices
+/// - `targets`: optional boolean mask over nodes to count
+///
+/// Returns:
+///
+/// A 1D array of counts.
+///
+#[pyfunction]
+#[pyo3(name = "descendant_counts")]
+pub fn descendant_counts_py<'py>(
+    py: Python<'py>,
+    parents: PyReadonlyArray1<i32>,
+    targets: Option<PyReadonlyArray1<i32>>,
+) -> Bound<'py, PyArray1<i64>> {
+    let targets: Option<Array1<i32>> = targets.map(|t| t.as_array().to_owned());
+    descendant_counts(&parents.as_array(), &targets).into_pyarray(py)
+}
+
+/// Betweenness centrality on a rooted forest.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent indices
+/// - `directed`: count only root-ward paths
+///
+/// Returns:
+///
+/// A 1D array of path counts.
+///
+#[pyfunction]
+#[pyo3(name = "betweenness")]
+pub fn betweenness_py<'py>(
+    py: Python<'py>,
+    parents: PyReadonlyArray1<i32>,
+    directed: bool,
+) -> Bound<'py, PyArray1<i64>> {
+    betweenness(&parents.as_array(), directed).into_pyarray(py)
 }

@@ -182,6 +182,36 @@ mod fastcore {
     use super::reroot_rewire_py;
 
     #[pymodule_export]
+    use super::descendants_py;
+
+    #[pymodule_export]
+    use super::paths_to_root_py;
+
+    #[pymodule_export]
+    use super::reroot_py;
+
+    #[pymodule_export]
+    use super::contract_nodes_py;
+
+    #[pymodule_export]
+    use super::simplify_skeleton_py;
+
+    #[pymodule_export]
+    use super::adjacency_py;
+
+    #[pymodule_export]
+    use super::longest_path_py;
+
+    #[pymodule_export]
+    use super::longest_paths_py;
+
+    #[pymodule_export]
+    use super::descendant_counts_py;
+
+    #[pymodule_export]
+    use super::betweenness_py;
+
+    #[pymodule_export]
     use super::PyCmtkRegistration;
 
     #[pymodule_export]

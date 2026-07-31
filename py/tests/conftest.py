@@ -16,18 +16,11 @@ DATA = Path(__file__).resolve().parents[2] / "fastcore" / "testdata"
 # would re-read it for every test.
 
 SMALL = [build() for build in topologies.SMALL]
-STRESS = [build() for build in topologies.STRESS]
 
 
 @pytest.fixture(params=SMALL, ids=[t.name for t in SMALL])
 def topo(request):
     """Each shape in the default topology matrix (see `topologies.py`)."""
-    return request.param
-
-
-@pytest.fixture(params=STRESS, ids=[t.name for t in STRESS], scope="session")
-def stress_topo(request):
-    """Shapes that only fail at scale: 100k-deep chain, 100k-wide star, big SWC."""
     return request.param
 
 
@@ -48,6 +41,20 @@ def pytest_configure(config):
         "markers",
         "benchmark: performance and memory regression guards (see tests/test_perf.py)",
     )
+
+    # Hypothesis profiles for `tests/test_properties.py`. Registered here rather
+    # than in that module because pytest resolves `--hypothesis-profile` before it
+    # imports any test module. Deadlines are off throughout: these calls are all
+    # sub-millisecond, so a missed deadline would report machine load, not a bug.
+    try:
+        from hypothesis import settings
+    except ImportError:
+        return  # hypothesis is a test-only extra; the module skips without it
+
+    settings.register_profile("fastcore", deadline=None, max_examples=50)
+    settings.register_profile("thorough", deadline=None, max_examples=1000)
+    if not config.getoption("--hypothesis-profile", default=None):
+        settings.load_profile("fastcore")
 
 
 def pytest_collection_modifyitems(config, items):

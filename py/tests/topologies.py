@@ -12,9 +12,18 @@ A [`Topology`][] is the crate's tree representation as the bindings take it:
 - `weights` — `(N,)` float32 length of each node's child->parent edge, indexed
   by the **child**. A root's entry is unused; it is set to 0.
 
-`SMALL` is the default matrix: cheap enough that every parity test can run the
-whole thing. `STRESS` holds the two shapes that only fail at scale (deep
-recursion, wide fan-out) and is opt-in.
+`SMALL` is the default matrix: cheap enough that every parity test and property
+test can run the whole thing.
+
+Scale is covered elsewhere, deliberately - running the igraph oracle over 100k
+nodes costs minutes for what the small matrix already establishes:
+
+- `synthetic_neuron` and `fragmented_neuron` build a realistic arbor, and a
+  realistic *shattered* arbor, at any size. The performance suite measures every
+  operation against both at 100k and 1M nodes (`tests/test_perf.py`).
+- `STRESS` holds the degenerate extremes - a 100k-deep chain and a 100k-wide star.
+  Their job is to break recursive traversals and per-node allocation, which is
+  checked where it belongs: in the Rust unit tests, against 200k-node versions.
 """
 
 from collections import namedtuple
@@ -23,7 +32,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-__all__ = ["Topology", "SMALL", "STRESS", "by_name", "load_swc"]
+__all__ = ["Topology", "SMALL", "STRESS", "load_swc"]
 
 Topology = namedtuple("Topology", ["name", "node_ids", "parent_ids", "weights"])
 
@@ -260,6 +269,48 @@ def synthetic_neuron(n, seed=42):
     return _topo(f"synthetic_{n}", parents, seed=seed)
 
 
+def fragmented_neuron(n=100_000, seed=43):
+    """One large arbor plus several thousand small fragments, at any size.
+
+    The shape a segmentation-derived skeleton actually arrives in, and the one most
+    likely to catch multi-root bugs: half the nodes form a single arbor, the rest are
+    scattered across thousands of 1-20 node pieces. Anything that assumes "the root"
+    rather than "a root", or that walks the root list once per component, degrades
+    here in a way no single-component fixture can show.
+
+    Deterministic at every size, so timings at `n` and `10n` stay comparable.
+    """
+    rng = np.random.default_rng(seed)
+    parents = np.full(n, -1, dtype=np.int64)
+
+    # The large component: a backbone with twigs, as `synthetic_neuron` builds it.
+    big = max(1, n // 2)
+    backbone = max(1, big // 3)
+    parents[1:backbone] = np.arange(backbone - 1)
+    if big > backbone:
+        parents[backbone:big] = rng.integers(0, np.arange(backbone, big))
+
+    # The rest: consecutive runs of 1-20 nodes, each its own component.
+    rest = n - big
+    if rest > 0:
+        sizes = rng.integers(1, 21, size=rest)
+        starts = big + np.concatenate([[0], np.cumsum(sizes)])
+        starts = starts[starts < n]
+
+        idx = np.arange(big, n)
+        frag_start = starts[np.searchsorted(starts, idx, side="right") - 1]
+        offset = idx - frag_start
+        # Offset 0 is the fragment's root; everything else attaches to a random
+        # *earlier* node of the same fragment, so no fragment can contain a cycle.
+        parents[big:] = np.where(
+            offset == 0,
+            -1,
+            frag_start + rng.integers(0, np.maximum(offset, 1)),
+        )
+
+    return _topo(f"fragmented_{n}", parents, seed=seed)
+
+
 #: The default matrix. Cheap enough to run in full for every parity test.
 SMALL = [
     single_node,
@@ -282,9 +333,21 @@ SMALL = [
 STRESS = [deep_chain, wide_star, real_swc_large]
 
 
-def by_name(name):
-    """Look up a builder by its topology name (used by the perf baseline)."""
-    for builder in SMALL + STRESS:
-        if builder().name == name:
-            return builder
-    raise KeyError(f"Unknown topology: {name!r}")
+def parent_map(node_ids, parent_ids):
+    """`{node_id: parent_id}`, with -1 for roots. Shared by both test suites."""
+    return dict(zip(node_ids.tolist(), parent_ids.tolist()))
+
+
+def ancestors(parents, node):
+    """`node` and every node above it, root last.
+
+    The "walk up the parent map" loop, written once - it was open-coded in six places
+    across the two test modules.
+    """
+    out = []
+    while node != -1:
+        out.append(node)
+        node = parents[node]
+    return out
+
+
