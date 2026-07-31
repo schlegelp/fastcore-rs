@@ -473,7 +473,9 @@ def test_unique_edges_matches_numpy_oracle():
     exp_edges, exp_idx, exp_inv = unique_edges_oracle(faces)
 
     edges, idx, inv = fastcore.unique_edges(faces, return_index=True, return_inverse=True)
-    assert edges.dtype == np.int64
+    # Pinned so the oracle comparison below cannot pass through a silent coercion;
+    # the dtype *rule* itself is covered once, in test_api.py.
+    assert edges.dtype == np.uint32
     np.testing.assert_array_equal(edges, exp_edges)
     np.testing.assert_array_equal(idx, exp_idx)
     np.testing.assert_array_equal(inv, exp_inv)
@@ -528,7 +530,7 @@ def test_unique_edges_empty():
     faces = np.zeros((0, 3), dtype=np.uint32)
     edges, idx, inv = fastcore.unique_edges(faces, return_index=True, return_inverse=True)
     assert edges.shape == (0, 2)
-    assert edges.dtype == np.int64
+    assert edges.dtype == np.uint32
     assert len(idx) == 0 and len(inv) == 0
 
     _, lengths = fastcore.unique_edges(faces, np.zeros((0, 3)))
@@ -615,7 +617,7 @@ def test_connected_components_graph_agrees_with_the_mesh_version():
     the partition."""
     faces, verts = grid_mesh(n=9)
     n = len(verts)
-    edges = fastcore.unique_edges(faces).astype(np.uint32)
+    edges = fastcore.unique_edges(faces)
 
     np.testing.assert_array_equal(
         fastcore.connected_components_graph(edges, n),
@@ -630,7 +632,7 @@ def test_level_set_components_matches_the_igraph_subgraph_loop():
 
     faces, verts = grid_mesh(n=15)
     n = len(verts)
-    edges = fastcore.unique_edges(faces).astype(np.uint32)
+    edges = fastcore.unique_edges(faces)
 
     # A genuine wavefront: hop distance from a corner, which on this grid is max(i, j).
     dist = fastcore.geodesic_matrix_mesh(faces, n_vertices=n, sources=[0])[0]
@@ -665,7 +667,7 @@ def test_level_set_components_excludes_negative_labels():
     # Feeding an unreachable distance row straight in must work: two disjoint
     # triangles, seeded only in the first.
     faces = np.array([[0, 1, 2], [3, 4, 5]], dtype=np.uint32)
-    mesh_edges = fastcore.unique_edges(faces).astype(np.uint32)
+    mesh_edges = fastcore.unique_edges(faces)
     dist = fastcore.geodesic_matrix_mesh(faces, n_vertices=6, sources=[0])[0]
     assert (dist[3:] == -1).all()
 
@@ -712,7 +714,7 @@ def test_contract_vertices_identity_is_unique_edges():
     mapping = np.arange(len(verts), dtype=np.uint32)
 
     np.testing.assert_array_equal(
-        fastcore.contract_vertices(edges.astype(np.uint32), mapping), edges
+        fastcore.contract_vertices(edges, mapping), edges
     )
 
 
@@ -864,7 +866,7 @@ def test_bridges_of_a_tree_and_of_a_ring():
     # A mesh is 2-edge-connected everywhere except its boundary spurs; a closed
     # grid interior has no bridges at all.
     faces, verts = grid_mesh(n=8)
-    edges = fastcore.unique_edges(faces).astype(np.uint32)
+    edges = fastcore.unique_edges(faces)
     assert not fastcore.bridges(edges, len(verts)).any()
 
 
@@ -930,14 +932,14 @@ def check_forest(edges, n_nodes, parents, order):
     assert int((parents < 0).sum()) == n_comp
 
 
-def test_spanning_forest_matches_networkx_bfs_tree():
+def test_parents_from_edges_matches_networkx_bfs_tree():
     """The oracle is the call this replaces: `nx.bfs_tree` per component, then
     reverse to child -> parent."""
     nx = pytest.importorskip("networkx")
 
     edges = random_graph(n_nodes=150, n_edges=400, seed=13)
     n = 150
-    parents, order = fastcore.spanning_forest(edges, n)
+    parents, order = fastcore.parents_from_edges(edges, n)
     check_forest(edges, n, parents, order)
 
     g = nx.Graph()
@@ -960,7 +962,7 @@ def test_spanning_forest_matches_networkx_bfs_tree():
             assert depth[ref_parents[v]] == depth[v] - 1
 
 
-def test_spanning_forest_matches_scipy_min_only():
+def test_parents_from_edges_matches_scipy_min_only():
     """scipy's `min_only` predecessor sweep is the vectorised route skeletor
     currently takes; the trees must have identical depths."""
     from scipy.sparse.csgraph import dijkstra
@@ -973,7 +975,7 @@ def test_spanning_forest_matches_scipy_min_only():
     comp = fastcore.connected_components_graph(edges, n)
     roots = np.unique(comp, return_index=True)[1].astype(np.uint32)
 
-    parents, order = fastcore.spanning_forest(edges, n, weights=w, roots=roots)
+    parents, order = fastcore.parents_from_edges(edges, n, weights=w, roots=roots)
     check_forest(edges, n, parents, order)
 
     dist_ref, pred_ref, _ = dijkstra(
@@ -988,35 +990,35 @@ def test_spanning_forest_matches_scipy_min_only():
     assert np.all(np.diff(dist_ref[order]) >= -1e-6)
 
 
-def test_spanning_forest_roots_and_fallback():
+def test_parents_from_edges_roots_and_fallback():
     edges = np.array([[0, 1], [1, 2], [5, 6]], dtype=np.uint32)
 
     # No roots: the lowest node index of each component.
-    parents, order = fastcore.spanning_forest(edges, 7)
+    parents, order = fastcore.parents_from_edges(edges, 7)
     np.testing.assert_array_equal(parents, [-1, 0, 1, -1, -1, -1, 5])
 
     # A root in one component; the other falls back.
-    parents, _ = fastcore.spanning_forest(edges, 7, roots=[2])
+    parents, _ = fastcore.parents_from_edges(edges, 7, roots=[2])
     np.testing.assert_array_equal(parents, [1, 2, -1, -1, -1, -1, 5])
 
     # Two roots inside one component split it — each node goes to the nearer.
     path = np.array([[0, 1], [1, 2], [2, 3]], dtype=np.uint32)
-    parents, _ = fastcore.spanning_forest(path, 4, roots=[0, 3])
+    parents, _ = fastcore.parents_from_edges(path, 4, roots=[0, 3])
     np.testing.assert_array_equal(parents, [-1, 0, 3, -1])
 
 
-def test_spanning_forest_breaks_cycles():
+def test_parents_from_edges_breaks_cycles():
     """Cyclic input still yields a forest: exactly n - n_components parent links."""
     edges = random_graph(n_nodes=100, n_edges=400, seed=16)
     n = 100
-    parents, order = fastcore.spanning_forest(edges, n)
+    parents, order = fastcore.parents_from_edges(edges, n)
     check_forest(edges, n, parents, order)
 
     n_comp = n_components(edges, n)
     assert int((parents >= 0).sum()) == n - n_comp
 
 
-def test_spanning_forest_of_a_shattered_graph_is_one_column():
+def test_parents_from_edges_of_a_shattered_graph_is_one_column():
     """The case a per-source predecessor call cannot serve: the equivalent
     `geodesic_predecessors` call would allocate one row per component."""
     n_small, size = 4000, 5
@@ -1025,18 +1027,18 @@ def test_spanning_forest_of_a_shattered_graph_is_one_column():
     edges = (blocks[:, :, None] + chain[None]).reshape(-1, 2).astype(np.uint32)
     n = n_small * size
 
-    parents, order = fastcore.spanning_forest(edges, n)
+    parents, order = fastcore.parents_from_edges(edges, n)
     check_forest(edges, n, parents, order)
     assert int((parents < 0).sum()) == n_small
     # The output is two n-long columns, not n_components x n.
     assert parents.shape == (n,) and order.shape == (n,)
 
 
-def test_spanning_forest_order_relabels_parents_before_children():
+def test_parents_from_edges_order_relabels_parents_before_children():
     """The SWC requirement, which is why `order` is returned at all."""
     edges = random_graph(n_nodes=300, n_edges=700, seed=17)
     n = 300
-    parents, order = fastcore.spanning_forest(edges, n)
+    parents, order = fastcore.parents_from_edges(edges, n)
 
     new_ids = np.empty(n, dtype=np.int64)
     new_ids[order] = np.arange(n)
@@ -1046,26 +1048,26 @@ def test_spanning_forest_order_relabels_parents_before_children():
     assert np.all(new_parents < new_ids)
 
 
-def test_spanning_forest_weights_change_the_tree():
+def test_parents_from_edges_weights_change_the_tree():
     edges = np.array([[0, 1], [1, 2], [0, 2]], dtype=np.uint32)
 
     # Unweighted takes the direct 0-2 edge...
-    parents, _ = fastcore.spanning_forest(edges, 3)
+    parents, _ = fastcore.parents_from_edges(edges, 3)
     np.testing.assert_array_equal(parents, [-1, 0, 0])
 
     # ...weighted routes around it when that is shorter.
-    parents, _ = fastcore.spanning_forest(edges, 3, weights=[1.0, 1.0, 5.0])
+    parents, _ = fastcore.parents_from_edges(edges, 3, weights=[1.0, 1.0, 5.0])
     np.testing.assert_array_equal(parents, [-1, 0, 1])
 
 
-def test_spanning_forest_validation():
+def test_parents_from_edges_validation():
     edges = np.array([[0, 1], [1, 2]], dtype=np.uint32)
     with pytest.raises(ValueError):
-        fastcore.spanning_forest(edges, 2)  # node 2 out of range
+        fastcore.parents_from_edges(edges, 2)  # node 2 out of range
     with pytest.raises(ValueError):
-        fastcore.spanning_forest(edges, 3, weights=[1.0])  # weights too short
+        fastcore.parents_from_edges(edges, 3, weights=[1.0])  # weights too short
     with pytest.raises(ValueError):
-        fastcore.spanning_forest(edges, 3, roots=[9])  # root out of range
+        fastcore.parents_from_edges(edges, 3, roots=[9])  # root out of range
 
 
 # -----------------------------------------------------------------------------

@@ -36,6 +36,40 @@ parent_ids = np.array([-1, 1, 2, 3, 1])  # -1 marks the root
 dists = fastcore.geodesic_matrix(node_ids, parent_ids)
 ```
 
+### Integer return dtypes
+
+The [`mesh`](mesh.md) functions and [`GeodesicGraph`](mesh.md#navis_fastcore.GeodesicGraph)
+work in *index space* — nodes are `0..n_nodes`, because you handed them an edge
+list rather than a set of IDs. Everything they return is one of four things, and
+the dtype tells you which:
+
+| dtype | What it holds | Examples |
+|---|---|---|
+| `uint32` | A **node id** — an index into the graph. | `connected_components_graph`, `mesh_connected_components`, `unique_edges`'s `edges`, `contract_vertices`, `parents_from_edges`'s `order`, `geodesic_path`, `GeodesicGraph.components` / `.parent_nodes` |
+| `int32` | A node id that needs a **`-1` sentinel** for "none". | `parents_from_edges`'s `parents`, `geodesic_predecessors`, `geodesic_nearest_mesh` |
+| `int32` | A dense **label** — a cluster or level-set id, not a node id. Contiguous from 0, negative where a node is excluded. | `geodesic_clusters`, `level_set_components`, `GeodesicGraph.clusters` |
+| `int64` | A **position in an array you passed in** — not a node id. | `minimum_spanning_tree` (rows of `edges`), `geodesic_mst_*` (positions in `nodes`), `unique_edges`'s `index` / `inverse` |
+
+The distinction that matters is the last one: `int64` means the values index
+*your* array, so `nodes[out]` is the node-id form and `out` alone is not.
+`uint32` caps a graph at 4.29 billion nodes, which is also what the core stores
+internally — a wider node id would double the memory every search touches. If you
+use a `uint32` result to index a numpy array repeatedly, convert it once with
+`.astype(np.intp, copy=False)`: numpy widens `uint32` index arrays on every use.
+
+Two families sit outside this rule.
+
+**The tree functions** ([`dag`](geodesic.md), [`topo`](healing.md)) work in *ID
+space*: you give them a `node_ids` array, so what they hand back are values from
+it, in **your** dtype — `int64` in, `int64` out; `uint64` in, `uint64` out. Where
+a `-1` sentinel is needed and your dtype is unsigned, the result is promoted to
+`int64` so the sentinel fits, rather than wrapping to 18446744073709551615.
+
+**Counts** are `int64` regardless
+([`betweenness`](morphology.md#navis_fastcore.betweenness),
+[`descendant_counts`](morphology.md#navis_fastcore.descendant_counts)): they grow
+as the square of the component size and overflow 32 bits on a 100k-node skeleton.
+
 ## Available functions
 
 Operations on [rooted trees](../concepts/trees.md):
@@ -75,7 +109,7 @@ Meshes:
 - [`geodesic_matrix_mesh`](mesh.md#navis_fastcore.geodesic_matrix_mesh): parallel geodesic distances across a mesh
 - [`level_set_components`](mesh.md#navis_fastcore.level_set_components): components of every level set at once (wavefront rings)
 - [`contract_vertices`](mesh.md#navis_fastcore.contract_vertices) / [`minimum_spanning_tree`](mesh.md#navis_fastcore.minimum_spanning_tree): collapse a graph onto new nodes, then span it
-- [`spanning_forest`](mesh.md#navis_fastcore.spanning_forest): orient an edge list into a rooted forest — breaks cycles, and hands back the order that makes parents precede children
+- [`parents_from_edges`](mesh.md#navis_fastcore.parents_from_edges): orient an edge list into a rooted forest — breaks cycles, and hands back the order that makes parents precede children
 - [`bridges`](mesh.md#navis_fastcore.bridges): which edges may not be dropped without disconnecting the graph
 - [`geodesic_mst_mesh`](mesh.md#navis_fastcore.geodesic_mst_mesh) / [`geodesic_mst_graph`](mesh.md#navis_fastcore.geodesic_mst_graph): span a *subset* of nodes by geodesic distance, without building the `k x k` matrix
 - [`geodesic_path`](mesh.md#navis_fastcore.geodesic_path) / [`geodesic_predecessors`](mesh.md#navis_fastcore.geodesic_predecessors): the shortest *route*, not just its length

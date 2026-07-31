@@ -107,7 +107,7 @@ def as_graph(topo):
     `cases` above works in parent arrays; the primitives below work in edge lists,
     so they need the skeleton transposed into one. Chords are added on purpose: over
     a plain tree `bridges` would return all-true without ever walking a back edge,
-    and `spanning_forest` would have no cycle to break — so a tree would time the
+    and `parents_from_edges` would have no cycle to break — so a tree would time the
     two functions on the paths they are *not* being guarded for.
     """
     if topo.name in _GRAPH_CACHE:
@@ -147,7 +147,7 @@ def graph_cases(topo):
     # that the k x k route it replaces would be a million-cell matrix.
     span = np.linspace(0, n - 1, 1000, dtype=np.uint32)
     return {
-        "spanning_forest": lambda: fastcore.spanning_forest(edges, n),
+        "parents_from_edges": lambda: fastcore.parents_from_edges(edges, n),
         "bridges": lambda: fastcore.bridges(edges, n),
         "geodesic_mst_graph": lambda: fastcore.geodesic_mst_graph(
             edges, n, span, weights=weights
@@ -415,8 +415,8 @@ def test_report_graph_primitives_vs_igraph(topos, capsys):
             theirs = {
                 "bridges": lambda g=g: g.bridges(),
                 # One BFS per component, which is what any graph library forces —
-                # and the reason `spanning_forest` sweeps them into one column.
-                "spanning_forest": lambda g=g: [
+                # and the reason `parents_from_edges` sweeps them into one column.
+                "parents_from_edges": lambda g=g: [
                     g.bfs(int(c[0])) for c in g.connected_components()
                 ],
             }

@@ -118,7 +118,7 @@ healed = heal_skeleton(parents, s$d$X, s$d$Y, s$d$Z, method="ALL",
 - `level_set_components`: the components of *every* level set in one pass (wavefront rings)
 - `contract_vertices`: collapse nodes onto new ids and simplify the edge list
 - `minimum_spanning_tree`: minimum (or maximum) spanning forest
-- `spanning_forest`: orient an edge list into a rooted forest — breaks cycles, and
+- `parents_from_edges`: orient an edge list into a rooted forest — breaks cycles, and
   hands back the order that makes parents precede their children
 - `bridges`: which edges may not be dropped without disconnecting the graph
 - `geodesic_mst_mesh` / `geodesic_mst_graph`: span a *subset* of nodes by geodesic

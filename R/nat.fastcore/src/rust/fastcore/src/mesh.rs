@@ -109,9 +109,10 @@ fn edge_key(u: u32, v: u32) -> u64 {
 ///
 /// Returns
 /// -------
-/// `(edges, index, inverse, lengths)` where `edges` is a `(n_unique, 2)` i64
+/// `(edges, index, inverse, lengths)` where `edges` is a `(n_unique, 2)` u32
 /// array with rows `[min, max]` sorted ascending by `(max, min)` — byte-for-byte
-/// the order, dtype and first-occurrence semantics of trimesh / `np.unique`.
+/// the order and first-occurrence semantics of trimesh / `np.unique`. `index` and
+/// `inverse` are i64: they are positions in the `3F` edge list, not node ids.
 #[allow(clippy::type_complexity)]
 pub fn unique_edges(
     faces: ArrayView2<u32>,
@@ -120,7 +121,7 @@ pub fn unique_edges(
     return_inverse: bool,
     threads: Option<usize>,
 ) -> (
-    Array2<i64>,
+    Array2<u32>,
     Option<Array1<i64>>,
     Option<Array1<i64>>,
     Option<Array1<f64>>,
@@ -147,12 +148,12 @@ pub fn unique_edges(
 
             let n_unique =
                 keys.windows(2).filter(|w| w[0] != w[1]).count() + usize::from(!keys.is_empty());
-            let mut edges: Vec<i64> = Vec::with_capacity(n_unique * 2);
+            let mut edges: Vec<u32> = Vec::with_capacity(n_unique * 2);
             let mut prev = None;
             for &k in &keys {
                 if prev != Some(k) {
-                    edges.push((k & 0xFFFF_FFFF) as i64);
-                    edges.push((k >> 32) as i64);
+                    edges.push(k as u32);
+                    edges.push((k >> 32) as u32);
                     prev = Some(k);
                 }
             }
@@ -175,7 +176,7 @@ pub fn unique_edges(
                 });
             packed.par_sort_unstable();
 
-            let mut edges: Vec<i64> = Vec::new();
+            let mut edges: Vec<u32> = Vec::new();
             let mut index: Vec<i64> = Vec::new();
             let mut inverse: Vec<i64> = if return_inverse { vec![0; n_edges] } else { Vec::new() };
             let mut prev: Option<u64> = None;
@@ -185,8 +186,8 @@ pub fn unique_edges(
                 let orig = p as u64;
                 if prev != Some(key) {
                     slot += 1;
-                    edges.push((key & 0xFFFF_FFFF) as i64);
-                    edges.push((key >> 32) as i64);
+                    edges.push(key as u32);
+                    edges.push((key >> 32) as u32);
                     if return_index {
                         index.push(orig as i64);
                     }
@@ -217,7 +218,7 @@ pub fn unique_edges(
 /// Euclidean length of each `[a, b]` edge in a flat pair list.
 ///
 /// Runs on the ambient rayon pool — callers wrap it in `with_pool`.
-fn edge_lengths(edges: &[i64], coords: ArrayView2<f64>) -> Array1<f64> {
+fn edge_lengths(edges: &[u32], coords: ArrayView2<f64>) -> Array1<f64> {
     let storage = coords.as_standard_layout();
     let c: &[f64] = storage.as_slice().expect("standard layout is contiguous");
     let mut out = vec![0f64; edges.len() / 2];
@@ -394,13 +395,13 @@ pub fn level_set_components(
 ///
 /// Returns
 /// -------
-/// An `(n_unique, 2)` i64 array of the surviving edges as `[min, max]` rows, sorted ascending
+/// An `(n_unique, 2)` u32 array of the surviving edges as `[min, max]` rows, sorted ascending
 /// by `(max, min)` — the same ordering [`unique_edges`] produces.
 pub fn contract_vertices(
     edges: ArrayView2<u32>,
     mapping: ArrayView1<u32>,
     threads: Option<usize>,
-) -> Array2<i64> {
+) -> Array2<u32> {
     assert_eq!(edges.ncols(), 2, "`edges` must have shape (E, 2)");
     let n_old = mapping.len();
     for e in edges.rows() {
@@ -430,12 +431,12 @@ pub fn contract_vertices(
             .collect();
         keys.par_sort_unstable();
 
-        let mut out: Vec<i64> = Vec::new();
+        let mut out: Vec<u32> = Vec::new();
         let mut prev = None;
         for &k in &keys {
             if prev != Some(k) {
-                out.push((k & 0xFFFF_FFFF) as i64);
-                out.push((k >> 32) as i64);
+                out.push(k as u32);
+                out.push((k >> 32) as u32);
                 prev = Some(k);
             }
         }
@@ -1425,19 +1426,13 @@ impl Visitor for Collect<'_> {
 ///
 /// For callers that want the order a search discovered nodes in but have no use for the
 /// distances — which the search has already left in `Scratch::dist` anyway, so `Collect` would
-/// only make them allocate a second buffer holding a copy.
-///
-/// Generic in the element type so a caller wanting `i64` node indices — the width this crate
-/// hands back to numpy — gets them directly rather than through a widening pass over the
-/// finished array.
-struct CollectNodes<'a, T> {
-    nodes: &'a mut Vec<T>,
-}
-
-impl<T: From<u32>> Visitor for CollectNodes<'_, T> {
+/// only make them allocate a second buffer holding a copy. Implemented on the vector itself
+/// rather than a wrapper struct so callers pass `&mut order` directly, without a block whose
+/// only job is to end the wrapper's borrow before the vector is read back.
+impl Visitor for Vec<u32> {
     #[inline]
     fn settle(&mut self, node: u32, _d: f32) -> Visit {
-        self.nodes.push(T::from(node));
+        self.push(node);
         Visit::Expand
     }
 }
@@ -2143,7 +2138,7 @@ fn geodesic_clusters_impl(
 // Spanning forest
 // ---------------------------------------------------------------------------
 
-/// Settle one round of [`spanning_forest`] and fold what it reached into the running answer.
+/// Settle one round of [`parents_from_edges`] and fold what it reached into the running answer.
 ///
 /// Split out because the two rounds — the caller's roots, then whatever they missed — differ
 /// only in their seed set, and the book-keeping that turns a settled node into a parent entry
@@ -2153,13 +2148,10 @@ fn spanning_sweep(
     seeds: &[u32],
     scratch: &mut Scratch,
     parents: &mut [i32],
-    order: &mut Vec<i64>,
+    order: &mut Vec<u32>,
 ) {
     let start = order.len();
-    {
-        let mut vis = CollectNodes { nodes: order };
-        search_from_many::<true, _>(adj, seeds, f32::INFINITY, &mut vis, scratch);
-    }
+    search_from_many::<true, _>(adj, seeds, f32::INFINITY, order, scratch);
     for &v in &order[start..] {
         let p = scratch.pred[v as usize];
         parents[v as usize] = if p == NO_PRED { -1 } else { p as i32 };
@@ -2198,7 +2190,7 @@ fn spanning_sweep(
 /// Returns
 /// -------
 /// - `parents`: `(n_nodes, )` i32, the parent of each node, `-1` for a root.
-/// - `order`:   `(n_nodes, )` i64, every node in the order it settled. A node always settles
+/// - `order`:   `(n_nodes, )` u32, every node in the order it settled. A node always settles
 ///   after its parent, so this is a topological order — relabel by it and parents are
 ///   guaranteed to have lower ids than their children, which is exactly the SWC requirement.
 ///   It comes free: the search already visits nodes in this order, and computing it afterwards
@@ -2206,25 +2198,25 @@ fn spanning_sweep(
 ///
 /// Among equal-length routes the parent is whichever settled first, which is deterministic but
 /// otherwise arbitrary — as it is for any spanning tree of a graph with more than one.
-pub fn spanning_forest(
+pub fn parents_from_edges(
     edges: ArrayView2<u32>,
     n_nodes: usize,
     weights: Option<&ArrayView1<f32>>,
     roots: Option<&[u32]>,
-) -> (Array1<i32>, Array1<i64>) {
+) -> (Array1<i32>, Array1<u32>) {
     let adj = Adjacency::from_edges(edges, n_nodes, weights, false);
-    spanning_forest_impl(&adj, roots)
+    parents_from_edges_impl(&adj, roots)
 }
 
-/// `spanning_forest` over a prebuilt adjacency.
-fn spanning_forest_impl(adj: &Adjacency, roots: Option<&[u32]>) -> (Array1<i32>, Array1<i64>) {
+/// `parents_from_edges` over a prebuilt adjacency.
+fn parents_from_edges_impl(adj: &Adjacency, roots: Option<&[u32]>) -> (Array1<i32>, Array1<u32>) {
     let n_nodes = adj.n_nodes();
     // Defaulting to the empty slice rather than to every node: an unrooted component is not an
     // error here, it just falls to the loop below.
     let seeds = resolve(roots, &[], n_nodes, "roots");
 
     let mut parents: Vec<i32> = vec![-1; n_nodes];
-    let mut order: Vec<i64> = Vec::with_capacity(n_nodes);
+    let mut order: Vec<u32> = Vec::with_capacity(n_nodes);
     if n_nodes == 0 {
         return (Array1::from_vec(parents), Array1::from_vec(order));
     }
@@ -2326,12 +2318,7 @@ fn geodesic_mst_impl(
     let mut scratch = Scratch::new(n_nodes);
     scratch.enable_sources(n_nodes);
     let mut settled: Vec<u32> = Vec::new();
-    {
-        let mut vis = CollectNodes {
-            nodes: &mut settled,
-        };
-        search_from_many::<true, _>(adj, nodes, limit, &mut vis, &mut scratch);
-    }
+    search_from_many::<true, _>(adj, nodes, limit, &mut settled, &mut scratch);
     // Fills `scratch.src`, which is what the candidate loop reads; the returned copy is the
     // form `ball` wants and is of no use here.
     scratch.resolve_sources_into(&settled);
@@ -3840,7 +3827,7 @@ mod tests {
         let (edges, index, inverse, lengths) = unique_edges(faces.view(), None, true, true, None);
 
         // Rows [min, max], ascending by (max, min) — trimesh's exact order.
-        assert_eq!(edges, array![[0i64, 1], [0, 2], [1, 2], [1, 3], [2, 3]]);
+        assert_eq!(edges, array![[0u32, 1], [0, 2], [1, 2], [1, 3], [2, 3]]);
         // First occurrence of each unique edge in the 3F list.
         assert_eq!(index.unwrap().to_vec(), vec![0i64, 2, 1, 5, 4]);
         // Slot of every 3F edge in the unique list; reshape (F, 3) gives
@@ -3883,7 +3870,7 @@ mod tests {
         // trimesh does NOT filter self-loops from degenerate faces.
         let faces = array![[0u32, 0, 1]];
         let (edges, _, _, _) = unique_edges(faces.view(), None, false, false, None);
-        assert_eq!(edges, array![[0i64, 0], [0, 1]]);
+        assert_eq!(edges, array![[0u32, 0], [0, 1]]);
     }
 
     #[test]
@@ -3983,7 +3970,7 @@ mod tests {
 
         // 0-1 and 2-3 became self-loops and vanished; the remaining three all became 0-1 and
         // collapsed to one edge.
-        assert_eq!(out, array![[0i64, 1]]);
+        assert_eq!(out, array![[0u32, 1]]);
     }
 
     #[test]
@@ -4167,7 +4154,7 @@ mod tests {
 
     /// Check the two invariants every spanning forest must have, whatever the tie-breaks:
     /// the parent links are real edges of the input, and `order` lists parents before children.
-    fn check_forest(edges: ArrayView2<u32>, n_nodes: usize, parents: &[i32], order: &[i64]) {
+    fn check_forest(edges: ArrayView2<u32>, n_nodes: usize, parents: &[i32], order: &[u32]) {
         let present: std::collections::HashSet<(u32, u32)> = edges
             .rows()
             .into_iter()
@@ -4206,21 +4193,21 @@ mod tests {
     }
 
     #[test]
-    fn spanning_forest_orients_a_path_away_from_its_lowest_node() {
+    fn parents_from_edges_orients_a_path_away_from_its_lowest_node() {
         // Edges given "backwards" on purpose: orientation must come from the search, not from
         // the order the endpoints happen to be written in.
         let edges = array![[1u32, 0], [2, 1], [3, 2]];
-        let (parents, order) = spanning_forest(edges.view(), 4, None, None);
+        let (parents, order) = parents_from_edges(edges.view(), 4, None, None);
         assert_eq!(parents.to_vec(), vec![-1, 0, 1, 2]);
-        assert_eq!(order.to_vec(), vec![0i64, 1, 2, 3]);
+        assert_eq!(order.to_vec(), vec![0u32, 1, 2, 3]);
         check_forest(edges.view(), 4, parents.as_slice().unwrap(), order.as_slice().unwrap());
     }
 
     #[test]
-    fn spanning_forest_breaks_cycles() {
+    fn parents_from_edges_breaks_cycles() {
         // A 4-ring. Any spanning tree drops exactly one edge; BFS from 0 drops the far one.
         let edges = array![[0u32, 1], [1, 2], [2, 3], [3, 0]];
-        let (parents, order) = spanning_forest(edges.view(), 4, None, None);
+        let (parents, order) = parents_from_edges(edges.view(), 4, None, None);
         check_forest(edges.view(), 4, parents.as_slice().unwrap(), order.as_slice().unwrap());
         assert_eq!(parents[0], -1);
         // 1 and 3 are one hop from the root, 2 is two hops via either.
@@ -4229,14 +4216,14 @@ mod tests {
     }
 
     #[test]
-    fn spanning_forest_roots_each_component_at_its_lowest_node() {
+    fn parents_from_edges_roots_each_component_at_its_lowest_node() {
         // Two paths and an isolated node — the same representatives
         // `connected_components_graph` labels components by.
         let edges = array![[2u32, 1], [1, 0], [5, 4]];
-        let (parents, order) = spanning_forest(edges.view(), 7, None, None);
+        let (parents, order) = parents_from_edges(edges.view(), 7, None, None);
         assert_eq!(parents.to_vec(), vec![-1, 0, 1, -1, -1, 4, -1]);
         // Components are swept in ascending order of their lowest node.
-        assert_eq!(order.to_vec(), vec![0i64, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(order.to_vec(), vec![0u32, 1, 2, 3, 4, 5, 6]);
         check_forest(edges.view(), 7, parents.as_slice().unwrap(), order.as_slice().unwrap());
     }
 
@@ -4244,19 +4231,19 @@ mod tests {
     fn given_roots_win_and_the_rest_fall_back() {
         // Path 0-1-2-3 rooted at 3: every link reverses.
         let edges = array![[0u32, 1], [1, 2], [2, 3]];
-        let (parents, order) = spanning_forest(edges.view(), 4, None, Some(&[3]));
+        let (parents, order) = parents_from_edges(edges.view(), 4, None, Some(&[3]));
         assert_eq!(parents.to_vec(), vec![1, 2, 3, -1]);
-        assert_eq!(order.to_vec(), vec![3i64, 2, 1, 0]);
+        assert_eq!(order.to_vec(), vec![3u32, 2, 1, 0]);
 
         // A root in one component leaves the other to the fallback rule.
         let edges = array![[0u32, 1], [1, 2], [5, 6]];
-        let (parents, order) = spanning_forest(edges.view(), 7, None, Some(&[2]));
+        let (parents, order) = parents_from_edges(edges.view(), 7, None, Some(&[2]));
         assert_eq!(parents.to_vec(), vec![1, 2, -1, -1, -1, -1, 5]);
         check_forest(edges.view(), 7, parents.as_slice().unwrap(), order.as_slice().unwrap());
 
         // Two roots inside one component split it — each node goes to the nearer.
         let edges = array![[0u32, 1], [1, 2], [2, 3]];
-        let (parents, _) = spanning_forest(edges.view(), 4, None, Some(&[0, 3]));
+        let (parents, _) = parents_from_edges(edges.view(), 4, None, Some(&[0, 3]));
         assert_eq!(parents.to_vec(), vec![-1, 0, 3, -1]);
     }
 
@@ -4265,17 +4252,17 @@ mod tests {
         // 0-2 direct but expensive; 0-1-2 is two cheap hops. Unweighted picks the direct edge,
         // weighted routes through 1.
         let edges = array![[0u32, 1], [1, 2], [0, 2]];
-        let (hops, _) = spanning_forest(edges.view(), 3, None, None);
+        let (hops, _) = parents_from_edges(edges.view(), 3, None, None);
         assert_eq!(hops.to_vec(), vec![-1, 0, 0]);
 
         let w = array![1.0f32, 1.0, 5.0];
-        let (weighted, order) = spanning_forest(edges.view(), 3, Some(&w.view()), None);
+        let (weighted, order) = parents_from_edges(edges.view(), 3, Some(&w.view()), None);
         assert_eq!(weighted.to_vec(), vec![-1, 0, 1]);
-        assert_eq!(order.to_vec(), vec![0i64, 1, 2]);
+        assert_eq!(order.to_vec(), vec![0u32, 1, 2]);
     }
 
     #[test]
-    fn spanning_forest_of_a_shattered_graph_is_one_sweep() {
+    fn parents_from_edges_of_a_shattered_graph_is_one_sweep() {
         // The case a per-source predecessor call cannot serve: thousands of components. Nothing
         // here is timed — the point is that the output is a single n_nodes-long column and the
         // invariants hold across every one of them.
@@ -4287,7 +4274,7 @@ mod tests {
         }
         let n_nodes = n_small * 4;
         let edges = Array2::from_shape_vec((flat.len() / 2, 2), flat).unwrap();
-        let (parents, order) = spanning_forest(edges.view(), n_nodes, None, None);
+        let (parents, order) = parents_from_edges(edges.view(), n_nodes, None, None);
         check_forest(
             edges.view(),
             n_nodes,
@@ -4298,7 +4285,7 @@ mod tests {
     }
 
     #[test]
-    fn spanning_forest_matches_its_invariants_on_random_graphs() {
+    fn parents_from_edges_matches_its_invariants_on_random_graphs() {
         let mut state = 0x1234_5678u64;
         for case in 0..60 {
             let n_nodes = 5 + case % 20;
@@ -4307,7 +4294,7 @@ mod tests {
             let w: Array1<f32> = (0..n_edges).map(|_| rng(&mut state) as f32).collect();
 
             for weights in [None, Some(&w.view())] {
-                let (parents, order) = spanning_forest(edges.view(), n_nodes, weights, None);
+                let (parents, order) = parents_from_edges(edges.view(), n_nodes, weights, None);
                 check_forest(
                     edges.view(),
                     n_nodes,

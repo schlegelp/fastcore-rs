@@ -109,7 +109,7 @@ surface and how they spell it. `—` means that surface doesn't expose it direct
 | Components of every level set at once | `mesh::level_set_components` | `level_set_components` | `level_set_components` |
 | Contract nodes and simplify the edge list | `mesh::contract_vertices` | `contract_vertices` | `contract_vertices` |
 | Minimum / maximum spanning forest | `mesh::minimum_spanning_tree` | `minimum_spanning_tree` | `minimum_spanning_tree` |
-| Orient an edge list into a rooted spanning forest | `mesh::spanning_forest` | `spanning_forest` | `spanning_forest` |
+| Orient an edge list into a rooted spanning forest | `mesh::parents_from_edges` | `parents_from_edges` | `parents_from_edges` |
 | Which edges are bridges (may not be dropped) | `mesh::bridges` | `bridges` | `bridges` |
 | Spanning tree over a *subset*, by geodesic distance, without the `k x k` matrix | `mesh::geodesic_mst_mesh`, `mesh::geodesic_mst_graph` | `geodesic_mst_mesh`, `geodesic_mst_graph` | `geodesic_mst_mesh`, `geodesic_mst_graph` |
 | Shortest paths with the route, not just the length | `mesh::geodesic_predecessors_graph`, `mesh::geodesic_path_graph` | `geodesic_predecessors`, `geodesic_path` | `geodesic_predecessors`, `geodesic_path` |

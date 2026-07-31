@@ -64,31 +64,31 @@ test_that("bridges are exactly the edges holding a component together", {
   expect_true(bridges(.edges(0, 1), 2))
 })
 
-test_that("spanning_forest orients an edge list and breaks cycles", {
+test_that("parents_from_edges orients an edge list and breaks cycles", {
   edges <- .ring_with_tail()
 
-  sf <- spanning_forest(edges, 5)
+  forest <- parents_from_edges(edges, 5)
   # One root, at the lowest node index.
-  expect_equal(sum(sf$parents < 0), 1L)
-  expect_equal(which(sf$parents < 0) - 1L, 0L)
+  expect_equal(sum(forest$parents < 0), 1L)
+  expect_equal(which(forest$parents < 0) - 1L, 0L)
   # A spanning tree of one component has n - 1 edges, so the ring lost one.
-  expect_equal(sum(sf$parents >= 0), 4L)
+  expect_equal(sum(forest$parents >= 0), 4L)
 
   # `order` is topological: relabelling by it gives every node a higher id than
   # its parent, which is the SWC requirement.
-  new_ids <- integer(length(sf$order))
-  new_ids[sf$order + 1L] <- seq_along(sf$order) - 1L
-  has_parent <- sf$parents >= 0
-  expect_true(all(new_ids[has_parent] > new_ids[sf$parents[has_parent] + 1L]))
+  new_ids <- integer(length(forest$order))
+  new_ids[forest$order + 1L] <- seq_along(forest$order) - 1L
+  has_parent <- forest$parents >= 0
+  expect_true(all(new_ids[has_parent] > new_ids[forest$parents[has_parent] + 1L]))
 
   # Rooting elsewhere moves the root and nothing else about the shape.
-  rooted <- spanning_forest(edges, 5, roots = 4L)
+  rooted <- parents_from_edges(edges, 5, roots = 4L)
   expect_equal(which(rooted$parents < 0) - 1L, 4L)
   expect_equal(sum(rooted$parents >= 0), 4L)
 
   # One root per component, always.
   two <- .edges(0, 1, 3, 4)
-  expect_equal(spanning_forest(two, 6)$parents, c(-1L, 0L, -1L, -1L, 3L, -1L))
+  expect_equal(parents_from_edges(two, 6)$parents, c(-1L, 0L, -1L, -1L, 3L, -1L))
 })
 
 test_that("minimum_spanning_tree returns row indices, and maximize inverts it", {
@@ -234,7 +234,7 @@ test_that("optional arguments default to their NULL behaviour", {
   edges <- .ring_with_tail()
 
   # Omitting an argument must equal passing NULL for it explicitly.
-  expect_equal(spanning_forest(edges, 5), spanning_forest(edges, 5, NULL, NULL))
+  expect_equal(parents_from_edges(edges, 5), parents_from_edges(edges, 5, NULL, NULL))
   expect_equal(
     minimum_spanning_tree(edges, 5),
     minimum_spanning_tree(edges, 5, NULL, FALSE, NULL)
@@ -258,7 +258,7 @@ test_that("caller mistakes surface as R errors, not as silent nonsense", {
 
   # A node index past the end of the graph.
   expect_error(bridges(edges, 3))
-  expect_error(spanning_forest(edges, 3))
+  expect_error(parents_from_edges(edges, 3))
 
   # A weights vector that does not match the edge count.
   expect_error(minimum_spanning_tree(edges, 5, c(1, 2)))

@@ -9,7 +9,7 @@ __all__ = [
     "contract_vertices",
     "minimum_spanning_tree",
     "bridges",
-    "spanning_forest",
+    "parents_from_edges",
     "geodesic_mst_mesh",
     "geodesic_mst_graph",
     "unique_edges",
@@ -79,11 +79,12 @@ def unique_edges(
     """Unique undirected edges of a triangle mesh.
 
     A fast, multi-threaded equivalent of ``trimesh.Trimesh.edges_unique``:
-    output order, dtype and first-occurrence semantics are identical, so the
-    results can be used interchangeably. Each face ``(a, b, c)`` contributes
-    the edges ``(a, b), (b, c), (c, a)`` to a conceptual ``3 * F`` edge list;
-    edges are normalised to ``[min, max]`` and deduplicated. Self-loop edges
-    from degenerate faces are kept, as in trimesh.
+    output order and first-occurrence semantics are identical, so the results
+    can be used interchangeably. The one difference is the dtype: edges come
+    back as ``uint32``, not trimesh's ``int64``, because they are node ids.
+    Each face ``(a, b, c)`` contributes the edges ``(a, b), (b, c), (c, a)`` to
+    a conceptual ``3 * F`` edge list; edges are normalised to ``[min, max]`` and
+    deduplicated. Self-loop edges from degenerate faces are kept, as in trimesh.
 
     Parameters
     ----------
@@ -107,7 +108,7 @@ def unique_edges(
 
     Returns
     -------
-    edges :   (n_unique, 2) int64 array
+    edges :   (n_unique, 2) uint32 array
               Unique edges as ``[min, max]`` rows, sorted ascending with the
               *larger* vertex index as the primary key — the same (not
               lexicographic!) order trimesh produces.
@@ -130,7 +131,7 @@ def unique_edges(
            [0, 2],
            [1, 2],
            [1, 3],
-           [2, 3]])
+           [2, 3]], dtype=uint32)
     >>> edges, inv = fastcore.unique_edges(faces, return_inverse=True)
     >>> inv.reshape(-1, 3)  # per-face edge ids (faces_unique_edges)
     array([[0, 2, 1],
@@ -339,7 +340,7 @@ def contract_vertices(edges, mapping, threads=None):
 
     Returns
     -------
-    edges :   (n_unique, 2) int64 array
+    edges :   (n_unique, 2) uint32 array
               The surviving edges as ``[min, max]`` rows, sorted ascending by
               ``(max, min)`` — the same ordering
               :func:`~navis_fastcore.unique_edges` produces.
@@ -354,7 +355,7 @@ def contract_vertices(edges, mapping, threads=None):
     >>> import numpy as np
     >>> edges = np.array([[0, 1], [1, 2], [2, 3], [3, 0], [0, 2]], dtype=np.uint32)
     >>> fastcore.contract_vertices(edges, [0, 0, 1, 1])
-    array([[0, 1]])
+    array([[0, 1]], dtype=uint32)
 
     """
     edges = np.asarray(edges, dtype=np.uint32, order="C")
@@ -515,7 +516,7 @@ def bridges(edges, n_nodes):
     return _fastcore.bridges(edges, n_nodes)
 
 
-def spanning_forest(edges, n_nodes, weights=None, roots=None):
+def parents_from_edges(edges, n_nodes, weights=None, roots=None):
     """Orient a graph into a rooted spanning forest — one parent per node.
 
     The missing half of "I have an edge list and I want a tree".
@@ -559,7 +560,7 @@ def spanning_forest(edges, n_nodes, weights=None, roots=None):
     -------
     parents : (n_nodes, ) int32 array
               Parent of each node, ``-1`` for a root.
-    order :   (n_nodes, ) int64 array
+    order :   (n_nodes, ) uint32 array
               Every node in the order it settled. A node always settles after its
               parent, so this is a topological order — relabel by it and parents are
               guaranteed to have lower ids than their children, which is exactly the
@@ -581,22 +582,22 @@ def spanning_forest(edges, n_nodes, weights=None, roots=None):
     >>> import navis_fastcore as fastcore
     >>> import numpy as np
     >>> edges = np.array([[1, 0], [2, 1], [3, 2]], dtype=np.uint32)
-    >>> parents, order = fastcore.spanning_forest(edges, 4)
+    >>> parents, order = fastcore.parents_from_edges(edges, 4)
     >>> parents
     array([-1,  0,  1,  2], dtype=int32)
 
     Root it at the far end instead and every link reverses:
 
-    >>> parents, order = fastcore.spanning_forest(edges, 4, roots=[3])
+    >>> parents, order = fastcore.parents_from_edges(edges, 4, roots=[3])
     >>> parents
     array([ 1,  2,  3, -1], dtype=int32)
     >>> order
-    array([3, 2, 1, 0])
+    array([3, 2, 1, 0], dtype=uint32)
 
     Cycles are broken; two components each get their own root:
 
     >>> edges = np.array([[0, 1], [1, 2], [2, 0], [4, 5]], dtype=np.uint32)
-    >>> parents, order = fastcore.spanning_forest(edges, 6)
+    >>> parents, order = fastcore.parents_from_edges(edges, 6)
     >>> parents
     array([-1,  0,  0, -1, -1,  4], dtype=int32)
 
@@ -610,7 +611,7 @@ def spanning_forest(edges, n_nodes, weights=None, roots=None):
 
     """
     edges, n_nodes = _prep_edges(edges, n_nodes)
-    return _fastcore.spanning_forest(
+    return _fastcore.parents_from_edges(
         edges,
         n_nodes,
         _prep_weights(weights, edges),
@@ -839,9 +840,27 @@ def _prep_indices(x, n_nodes, what, unique=False):
         raise ValueError(
             f"`{what}` contains vertex {x.max()} but there are only {n_nodes} nodes"
         )
-    if unique and len(np.unique(x)) != len(x):
+    if unique and len(x) and _has_duplicates(x, n_nodes):
         raise ValueError(f"`{what}` must not contain duplicates")
     return x
+
+
+def _has_duplicates(x, n_nodes):
+    """Does this range-checked index array repeat itself?
+
+    Two algorithms, because the callers sit on opposite sides of the crossover.
+    Sorting costs `O(k log k)` and touches only the subset; a bitmap over the node
+    space costs `O(n_nodes + k)` and touches all of it. `geodesic_mst_*` spans a
+    few hundred nodes of a large graph, where the sort never leaves cache;
+    `GeodesicGraph.subset` routinely keeps most of the graph, where the sort is 25x
+    the bitmap (43 ms vs 1.8 ms at `k = n_nodes = 1M`). The crossover measures at
+    1-3% of `n_nodes`, and picking wrong costs well under a millisecond either way.
+    """
+    if len(x) * 64 < n_nodes:
+        return len(np.unique(x)) != len(x)
+    seen = np.zeros(n_nodes, dtype=bool)
+    seen[x] = True
+    return int(np.count_nonzero(seen)) != len(x)
 
 
 def _prep_limit(limit):
@@ -1997,7 +2016,7 @@ class GeodesicGraph:
                     f"got {nodes.shape}"
                 )
             nodes = np.flatnonzero(nodes)
-        nodes = _prep_indices(nodes, self.n_nodes, "nodes")
+        nodes = _prep_indices(nodes, self.n_nodes, "nodes", unique=True)
         inner, kept_items = self._graph.subset(nodes)
         return type(self)._wrap(inner, nodes, kept_items)
 

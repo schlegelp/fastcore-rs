@@ -1,5 +1,4 @@
 use pyo3::prelude::*;
-use pyo3::prelude::{pymodule, PyModule, PyResult, Python};
 
 mod nblast;
 use nblast::*;
@@ -164,7 +163,7 @@ mod fastcore {
     use super::bridges_py;
 
     #[pymodule_export]
-    use super::spanning_forest_py;
+    use super::parents_from_edges_py;
 
     #[pymodule_export]
     use super::geodesic_mst_mesh_py;

@@ -35,10 +35,10 @@
     "fragmented/simplify_skeleton": 0.0013171250466257334,
     "graph/dense/bridges": 0.002642172674656846,
     "graph/dense/geodesic_mst_graph": 0.007177113416451575,
-    "graph/dense/spanning_forest": 0.0026702832128598745,
+    "graph/dense/parents_from_edges": 0.0026702832128598745,
     "graph/fragmented/bridges": 0.0021549866777661924,
     "graph/fragmented/geodesic_mst_graph": 0.004499558377793805,
-    "graph/fragmented/spanning_forest": 0.002504949565062135
+    "graph/fragmented/parents_from_edges": 0.002504949565062135
   },
   "n": 100000
 }

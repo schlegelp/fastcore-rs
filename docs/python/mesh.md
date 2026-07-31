@@ -132,7 +132,7 @@ import navis_fastcore as fastcore
 import numpy as np
 
 faces = ...      # your mesh
-edges = fastcore.unique_edges(faces).astype(np.uint32)
+edges = fastcore.unique_edges(faces)
 n = len(vertices)
 
 # Cast a wave from vertex 0 and collapse each ring
@@ -160,7 +160,7 @@ entirely.
 ### Turning an edge list into a tree
 
 [`minimum_spanning_tree`](#navis_fastcore.minimum_spanning_tree) picks *which* edges
-survive. [`spanning_forest`](#navis_fastcore.spanning_forest) picks which way they point —
+survive. [`parents_from_edges`](#navis_fastcore.parents_from_edges) picks which way they point —
 which is what turns a bag of undirected edges into something you can walk, root, or write
 out as SWC. Cycles in the input are fine; each component contributes a spanning tree of
 itself, so this doubles as the cycle-breaker `networkx.bfs_tree` is usually pressed into.
@@ -170,7 +170,7 @@ import navis_fastcore as fastcore
 
 # Break cycles, orient, and re-index so parents come before their children
 keep = fastcore.minimum_spanning_tree(edges, n, weights=lengths)
-parents, order = fastcore.spanning_forest(edges[keep], n)
+parents, order = fastcore.parents_from_edges(edges[keep], n)
 
 new_ids = np.empty(n, dtype=np.int64)
 new_ids[order] = np.arange(n)
@@ -197,7 +197,7 @@ Weights are optional and change what you get: `None` gives the breadth-first tre
 give the shortest-path tree. Neither is the minimum spanning tree — for that, run
 `minimum_spanning_tree` first and orient what it keeps, as above.
 
-::: navis_fastcore.spanning_forest
+::: navis_fastcore.parents_from_edges
 
 ### Which edges are load-bearing
 
@@ -286,7 +286,6 @@ import navis_fastcore as fastcore
 import numpy as np
 
 edges, lengths = fastcore.unique_edges(faces, vertices)
-edges = edges.astype(np.uint32)
 weights = lengths.astype(np.float32)
 
 # The route from the root to the farthest vertex...

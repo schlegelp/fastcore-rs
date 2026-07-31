@@ -1488,7 +1488,7 @@ pub fn minimum_spanning_tree(
 ///   indices than their children, which is exactly the SWC requirement).
 /// @export
 #[extendr]
-pub fn spanning_forest(
+pub fn parents_from_edges(
     edges: Robj,
     n_nodes: i32,
     #[default = "NULL"]
@@ -1500,7 +1500,7 @@ pub fn spanning_forest(
     let w = to_weights(weights);
     let roots = to_u32(roots);
 
-    let (parents, order) = fastcore::mesh::spanning_forest(
+    let (parents, order) = fastcore::mesh::parents_from_edges(
         edges.view(),
         n_nodes as usize,
         w.as_ref().map(|w| w.view()).as_ref(),
@@ -3285,7 +3285,7 @@ extendr_module! {
     fn level_set_components;
     fn contract_vertices;
     fn minimum_spanning_tree;
-    fn spanning_forest;
+    fn parents_from_edges;
     fn bridges;
     fn geodesic_mst_mesh;
     fn geodesic_mst_graph;

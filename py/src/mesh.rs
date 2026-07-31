@@ -8,7 +8,7 @@ use fastcore::mesh::{
     bridges, connected_components_graph, contract_vertices, geodesic_clusters,
     geodesic_farthest_mesh, geodesic_matrix_graph, geodesic_matrix_mesh, geodesic_mst_graph,
     geodesic_mst_mesh, geodesic_nearest_mesh, geodesic_path_graph, geodesic_predecessors_graph,
-    level_set_components, mesh_connected_components, minimum_spanning_tree, spanning_forest,
+    level_set_components, mesh_connected_components, minimum_spanning_tree, parents_from_edges,
     unique_edges, GeodesicGraph,
 };
 
@@ -85,9 +85,10 @@ pub fn mesh_connected_components_py<'py>(
 ///
 /// Returns
 /// -------
-/// A 4-tuple `(edges, index, inverse, lengths)`: `edges` is (n_unique, 2) int64
+/// A 4-tuple `(edges, index, inverse, lengths)`: `edges` is (n_unique, 2) uint32
 /// with rows `[min, max]` ordered ascending by (max, min) — identical to trimesh;
-/// the other three are parallel arrays or `None` when not requested.
+/// the other three are parallel arrays or `None` when not requested. `index` and
+/// `inverse` are int64: they are positions in the 3F edge list, not node ids.
 #[pyfunction]
 #[pyo3(
     name = "unique_edges",
@@ -102,7 +103,7 @@ pub fn unique_edges_py<'py>(
     return_inverse: bool,
     threads: Option<usize>,
 ) -> (
-    Bound<'py, PyArray2<i64>>,
+    Bound<'py, PyArray2<u32>>,
     Option<Bound<'py, PyArray1<i64>>>,
     Option<Bound<'py, PyArray1<i64>>>,
     Option<Bound<'py, PyArray1<f64>>>,
@@ -314,7 +315,7 @@ pub fn level_set_components_py<'py>(
 ///
 /// Returns
 /// -------
-/// An (n_unique, 2) int64 array of `[min, max]` rows, ordered as `unique_edges`.
+/// An (n_unique, 2) uint32 array of `[min, max]` rows, ordered as `unique_edges`.
 #[pyfunction]
 #[pyo3(name = "contract_vertices", signature = (edges, mapping, threads=None))]
 pub fn contract_vertices_py<'py>(
@@ -322,7 +323,7 @@ pub fn contract_vertices_py<'py>(
     edges: PyReadonlyArray2<u32>,
     mapping: PyReadonlyArray1<u32>,
     threads: Option<usize>,
-) -> Bound<'py, PyArray2<i64>> {
+) -> Bound<'py, PyArray2<u32>> {
     contract_vertices(edges.as_array(), mapping.as_array(), threads).into_pyarray(py)
 }
 
@@ -398,20 +399,20 @@ pub fn bridges_py<'py>(
 /// Returns
 /// -------
 /// `(parents, order)`: `parents` is a (n_nodes, ) int32 array of parent indices (`-1` at a
-/// root); `order` is a (n_nodes, ) int64 topological order in which every node follows its
+/// root); `order` is a (n_nodes, ) uint32 topological order in which every node follows its
 /// parent.
 #[pyfunction]
-#[pyo3(name = "spanning_forest", signature = (edges, n_nodes, weights=None, roots=None))]
-pub fn spanning_forest_py<'py>(
+#[pyo3(name = "parents_from_edges", signature = (edges, n_nodes, weights=None, roots=None))]
+pub fn parents_from_edges_py<'py>(
     py: Python<'py>,
     edges: PyReadonlyArray2<u32>,
     n_nodes: usize,
     weights: Option<PyReadonlyArray1<f32>>,
     roots: Option<PyReadonlyArray1<u32>>,
-) -> PyResult<(Bound<'py, PyArray1<i32>>, Bound<'py, PyArray1<i64>>)> {
+) -> PyResult<(Bound<'py, PyArray1<i32>>, Bound<'py, PyArray1<u32>>)> {
     let w = weights.as_ref().map(|w| w.as_array());
     let r = as_opt_slice(&roots, "roots")?;
-    let (parents, order) = spanning_forest(edges.as_array(), n_nodes, w.as_ref(), r);
+    let (parents, order) = parents_from_edges(edges.as_array(), n_nodes, w.as_ref(), r);
     Ok((parents.into_pyarray(py), order.into_pyarray(py)))
 }
 
@@ -903,22 +904,8 @@ impl PyGeodesicGraph {
     ) -> PyResult<(Self, Bound<'py, PyArray1<u32>>)> {
         let keep = as_slice(&nodes, "nodes")?;
         let g = self.inner.read().expect("poisoned");
-        // Checked here rather than left to the core's assert so a caller mistake surfaces as
-        // a `ValueError` like every other argument error on this class, not a panic.
-        let mut seen = vec![false; g.n_nodes()];
-        for &v in keep {
-            if (v as usize) >= g.n_nodes() {
-                return Err(PyValueError::new_err(format!(
-                    "`nodes` contains node {v}, but n_nodes = {}",
-                    g.n_nodes()
-                )));
-            }
-            if std::mem::replace(&mut seen[v as usize], true) {
-                return Err(PyValueError::new_err(format!(
-                    "`nodes` contains node {v} more than once"
-                )));
-            }
-        }
+        // Range and distinctness are checked by `_prep_indices(unique=True)` in the Python
+        // wrapper, as for every other node subset this package takes.
         let (sub, kept) = g.subset(keep);
         Ok((
             PyGeodesicGraph {

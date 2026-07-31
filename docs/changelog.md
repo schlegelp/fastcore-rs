@@ -61,7 +61,7 @@ answer it costs more than the answer does. See the new
 tree primitives above serve navis, these serve mesh skeletonization — see the
 [Meshes](python/mesh.md) page.
 
-- `spanning_forest` — orient an edge list into a rooted forest: one parent per node, `-1`
+- `parents_from_edges` — orient an edge list into a rooted forest: one parent per node, `-1`
   at the roots, cycles broken. `minimum_spanning_tree` picks *which* edges survive; this
   picks which way they point, which is what turns a bag of undirected edges into something
   you can walk, root or write out as SWC. It also returns the order the nodes settled in,
@@ -100,7 +100,7 @@ the DAG family already used), roots and "no such node" as `-1`, and multi-value 
 as a named list rather than a tuple.
 
 New optional arguments have R defaults, so `adjacency(parents)` and
-`spanning_forest(edges, n)` work without spelling out a `NULL` per argument. Note this
+`parents_from_edges(edges, n)` work without spelling out a `NULL` per argument. Note this
 is *not* true of the bindings that predate this release — those still require every
 argument positionally, which is worth fixing before 1.0.
 
@@ -116,7 +116,37 @@ brute-force references under `hypothesis`, across a fixture matrix that includes
 100k-deep chains — the traversals are iterative precisely because the recursive versions
 segfault there.
 
+**Interface polish, ahead of 1.0.** Small things that cost nothing to change now and get
+expensive once the API is frozen.
+
+- **Integer returns follow one rule**, written down in the
+  [Python overview](python/index.md#integer-return-dtypes): a node id is `uint32`, a node
+  id needing a `-1` sentinel is `int32`, and a *position in an array you passed in* is
+  `int64`. The point is the third — `int64` tells you the values index your array rather
+  than the graph, so `nodes[out]` is the node-id form and `out` alone is not. Three
+  returns moved to fit (see Breaking).
+- **`from navis_fastcore import *` exports functions only.** The package had no `__all__`,
+  so `import *` took the default and dragged in seven submodule objects while dropping
+  `__version__` for starting with an underscore. It is now composed from the submodules'
+  own `__all__`, so a new function is exported by listing it in one place.
+- `GeodesicGraph.subset` validated its `nodes` argument in three places — the Python
+  wrapper, the binding layer and the core. The binding-layer copy is gone; the wrapper now
+  uses the same `unique=True` check every other node subset in the package goes through.
+
 ### Breaking
+- **`spanning_forest` is now `parents_from_edges`.** It sat one word away from
+  `minimum_spanning_tree` while answering a different question — that one picks *which*
+  edges survive, this picks which way they point — and the new name says what it hands
+  back, which is the parent vector the rest of the package consumes. `minimum_spanning_tree`
+  keeps its name: it is what scipy, igraph and networkx all call this, including scipy's
+  behaviour of returning a forest when the input is disconnected. No alias, since
+  `spanning_forest` was never in a release. Affects all three surfaces.
+- **Node ids come back as `uint32` where they used to be `int64`**, under the rule above:
+  `unique_edges`' `edges`, `contract_vertices`, and `parents_from_edges`' `order` (the last
+  of these unreleased). Their `index` / `inverse` companions stay `int64` — those are
+  positions in the `3F` edge list, not node ids. Python callers who fed these straight back
+  in were already coercing to `uint32`; those coercions are now no-ops rather than copies.
+  R is unaffected — the bindings already narrowed to R integers.
 - `generate_segments` now measures a segment's length from its **first node to its last**.
   It previously summed the weight vector over *every* node in the segment, including the
   terminal one — but a segment stops *at* a branch point, whose own child→parent edge

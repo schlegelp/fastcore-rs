@@ -669,7 +669,7 @@ minimum_spanning_tree <- function(edges, n_nodes, weights = NULL, maximize = FAL
 #'   always follows its parent, so relabelling by it guarantees parents get lower
 #'   indices than their children, which is exactly the SWC requirement).
 #' @export
-spanning_forest <- function(edges, n_nodes, weights = NULL, roots = NULL) .Call(wrap__spanning_forest, edges, n_nodes, weights, roots)
+parents_from_edges <- function(edges, n_nodes, weights = NULL, roots = NULL) .Call(wrap__parents_from_edges, edges, n_nodes, weights, roots)
 
 #' Which edges are bridges — the ones whose removal would disconnect their component.
 #'
