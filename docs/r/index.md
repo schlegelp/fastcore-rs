@@ -101,10 +101,36 @@ healed = heal_skeleton(parents, s$d$X, s$d$Y, s$d$Z, method="ALL",
 - `heal_skeleton`: reconnect the fragments of a broken skeleton
 - `stitch_fragments`: find the minimal-length edges that reconnect fragments
 - `reroot_rewire`: regenerate a parent vector after adding edges
+- `descendants` / `paths_to_root`: everything below a node, and everything above it
+- `reroot`: re-orient a forest at given nodes, reversing only what has to move
+- `contract_nodes`: collapse groups of nodes onto a representative and rewire
+- `simplify_skeleton`: keep only roots, leafs and branch points, preserving cable length
+- `adjacency`: the skeleton's adjacency matrix, as the three arrays of a CSR matrix
+- `longest_path` / `longest_paths`: the longest path to a root, and the `n` longest in turn
+- `betweenness`: betweenness centrality in `O(N)` rather than Brandes' `O(V*E)`
+- `descendant_counts`: how many nodes lie strictly below each node
 
-**Mesh**
+**Mesh and graph**
 
 - `mesh_connected_components`: connected components of a triangle mesh
+- `unique_edges`: the unique undirected edges of a triangle mesh, with lengths
+- `connected_components_graph`: connected components of any graph, from an edge list
+- `level_set_components`: the components of *every* level set in one pass (wavefront rings)
+- `contract_vertices`: collapse nodes onto new ids and simplify the edge list
+- `minimum_spanning_tree`: minimum (or maximum) spanning forest
+- `spanning_forest`: orient an edge list into a rooted forest — breaks cycles, and
+  hands back the order that makes parents precede their children
+- `bridges`: which edges may not be dropped without disconnecting the graph
+- `geodesic_mst_mesh` / `geodesic_mst_graph`: span a *subset* of nodes by geodesic
+  distance, without ever building the `k x k` matrix
+- `geodesic_predecessors` / `geodesic_path`: the shortest *route*, not just its length
+- `geodesic_clusters`: greedily partition a graph into clusters of bounded geodesic radius
+
+!!! note "Indices are 0-based"
+
+    Every function in these two groups speaks in 0-based node indices, matching the
+    Rust core and the rest of the DAG family — so add 1 before using a returned index
+    to subset an R vector or matrix. Roots and "no such node" are `-1`.
 
 **Neuron similarity (NBLAST / synNBLAST)** — see [Concepts › NBLAST](../concepts/nblast.md)
 

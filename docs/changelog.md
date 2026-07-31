@@ -92,7 +92,24 @@ tree primitives above serve navis, these serve mesh skeletonization — see the
   `limit` bounds how far apart two nodes may be and still be joined, and prunes the sweep
   rather than merely discarding results.
 
-Python and Rust only for now; the R bindings will follow once the signatures have settled.
+**The R bindings caught up.** 22 new functions in `nat.fastcore` — every tree and graph
+primitive above, plus the ones that had accumulated unbound before it — taking R from 39
+of the 69 documented capabilities to 58. The signatures are the ones the Python side
+settled on, translated to R conventions: 0-based node indices throughout (as the rest of
+the DAG family already used), roots and "no such node" as `-1`, and multi-value results
+as a named list rather than a tuple.
+
+New optional arguments have R defaults, so `adjacency(parents)` and
+`spanning_forest(edges, n)` work without spelling out a `NULL` per argument. Note this
+is *not* true of the bindings that predate this release — those still require every
+argument positionally, which is worth fixing before 1.0.
+
+Two things are worth doing before 1.0 alongside that. Argument errors currently reach R
+as `Error: User function panicked: <name>`, because extendr discards the panic payload
+and the R layer does no validation of its own — where Python raises a message naming the
+offending value. The fix belongs in the three shared converters, not per function. And
+what remains unbound is `GeodesicGraph` and its methods (a stateful pointer class, so a
+different kind of job) plus five of the NBLAST/matches helpers.
 
 Every one of these is pinned against igraph in the parity suite and against
 brute-force references under `hypothesis`, across a fixture matrix that includes

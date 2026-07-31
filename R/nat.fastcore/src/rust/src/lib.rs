@@ -1,4 +1,5 @@
 use extendr_api::prelude::*;
+use extendr_api::{AsTypedSlice, ToVectorValue};
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2, ShapeBuilder};
 use std::collections::HashMap;
 
@@ -133,7 +134,7 @@ pub fn geodesic_distances(
         )
     };
 
-    array2_to_rmatrix(&dists)
+    array2_to_r(&dists, |x| x)
 }
 
 /// Calculate Strahler Index.
@@ -383,6 +384,18 @@ pub fn synapse_flow_centrality(
     flow.iter().map(|&x| x as i32).collect()
 }
 
+/// Optional per-element lengths as an R numeric vector, or `NULL`.
+///
+/// extendr maps `f32` straight to a REALSXP, so there is no widening to do here — only
+/// the `Option` -> `NULL` mapping, which two functions need and would otherwise spell
+/// out identically.
+fn opt_lengths(v: Option<Vec<f32>>) -> Robj {
+    match v {
+        Some(w) => w.into(),
+        None => ().into(),
+    }
+}
+
 /// Generate linear segments while maximising segment lengths.
 ///
 /// Returns a list with `segments` (a list of integer vectors, one per segment)
@@ -403,11 +416,7 @@ pub fn generate_segments(parents: Vec<i32>, weights: Option<Vec<f64>>) -> Robj {
     let (segments, lengths) = fastcore::dag::generate_segments(&parents.view(), weights);
 
     let seg_list = List::from_values(segments.into_iter());
-    let lengths_robj: Robj = match lengths {
-        Some(l) => l.iter().map(|x| *x as f64).collect::<Vec<f64>>().into(),
-        None => ().into(),
-    };
-    list!(segments = seg_list, lengths = lengths_robj).into()
+    list!(segments = seg_list, lengths = opt_lengths(lengths)).into()
 }
 
 /// Break the tree into its linear segments (one integer vector per segment).
@@ -420,6 +429,282 @@ pub fn break_segments(parents: Vec<i32>) -> Robj {
     let parents = Array1::from_vec(parents);
     let segments = fastcore::dag::break_segments(&parents.view());
     List::from_values(segments.into_iter()).into()
+}
+
+// ---------------------------------------------------------------------------
+// Tree traversal and editing
+// ---------------------------------------------------------------------------
+//
+// These mirror the Python bindings in `py/src/dag.rs`. Each looks like a general
+// graph algorithm but is a linear pass over the parent vector, so building a graph
+// object to answer it costs more than the answer does. Node references are 0-based
+// indices throughout, like the rest of the DAG family, and roots are `< 0`.
+
+/// Coerce optional R weights to the `f32` the core works in.
+fn to_weights(weights: Option<Vec<f64>>) -> Option<Array1<f32>> {
+    weights.map(|w| w.into_iter().map(|x| x as f32).collect())
+}
+
+/// Turn a list-of-paths result into an R list of integer vectors.
+fn paths_to_list<I>(paths: I) -> Robj
+where
+    I: IntoIterator,
+    I::IntoIter: ExactSizeIterator,
+    I::Item: Into<Robj>,
+{
+    List::from_values(paths).into()
+}
+
+/// Every node in the sub-tree below each source.
+///
+/// The replacement for `igraph::subcomponent(mode = "in")`, and what makes "cut the
+/// skeleton here" a masking operation rather than a graph rebuild.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param sources Integer vector of 0-based node indices to walk down from.
+/// @return List of integer vectors, one per source in `sources` order. Each starts
+///   with the source itself and is in depth-first pre-order, so a node always
+///   precedes its own descendants. An out-of-range source gives an empty vector.
+/// @export
+#[extendr]
+pub fn descendants(parents: Vec<i32>, sources: Vec<i32>) -> Robj {
+    let parents = Array1::from_vec(parents);
+    let sources = Array1::from_vec(sources);
+    paths_to_list(fastcore::dag::descendants(&parents.view(), &sources.view()))
+}
+
+/// The path from each source up to its root.
+///
+/// The other direction of the same walk as `descendants`.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param sources Integer vector of 0-based node indices to walk up from.
+/// @return List of integer vectors, one per source in `sources` order, ordered
+///   source-first / root-last. A source that is itself a root gives a
+///   single-element vector; an out-of-range source gives an empty one.
+/// @export
+#[extendr]
+pub fn paths_to_root(parents: Vec<i32>, sources: Vec<i32>) -> Robj {
+    let parents = Array1::from_vec(parents);
+    let sources = Array1::from_vec(sources);
+    paths_to_list(fastcore::dag::paths_to_root(&parents.view(), &sources.view()))
+}
+
+/// Re-orient a forest so that each of `new_roots` becomes its component's root.
+///
+/// Only the edges between each new root and its component's old root are reversed;
+/// components nobody names come back byte-identical. The general form of
+/// `reroot_rewire`, which takes one preferred root plus a set of new edges.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param new_roots Integer vector of 0-based node indices to root at. Two roots in
+///   the same component: the last one named wins.
+/// @return Integer vector of new 0-based parent indices, aligned with `parents`.
+///   Roots are `-1`.
+/// @export
+#[extendr]
+pub fn reroot(parents: Vec<i32>, new_roots: Vec<i32>) -> Vec<i32> {
+    let parents = Array1::from_vec(parents);
+    let new_roots = Array1::from_vec(new_roots);
+    fastcore::dag::reroot(&parents.view(), &new_roots.view()).to_vec()
+}
+
+/// Collapse groups of nodes onto a representative and rewire what is left.
+///
+/// Edges internal to a group are dropped rather than turned into self-loops.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param mapping Integer vector, one entry per node, giving the 0-based index of
+///   the node it collapses onto. A node mapped to itself survives.
+/// @return List with `nodes` (0-based indices of the surviving nodes, in their
+///   original relative order) and `parents` (their new 0-based parent indices,
+///   `-1` for roots, indexing *into* `nodes`).
+/// @export
+#[extendr]
+pub fn contract_nodes(parents: Vec<i32>, mapping: Vec<i32>) -> Robj {
+    // Everything Rust owns is confined to this block. `throw_r_error` is a longjmp, so
+    // it runs no destructors — anything still live at the throw would leak, and here
+    // that would be two node-sized arrays.
+    let result = {
+        let parents = Array1::from_vec(parents);
+        let mapping = Array1::from_vec(mapping);
+        fastcore::dag::contract_nodes(&parents.view(), &mapping.view())
+            .map(|(nodes, new_parents)| -> Robj {
+                list!(nodes = nodes, parents = new_parents.to_vec()).into()
+            })
+            .map_err(|e| e.to_string())
+    };
+    // A mapping that would close a cycle is refused rather than silently returning a
+    // non-forest, so surface it as an R error rather than as extendr's generic
+    // "User function panicked", which discards the reason.
+    match result {
+        Ok(robj) => robj,
+        Err(msg) => throw_r_error(msg),
+    }
+}
+
+/// Keep only roots, leafs and branch points, preserving cable length.
+///
+/// Each replacement edge carries the summed length of the chain it stands in for, so
+/// total cable length is unchanged.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param weights Optional numeric vector of child-to-parent edge weights; `NULL`
+///   returns no `weights`.
+/// @return List with `nodes` (0-based indices of the surviving nodes, in their
+///   original relative order), `parents` (their new 0-based parent indices, `-1` for
+///   roots, indexing *into* `nodes`) and `weights` (length of each node's edge to its
+///   new parent, roots `0`; `NULL` exactly when `weights` was `NULL`).
+/// @export
+#[extendr]
+pub fn simplify_skeleton(parents: Vec<i32>, #[default = "NULL"] weights: Option<Vec<f64>>) -> Robj {
+    let parents = Array1::from_vec(parents);
+    let weights = to_weights(weights);
+
+    let (nodes, new_parents, new_weights) =
+        fastcore::dag::simplify_skeleton(&parents.view(), &weights);
+
+    list!(
+        nodes = nodes,
+        parents = new_parents.to_vec(),
+        weights = opt_lengths(new_weights)
+    )
+    .into()
+}
+
+/// The skeleton's adjacency matrix, as the three arrays of a CSR matrix.
+///
+/// Handing back the raw arrays rather than a matrix object keeps this package free of
+/// a sparse-matrix dependency; feed them to `Matrix::sparseMatrix(p = indptr, i =
+/// indices, x = data, ...)` if you want one.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param weights Optional numeric vector of child-to-parent edge weights; `NULL`
+///   gives every edge weight 1.
+/// @param directed Logical; if `TRUE` (default) only child-to-parent edges are
+///   stored, if `FALSE` both directions are.
+/// @param transpose Logical; if `TRUE` store parent-to-child instead. Ignored when
+///   `directed` is `FALSE`, where the matrix is symmetric anyway.
+/// @return List with `indptr` (integer, `N + 1` entries), `indices` (integer column
+///   index per non-zero) and `data` (numeric weight per non-zero). Rows and columns
+///   are in node-index order and column indices ascend within each row.
+/// @export
+#[extendr]
+pub fn adjacency(
+    parents: Vec<i32>,
+    #[default = "NULL"]
+    weights: Option<Vec<f64>>,
+    #[default = "TRUE"]
+    directed: bool,
+    #[default = "FALSE"]
+    transpose: bool,
+) -> Robj {
+    let parents = Array1::from_vec(parents);
+    let weights = to_weights(weights);
+
+    let (indptr, indices, data) =
+        fastcore::dag::adjacency(&parents.view(), &weights, directed, transpose);
+
+    list!(indptr = indptr, indices = indices, data = data).into()
+}
+
+/// The longest path from any node to its root.
+///
+/// Not the NP-hard general problem: in a rooted forest every maximal path is fixed by
+/// its start node, so this is a distances-to-root question.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param weights Optional numeric vector of child-to-parent edge weights; `NULL`
+///   counts edges.
+/// @return Integer vector of 0-based node indices along the path, **distal first** —
+///   so the first element is the far end and the last is a root. Ties break towards
+///   the lowest node index.
+/// @export
+#[extendr]
+pub fn longest_path(parents: Vec<i32>, #[default = "NULL"] weights: Option<Vec<f64>>) -> Vec<i32> {
+    let parents = Array1::from_vec(parents);
+    let weights = to_weights(weights);
+    fastcore::dag::longest_path(&parents.view(), &weights)
+}
+
+/// The `n` longest paths, each peeled off before the next is sought.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param n Integer; how many paths to take.
+/// @param weights Optional numeric vector of child-to-parent edge weights; `NULL`
+///   counts edges.
+/// @param min_length Optional numeric; stop once the next path is no longer than
+///   this. Note it measures the path's whole *catchment* — every edge whose parent
+///   lies on the path, so each twig hanging off it contributes its first edge too —
+///   and that hitting it **stops** the search rather than skipping one path. Both are
+///   inherited from `navis::split_into_fragments`, where they are load-bearing.
+/// @return List of up to `n` integer vectors of 0-based node indices, longest first,
+///   each distal-first.
+/// @export
+#[extendr]
+pub fn longest_paths(
+    parents: Vec<i32>,
+    n: i32,
+    #[default = "NULL"]
+    weights: Option<Vec<f64>>,
+    #[default = "NULL"]
+    min_length: Option<f64>,
+) -> Robj {
+    let parents = Array1::from_vec(parents);
+    let weights = to_weights(weights);
+    paths_to_list(fastcore::dag::longest_paths(
+        &parents.view(),
+        n.max(0) as usize,
+        &weights,
+        min_length.map(|l| l as f32),
+    ))
+}
+
+/// Betweenness centrality, in `O(N)` rather than Brandes' `O(V*E)`.
+///
+/// Shortest paths in a tree are unique, so the count through a node is a closed form:
+/// descendants times ancestors when directed, and a sum of products over the parts it
+/// separates when not. Pairs are only counted within a connected component.
+///
+/// Note this is *not* `navis::betweeness_centrality(from_ = ...)`, which despite the
+/// name computes a descendant count — see `descendant_counts`.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param directed Logical; if `TRUE` only count paths running child-to-parent.
+/// @return Numeric vector of path counts, aligned with `parents`. Returned as double
+///   rather than integer because an undirected 100k-node skeleton reaches ~5e9, well
+///   past R's 32-bit integer.
+/// @export
+#[extendr]
+pub fn betweenness(parents: Vec<i32>, #[default = "TRUE"] directed: bool) -> Vec<f64> {
+    let parents = Array1::from_vec(parents);
+    fastcore::dag::betweenness(&parents.view(), directed)
+        .iter()
+        .map(|&x| x as f64)
+        .collect()
+}
+
+/// How many nodes lie strictly below each node.
+///
+/// This is what `navis::betweeness_centrality(from_ = ...)` actually computes, and
+/// what `navis::find_main_branchpoint(method = "betweenness")` — its one caller —
+/// wants.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param targets Optional integer vector of 0-based node indices; `NULL` counts
+///   every node, otherwise only these are counted.
+/// @return Numeric vector of counts, aligned with `parents`. A node is never its own
+///   descendant, so a leaf scores `0` even when it is itself a target. Double rather
+///   than integer for the same reason as `betweenness`.
+/// @export
+#[extendr]
+pub fn descendant_counts(parents: Vec<i32>, #[default = "NULL"] targets: Option<Vec<i32>>) -> Vec<f64> {
+    let parents = Array1::from_vec(parents);
+    let targets = targets.map(Array1::from_vec);
+    fastcore::dag::descendant_counts(&parents.view(), &targets)
+        .iter()
+        .map(|&x| x as f64)
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -763,13 +1048,37 @@ fn robj_to_edges(edges: &Robj) -> Array2<u32> {
     }
 }
 
-fn to_u32(v: Option<Vec<i32>>) -> Option<Vec<u32>> {
-    v.map(|x| x.iter().map(|&i| i as u32).collect())
+/// Node indices as the core wants them. R hands us `i32`; the core indexes in `u32`.
+fn as_u32(v: &[i32]) -> Vec<u32> {
+    v.iter().map(|&i| i as u32).collect()
 }
 
-fn array2_f32_to_rmatrix(arr: &Array2<f32>) -> Robj {
+/// The optional form of [`as_u32`], for the many arguments that default to `NULL`.
+fn to_u32(v: Option<Vec<i32>>) -> Option<Vec<u32>> {
+    v.map(|x| as_u32(&x))
+}
+
+/// Convert an `(R, C)` ndarray into an R matrix of whatever type `f` yields.
+///
+/// Not `RArray::new_matrix`: that one builds a `flat_map`, whose `size_hint` is
+/// `(0, None)`, so extendr cannot take its `fixed_size_collect` path and stages the
+/// entire matrix in a temporary `Vec` before copying it into R — three passes over the
+/// data and a transient allocation the size of the result. `arr.t().iter()` is an
+/// `ExactSizeIterator` yielding exactly R's column-major order, so this writes once,
+/// straight into the R vector.
+fn array2_to_r<T: Copy, U>(arr: &Array2<T>, f: impl FnMut(T) -> U) -> Robj
+where
+    U: ToVectorValue,
+    Robj: for<'a> AsTypedSlice<'a, U>,
+{
     let (nr, nc) = (arr.nrows(), arr.ncols());
-    RArray::new_matrix(nr, nc, |r, c| arr[[r, c]] as f64).into()
+    arr.t()
+        .iter()
+        .copied()
+        .map(f)
+        .collect_rarray([nr, nc])
+        .expect("dims are the array's own")
+        .into()
 }
 
 /// Geodesic ("along-the-mesh-edge") distances on a triangle mesh.
@@ -826,7 +1135,7 @@ pub fn geodesic_matrix_mesh(
         threads.map(|t| t as usize),
     );
 
-    array2_f32_to_rmatrix(&dists)
+    array2_to_r(&dists, f64::from)
 }
 
 /// Geodesic distances over an arbitrary graph given as an edge list.
@@ -878,7 +1187,7 @@ pub fn geodesic_matrix_graph(
         threads.map(|t| t as usize),
     );
 
-    array2_f32_to_rmatrix(&dists)
+    array2_to_r(&dists, f64::from)
 }
 
 /// Distance to the nearest target vertex, for each source vertex of a mesh.
@@ -980,6 +1289,517 @@ pub fn geodesic_farthest_mesh(
     );
 
     list!(distances = dists.to_vec(), farthest = farthest.to_vec()).into()
+}
+
+// ---------------------------------------------------------------------------
+// Graph primitives
+// ---------------------------------------------------------------------------
+//
+// The handful of traversal operations mesh algorithms actually need, taken straight
+// off an edge list. These exist because reaching for a general-purpose graph library
+// means paying to *build* a graph object first, which on a real mesh costs more than
+// every query you then run against it. Node references are 0-based, as elsewhere.
+
+/// Unique undirected edges of a triangle mesh.
+///
+/// Each face `(a, b, c)` contributes the edges `(a, b)`, `(b, c)`, `(c, a)`. Edges are
+/// undirected, so each pair is normalised to `[min, max]` before dedup; self-loops
+/// from degenerate faces are kept.
+///
+/// @param faces Integer or numeric `(F, 3)` matrix of triangle vertex indices
+///   (0-based).
+/// @param vertices Optional numeric `(V, 3)` matrix of vertex coordinates. If given,
+///   also returns the euclidean length of each unique edge.
+/// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @return List with `edges` (integer `(n_unique, 2)` matrix of `[min, max]` rows,
+///   sorted ascending by `(max, min)`) and `lengths` (numeric edge lengths, or `NULL`
+///   when `vertices` was `NULL`).
+/// @export
+#[extendr]
+pub fn unique_edges(
+    faces: Robj,
+    #[default = "NULL"] vertices: Option<Robj>,
+    #[default = "NULL"] threads: Option<i32>,
+) -> Robj {
+    let faces = robj_to_faces(&faces);
+    let coords = robj_to_coords(vertices);
+
+    // `return_index`/`return_inverse` are `false`, which selects the core's fast path:
+    // neither vector is allocated, so nothing is computed and thrown away. They are
+    // additive to the returned list if a caller ever wants them.
+    let (edges, _, _, lengths) = fastcore::mesh::unique_edges(
+        faces.view(),
+        coords.as_ref().map(|c| c.view()),
+        false,
+        false,
+        to_threads(threads),
+    );
+
+    let lengths_robj: Robj = match lengths {
+        Some(l) => l.to_vec().into(),
+        None => ().into(),
+    };
+    list!(edges = array2_to_r(&edges, |x| x as i32), lengths = lengths_robj).into()
+}
+
+/// Connected components of a graph given as an edge list.
+///
+/// The edge-list counterpart of `mesh_connected_components`, using the same
+/// Union-Find: one integer array, no adjacency list.
+///
+/// @param edges Integer or numeric `(E, 2)` matrix of edges (0-based node indices).
+///   Direction is ignored; self-loops and parallel edges are harmless.
+/// @param n_nodes Integer; total number of nodes. Nodes named by no edge form
+///   components of size one.
+/// @return Integer vector giving, per node, the smallest node index in its component.
+/// @export
+#[extendr]
+pub fn connected_components_graph(edges: Robj, n_nodes: i32) -> Vec<i32> {
+    let edges = robj_to_edges(&edges);
+    fastcore::mesh::connected_components_graph(edges.view(), n_nodes as usize)
+        .iter()
+        .map(|&x| x as i32)
+        .collect()
+}
+
+/// Connected components of every level set at once.
+///
+/// Given a label per node, finds the connected components of each subgraph induced by
+/// the nodes sharing a label — all labels in a single pass, by unioning an edge only
+/// when its two endpoints agree. This is the inner loop of wavefront-style mesh
+/// skeletonization, where the label is a binned geodesic distance and each component
+/// is one ring around the structure.
+///
+/// Done conventionally that loop costs one subgraph construction plus one component
+/// search per distinct label; here it is one sweep over the edges.
+///
+/// @param edges Integer or numeric `(E, 2)` matrix of edges (0-based node indices).
+/// @param n_nodes Integer; total number of nodes.
+/// @param labels Integer vector with one label per node. **Negative labels mark
+///   excluded nodes**: they join no component and come back as `-1`. That is what lets
+///   you feed in the output of a search that could not reach everything —
+///   `geodesic_matrix_*` returns `-1` for unreachable — rather than lumping every
+///   unreachable node into one bogus level.
+/// @return List with `ids` (integer component index per node in `[0, n_components)`,
+///   or `-1` for excluded nodes; assigned in order of first appearance scanning nodes
+///   low to high) and `n_components` (integer).
+/// @export
+#[extendr]
+pub fn level_set_components(edges: Robj, n_nodes: i32, labels: Vec<i32>) -> Robj {
+    let edges = robj_to_edges(&edges);
+    let labels: Array1<i64> = labels.into_iter().map(i64::from).collect();
+    let (ids, n) =
+        fastcore::mesh::level_set_components(edges.view(), n_nodes as usize, labels.view());
+    list!(ids = ids, n_components = n as i32).into()
+}
+
+/// Contract nodes onto new ids, returning the simplified edge list.
+///
+/// Both endpoints of every edge are pushed through `mapping`; edges that end up with
+/// both ends on the same new node are dropped, and the rest deduplicated. This is
+/// `igraph::contract_vertices()` followed by `simplify()`, fused — and, unlike that
+/// pair, it does not rewrite a graph object in place, so contracting costs no copy.
+///
+/// @param edges Integer or numeric `(E, 2)` matrix of edges (0-based node indices).
+/// @param mapping Integer vector giving the new 0-based id of each old node. Ids need
+///   not be contiguous, but the output is only as compact as the ids you supply.
+/// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @return Integer `(n_unique, 2)` matrix of the surviving edges as `[min, max]` rows.
+/// @export
+#[extendr]
+pub fn contract_vertices(edges: Robj, mapping: Vec<i32>, #[default = "NULL"] threads: Option<i32>) -> Robj {
+    let edges = robj_to_edges(&edges);
+    let mapping: Array1<u32> = Array1::from_vec(as_u32(&mapping));
+    let out = fastcore::mesh::contract_vertices(edges.view(), mapping.view(), to_threads(threads));
+    array2_to_r(&out, |x| x as i32)
+}
+
+/// Minimum (or maximum) spanning forest of an undirected graph.
+///
+/// Kruskal's algorithm on the same Union-Find as the component search: sort the edges
+/// by weight, keep the ones that join two different components. Disconnected input is
+/// fine — each component contributes its own tree.
+///
+/// @param edges Integer or numeric `(E, 2)` matrix of edges (0-based node indices).
+/// @param n_nodes Integer; total number of nodes.
+/// @param weights Optional numeric vector, one weight per edge; `NULL` treats every
+///   edge as equal. Must be finite; negative weights are allowed.
+/// @param maximize Logical; return the *maximum* spanning forest instead. This exists
+///   so you do not have to pass `1 / weights` to invert the ordering — a transform
+///   that both loses precision and blows up on the zero weights that legitimately
+///   occur.
+/// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @return Integer vector of 0-based **row indices into `edges`**, ordered by weight —
+///   not the edges themselves, so you can index whatever per-edge data you hold with
+///   the same vector. Remember to add 1 before using it to subset an R matrix.
+/// @export
+#[extendr]
+pub fn minimum_spanning_tree(
+    edges: Robj,
+    n_nodes: i32,
+    #[default = "NULL"]
+    weights: Option<Vec<f64>>,
+    #[default = "FALSE"]
+    maximize: bool,
+    #[default = "NULL"]
+    threads: Option<i32>,
+) -> Vec<i32> {
+    let edges = robj_to_edges(&edges);
+    let w = to_weights(weights);
+    fastcore::mesh::minimum_spanning_tree(
+        edges.view(),
+        n_nodes as usize,
+        w.as_ref().map(|w| w.view()).as_ref(),
+        maximize,
+        to_threads(threads),
+    )
+    .iter()
+    .map(|&x| x as i32)
+    .collect()
+}
+
+/// Orient a graph into a rooted spanning forest — one parent per node.
+///
+/// `minimum_spanning_tree` picks *which* edges survive; this picks which way they
+/// point, which is what turns a bag of undirected edges into something you can walk,
+/// root, or write out as SWC. Cycles are fine — each component contributes a spanning
+/// tree of itself, so this doubles as a cycle-breaker.
+///
+/// One search covers the whole graph. The obvious construction — a shortest-path tree
+/// per component — costs `O(components * n_nodes)` in output alone, which on a mesh
+/// that shatters into thousands of specks is gigabytes to answer a question whose
+/// answer is one vector.
+///
+/// @param edges Integer or numeric `(E, 2)` matrix of edges (0-based node indices).
+///   Direction is ignored.
+/// @param n_nodes Integer; total number of nodes. Nodes named by no edge are isolated
+///   roots.
+/// @param weights Optional numeric vector, one length per edge. `NULL` gives the
+///   breadth-first tree; weights give the shortest-path tree, which is a different
+///   (and generally deeper) spanning tree. Neither is the minimum spanning tree — for
+///   that, run `minimum_spanning_tree` first and orient the edges it keeps.
+/// @param roots Optional integer vector of 0-based nodes to root at; `NULL` roots each
+///   component at its lowest node index. Components holding none of `roots` fall back
+///   to that, so the result is always a complete forest. Two roots in the *same*
+///   component split it into two trees, each node going to whichever root is nearer.
+/// @return List with `parents` (integer 0-based parent index per node, `-1` at a root)
+///   and `order` (integer 0-based node indices in the order they settled — a node
+///   always follows its parent, so relabelling by it guarantees parents get lower
+///   indices than their children, which is exactly the SWC requirement).
+/// @export
+#[extendr]
+pub fn spanning_forest(
+    edges: Robj,
+    n_nodes: i32,
+    #[default = "NULL"]
+    weights: Option<Vec<f64>>,
+    #[default = "NULL"]
+    roots: Option<Vec<i32>>,
+) -> Robj {
+    let edges = robj_to_edges(&edges);
+    let w = to_weights(weights);
+    let roots = to_u32(roots);
+
+    let (parents, order) = fastcore::mesh::spanning_forest(
+        edges.view(),
+        n_nodes as usize,
+        w.as_ref().map(|w| w.view()).as_ref(),
+        roots.as_deref(),
+    );
+
+    list!(
+        parents = parents.to_vec(),
+        order = order.iter().map(|&x| x as i32).collect::<Vec<i32>>()
+    )
+    .into()
+}
+
+/// Which edges are bridges — the ones whose removal would disconnect their component.
+///
+/// Tarjan's algorithm, one depth-first sweep. The counterpart to
+/// `minimum_spanning_tree` rather than a variant of it: the MST asks which edges to
+/// *keep* to stay connected, this asks which ones may not be *dropped*. That is the
+/// question behind "prune this graph but do not shatter it".
+///
+/// Parallel edges are honoured — two nodes joined twice are joined by a cycle, so
+/// neither of those edges is a bridge. Self-loops are never bridges.
+///
+/// @param edges Integer or numeric `(E, 2)` matrix of edges (0-based node indices).
+///   Direction is ignored.
+/// @param n_nodes Integer; total number of nodes.
+/// @return Logical vector with one flag per input edge, `TRUE` for a bridge.
+/// @export
+#[extendr]
+pub fn bridges(edges: Robj, n_nodes: i32) -> Vec<bool> {
+    let edges = robj_to_edges(&edges);
+    fastcore::mesh::bridges(edges.view(), n_nodes as usize).to_vec()
+}
+
+/// Package a geodesic MST result for R.
+fn mst_result(edges: Array2<i64>, weights: Array1<f32>) -> Robj {
+    list!(edges = array2_to_r(&edges, |x| x as i32), weights = weights.to_vec()).into()
+}
+
+/// Minimum spanning tree over a subset of mesh vertices, by geodesic distance.
+///
+/// The tree that reconnects a scatter of surviving vertices through the mesh they were
+/// carved out of — the last step of a skeletonization, where the mesh has been thinned
+/// to a few thousand vertices that must be rejoined along the surface rather than
+/// through space.
+///
+/// The obvious route is to ask for the `k x k` geodesic matrix and hand it to a matrix
+/// MST. That materialises `k^2` distances to use `k - 1` of them — 400 MB at
+/// `k = 10000`, before the `O(k^2)` MST itself — and needs `k` separate searches to
+/// fill. This never forms the matrix: following Mehlhorn's distance-network
+/// construction, one multi-source search partitions every vertex by which of `nodes`
+/// is nearest, and each mesh edge whose endpoints fall in different cells offers one
+/// candidate. An MST over those is an MST of the full distance network, so one sweep
+/// and one Kruskal replace `k` searches and a dense matrix.
+///
+/// @param faces Integer or numeric `(F, 3)` matrix of triangle vertex indices
+///   (0-based).
+/// @param n_vertices Integer; total number of vertices.
+/// @param nodes Integer vector of 0-based vertices to span. Must be distinct.
+/// @param vertices Optional numeric `(V, 3)` matrix of vertex coordinates. If given,
+///   edges are weighted by their euclidean length; if `NULL`, distances are hop
+///   counts.
+/// @param limit Optional numeric; do not join vertices further apart than this. The
+///   result is then a *forest* when that disconnects the subset. Unlike a matrix
+///   route's limit this also prunes the sweep, so it buys time rather than merely
+///   discarding results.
+/// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @return List with `edges` (integer `(M, 2)` matrix of **0-based positions in
+///   `nodes`**, not vertex indices — so `nodes[edges + 1]` maps back — ascending by
+///   weight) and `weights` (numeric geodesic distance across each). The returned
+///   weights are exactly the geodesic distances between the pairs they join, so they
+///   are usable as lengths and not merely as an ordering.
+/// @export
+#[extendr]
+pub fn geodesic_mst_mesh(
+    faces: Robj,
+    n_vertices: i32,
+    nodes: Vec<i32>,
+    #[default = "NULL"]
+    vertices: Option<Robj>,
+    #[default = "NULL"]
+    limit: Option<f64>,
+    #[default = "NULL"]
+    threads: Option<i32>,
+) -> Robj {
+    let faces = robj_to_faces(&faces);
+    let coords = robj_to_coords(vertices);
+    let nodes = as_u32(&nodes);
+
+    let (edges, weights) = fastcore::mesh::geodesic_mst_mesh(
+        faces.view(),
+        n_vertices as usize,
+        coords.as_ref().map(|c| c.view()),
+        &nodes,
+        limit.map(|l| l as f32),
+        to_threads(threads),
+    );
+    mst_result(edges, weights)
+}
+
+/// Minimum spanning tree over a subset of graph nodes, by geodesic distance.
+///
+/// The edge-list form of `geodesic_mst_mesh`, which explains why this never builds the
+/// `k x k` distance matrix the question seems to call for. Always undirected — a
+/// minimum spanning tree of a directed graph is a different problem (an arborescence)
+/// with a different algorithm.
+///
+/// @param edges Integer or numeric `(E, 2)` matrix of edges (0-based node indices).
+/// @param n_nodes Integer; total number of nodes.
+/// @param nodes Integer vector of 0-based nodes to span. Must be distinct.
+/// @param weights Optional numeric vector, one length per edge; `NULL` counts edges.
+/// @param limit Optional numeric; do not join nodes further apart than this.
+/// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @return List with `edges` (integer `(M, 2)` matrix of 0-based positions in `nodes`,
+///   ascending by weight) and `weights` (numeric geodesic distance across each).
+/// @export
+#[extendr]
+pub fn geodesic_mst_graph(
+    edges: Robj,
+    n_nodes: i32,
+    nodes: Vec<i32>,
+    #[default = "NULL"]
+    weights: Option<Vec<f64>>,
+    #[default = "NULL"]
+    limit: Option<f64>,
+    #[default = "NULL"]
+    threads: Option<i32>,
+) -> Robj {
+    let edges = robj_to_edges(&edges);
+    let w = to_weights(weights);
+    let nodes = as_u32(&nodes);
+
+    let (mst, mst_w) = fastcore::mesh::geodesic_mst_graph(
+        edges.view(),
+        n_nodes as usize,
+        w.as_ref().map(|w| w.view()).as_ref(),
+        &nodes,
+        limit.map(|l| l as f32),
+        to_threads(threads),
+    );
+    mst_result(mst, mst_w)
+}
+
+/// Shortest path trees over a graph — distances *and* the route to each node.
+///
+/// The predecessor-returning counterpart to `geodesic_matrix_graph`. Use this when you
+/// need the path itself; use `geodesic_matrix_graph` when the distance is enough, and
+/// `geodesic_path` when you want the node sequences rather than the raw chains.
+///
+/// Because this takes a bare edge list there is no index to build or invalidate
+/// between calls, which is what algorithms that re-weight the graph every iteration
+/// need — TEASAR zeroes the edges along each path it extracts, then searches again.
+///
+/// @param edges Integer or numeric `(E, 2)` matrix of edges (0-based node indices).
+/// @param n_nodes Integer; total number of nodes.
+/// @param weights Optional numeric vector, one length per edge; `NULL` counts edges.
+///   Must be finite and non-negative. **Zero weights are explicitly allowed** — they
+///   are how a penalised-path search makes an already-extracted route free to
+///   re-traverse.
+/// @param directed Logical; if `TRUE` an edge `(u, v)` may only be traversed from `u`
+///   to `v`.
+/// @param sources Optional integer vector of 0-based source nodes, one tree each;
+///   `NULL` uses every node.
+/// @param limit Optional numeric; ignore nodes further away than this.
+/// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @return List with `distances` (numeric `(n_sources, n_nodes)` matrix, `-1` where
+///   unreachable) and `predecessors` (integer matrix of the same shape giving, per
+///   node, the node before it on the shortest path back to that row's source; `-1` for
+///   the source itself and for unreachable nodes, so one `>= 0` test both walks the
+///   path and terminates it).
+/// @export
+#[extendr]
+pub fn geodesic_predecessors(
+    edges: Robj,
+    n_nodes: i32,
+    #[default = "NULL"]
+    weights: Option<Vec<f64>>,
+    #[default = "FALSE"]
+    directed: bool,
+    #[default = "NULL"]
+    sources: Option<Vec<i32>>,
+    #[default = "NULL"]
+    limit: Option<f64>,
+    #[default = "NULL"]
+    threads: Option<i32>,
+) -> Robj {
+    let edges = robj_to_edges(&edges);
+    let w = to_weights(weights);
+    let sources = to_u32(sources);
+
+    let (dists, preds) = fastcore::mesh::geodesic_predecessors_graph(
+        edges.view(),
+        n_nodes as usize,
+        w.as_ref().map(|w| w.view()).as_ref(),
+        directed,
+        sources.as_deref(),
+        limit.map(|l| l as f32),
+        to_threads(threads),
+    );
+
+    list!(
+        distances = array2_to_r(&dists, f64::from),
+        predecessors = array2_to_r(&preds, |x| x)
+    )
+    .into()
+}
+
+/// The shortest route from one source to each target, as node sequences.
+///
+/// @param edges Integer or numeric `(E, 2)` matrix of edges (0-based node indices).
+/// @param n_nodes Integer; total number of nodes.
+/// @param source Integer; the 0-based node to start from.
+/// @param targets Integer vector of 0-based nodes to reach.
+/// @param weights Optional numeric vector, one length per edge; `NULL` counts edges.
+/// @param directed Logical; if `TRUE` an edge `(u, v)` may only be traversed from `u`
+///   to `v`.
+/// @return List of integer vectors, one per target in `targets` order, each running
+///   source-first to target-last. An unreachable target gives an empty vector.
+/// @export
+#[extendr]
+pub fn geodesic_path(
+    edges: Robj,
+    n_nodes: i32,
+    source: i32,
+    targets: Vec<i32>,
+    #[default = "NULL"]
+    weights: Option<Vec<f64>>,
+    #[default = "FALSE"]
+    directed: bool,
+) -> Robj {
+    let edges = robj_to_edges(&edges);
+    let w = to_weights(weights);
+    let targets = as_u32(&targets);
+
+    let paths = fastcore::mesh::geodesic_path_graph(
+        edges.view(),
+        n_nodes as usize,
+        w.as_ref().map(|w| w.view()).as_ref(),
+        directed,
+        source as u32,
+        &targets,
+    );
+
+    paths_to_list(
+        paths
+            .into_iter()
+            .map(|p| p.into_iter().map(|v| v as i32).collect::<Vec<i32>>()),
+    )
+}
+
+/// Greedily partition nodes into connected clusters of bounded radius.
+///
+/// Repeatedly takes an unassigned node as a seed and grows a cluster outwards from it,
+/// absorbing any node reachable within `max_dist` that no earlier cluster has already
+/// claimed. Collapsing each cluster to its centroid gives a coarser graph whose nodes
+/// are spaced by roughly `max_dist`, which is what makes this useful as mesh or
+/// skeleton downsampling.
+///
+/// The radius is the **true geodesic distance from the seed**, not the length of the
+/// walk that happened to reach it — so a node close to a seed is never excluded merely
+/// because a traversal arrived at it the long way round.
+///
+/// @param edges Integer or numeric `(E, 2)` matrix of edges (0-based node indices).
+///   Treated as undirected.
+/// @param n_nodes Integer; total number of nodes. Isolated nodes each become their own
+///   cluster.
+/// @param max_dist Numeric; maximum distance from a cluster's seed. Must be finite and
+///   non-negative.
+/// @param weights Optional numeric vector, one length per edge; `NULL` makes
+///   `max_dist` a hop count.
+/// @param seeds Optional integer vector of 0-based nodes to try as seeds, in order of
+///   preference. Any node left unassigned afterwards becomes a seed in ascending index
+///   order; `NULL` seeds in ascending index order throughout.
+/// @return List with `labels` (integer cluster index per node, contiguous in
+///   `[0, n_clusters)` and numbered in the order the clusters were grown; every node is
+///   labelled) and `n_clusters` (integer).
+/// @export
+#[extendr]
+pub fn geodesic_clusters(
+    edges: Robj,
+    n_nodes: i32,
+    max_dist: f64,
+    #[default = "NULL"]
+    weights: Option<Vec<f64>>,
+    #[default = "NULL"]
+    seeds: Option<Vec<i32>>,
+) -> Robj {
+    let edges = robj_to_edges(&edges);
+    let w = to_weights(weights);
+    let seeds = to_u32(seeds);
+
+    let (labels, n) = fastcore::mesh::geodesic_clusters(
+        edges.view(),
+        n_nodes as usize,
+        max_dist as f32,
+        w.as_ref().map(|w| w.view()).as_ref(),
+        seeds.as_deref(),
+    );
+    list!(labels = labels, n_clusters = n as i32).into()
 }
 
 // ---------------------------------------------------------------------------
@@ -1099,11 +1919,6 @@ fn flat_to_rmatrix(flat: &[f64], nrows: usize, ncols: usize) -> Robj {
 }
 
 /// Build an R numeric matrix from an `ndarray` `Array2<f64>`.
-fn array2_to_rmatrix(arr: &Array2<f64>) -> Robj {
-    let (nr, nc) = (arr.nrows(), arr.ncols());
-    RArray::new_matrix(nr, nc, |r, c| arr[[r, c]]).into()
-}
-
 /// The `limit_dist="auto"` value for a scoring matrix.
 ///
 /// @param smat_values Numeric scoring matrix, or `NULL` for the built-in FCWB
@@ -2447,6 +3262,16 @@ extendr_module! {
     fn synapse_flow_centrality;
     fn generate_segments;
     fn break_segments;
+    fn descendants;
+    fn paths_to_root;
+    fn reroot;
+    fn contract_nodes;
+    fn simplify_skeleton;
+    fn adjacency;
+    fn longest_path;
+    fn longest_paths;
+    fn betweenness;
+    fn descendant_counts;
     fn stitch_fragments;
     fn reroot_rewire;
     fn heal_skeleton;
@@ -2455,6 +3280,18 @@ extendr_module! {
     fn geodesic_matrix_graph;
     fn geodesic_nearest_mesh;
     fn geodesic_farthest_mesh;
+    fn unique_edges;
+    fn connected_components_graph;
+    fn level_set_components;
+    fn contract_vertices;
+    fn minimum_spanning_tree;
+    fn spanning_forest;
+    fn bridges;
+    fn geodesic_mst_mesh;
+    fn geodesic_mst_graph;
+    fn geodesic_predecessors;
+    fn geodesic_path;
+    fn geodesic_clusters;
     fn smat_auto_limit;
     fn nblast_allbyall;
     fn nblast;

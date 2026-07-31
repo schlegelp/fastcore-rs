@@ -210,6 +210,154 @@ generate_segments <- function(parents, weights) .Call(wrap__generate_segments, p
 #' @export
 break_segments <- function(parents) .Call(wrap__break_segments, parents)
 
+#' Every node in the sub-tree below each source.
+#'
+#' The replacement for `igraph::subcomponent(mode = "in")`, and what makes "cut the
+#' skeleton here" a masking operation rather than a graph rebuild.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param sources Integer vector of 0-based node indices to walk down from.
+#' @return List of integer vectors, one per source in `sources` order. Each starts
+#'   with the source itself and is in depth-first pre-order, so a node always
+#'   precedes its own descendants. An out-of-range source gives an empty vector.
+#' @export
+descendants <- function(parents, sources) .Call(wrap__descendants, parents, sources)
+
+#' The path from each source up to its root.
+#'
+#' The other direction of the same walk as `descendants`.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param sources Integer vector of 0-based node indices to walk up from.
+#' @return List of integer vectors, one per source in `sources` order, ordered
+#'   source-first / root-last. A source that is itself a root gives a
+#'   single-element vector; an out-of-range source gives an empty one.
+#' @export
+paths_to_root <- function(parents, sources) .Call(wrap__paths_to_root, parents, sources)
+
+#' Re-orient a forest so that each of `new_roots` becomes its component's root.
+#'
+#' Only the edges between each new root and its component's old root are reversed;
+#' components nobody names come back byte-identical. The general form of
+#' `reroot_rewire`, which takes one preferred root plus a set of new edges.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param new_roots Integer vector of 0-based node indices to root at. Two roots in
+#'   the same component: the last one named wins.
+#' @return Integer vector of new 0-based parent indices, aligned with `parents`.
+#'   Roots are `-1`.
+#' @export
+reroot <- function(parents, new_roots) .Call(wrap__reroot, parents, new_roots)
+
+#' Collapse groups of nodes onto a representative and rewire what is left.
+#'
+#' Edges internal to a group are dropped rather than turned into self-loops.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param mapping Integer vector, one entry per node, giving the 0-based index of
+#'   the node it collapses onto. A node mapped to itself survives.
+#' @return List with `nodes` (0-based indices of the surviving nodes, in their
+#'   original relative order) and `parents` (their new 0-based parent indices,
+#'   `-1` for roots, indexing *into* `nodes`).
+#' @export
+contract_nodes <- function(parents, mapping) .Call(wrap__contract_nodes, parents, mapping)
+
+#' Keep only roots, leafs and branch points, preserving cable length.
+#'
+#' Each replacement edge carries the summed length of the chain it stands in for, so
+#' total cable length is unchanged.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param weights Optional numeric vector of child-to-parent edge weights; `NULL`
+#'   returns no `weights`.
+#' @return List with `nodes` (0-based indices of the surviving nodes, in their
+#'   original relative order), `parents` (their new 0-based parent indices, `-1` for
+#'   roots, indexing *into* `nodes`) and `weights` (length of each node's edge to its
+#'   new parent, roots `0`; `NULL` exactly when `weights` was `NULL`).
+#' @export
+simplify_skeleton <- function(parents, weights = NULL) .Call(wrap__simplify_skeleton, parents, weights)
+
+#' The skeleton's adjacency matrix, as the three arrays of a CSR matrix.
+#'
+#' Handing back the raw arrays rather than a matrix object keeps this package free of
+#' a sparse-matrix dependency; feed them to `Matrix::sparseMatrix(p = indptr, i =
+#' indices, x = data, ...)` if you want one.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param weights Optional numeric vector of child-to-parent edge weights; `NULL`
+#'   gives every edge weight 1.
+#' @param directed Logical; if `TRUE` (default) only child-to-parent edges are
+#'   stored, if `FALSE` both directions are.
+#' @param transpose Logical; if `TRUE` store parent-to-child instead. Ignored when
+#'   `directed` is `FALSE`, where the matrix is symmetric anyway.
+#' @return List with `indptr` (integer, `N + 1` entries), `indices` (integer column
+#'   index per non-zero) and `data` (numeric weight per non-zero). Rows and columns
+#'   are in node-index order and column indices ascend within each row.
+#' @export
+adjacency <- function(parents, weights = NULL, directed = TRUE, transpose = FALSE) .Call(wrap__adjacency, parents, weights, directed, transpose)
+
+#' The longest path from any node to its root.
+#'
+#' Not the NP-hard general problem: in a rooted forest every maximal path is fixed by
+#' its start node, so this is a distances-to-root question.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param weights Optional numeric vector of child-to-parent edge weights; `NULL`
+#'   counts edges.
+#' @return Integer vector of 0-based node indices along the path, **distal first** —
+#'   so the first element is the far end and the last is a root. Ties break towards
+#'   the lowest node index.
+#' @export
+longest_path <- function(parents, weights = NULL) .Call(wrap__longest_path, parents, weights)
+
+#' The `n` longest paths, each peeled off before the next is sought.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param n Integer; how many paths to take.
+#' @param weights Optional numeric vector of child-to-parent edge weights; `NULL`
+#'   counts edges.
+#' @param min_length Optional numeric; stop once the next path is no longer than
+#'   this. Note it measures the path's whole *catchment* — every edge whose parent
+#'   lies on the path, so each twig hanging off it contributes its first edge too —
+#'   and that hitting it **stops** the search rather than skipping one path. Both are
+#'   inherited from `navis::split_into_fragments`, where they are load-bearing.
+#' @return List of up to `n` integer vectors of 0-based node indices, longest first,
+#'   each distal-first.
+#' @export
+longest_paths <- function(parents, n, weights = NULL, min_length = NULL) .Call(wrap__longest_paths, parents, n, weights, min_length)
+
+#' Betweenness centrality, in `O(N)` rather than Brandes' `O(V*E)`.
+#'
+#' Shortest paths in a tree are unique, so the count through a node is a closed form:
+#' descendants times ancestors when directed, and a sum of products over the parts it
+#' separates when not. Pairs are only counted within a connected component.
+#'
+#' Note this is *not* `navis::betweeness_centrality(from_ = ...)`, which despite the
+#' name computes a descendant count — see `descendant_counts`.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param directed Logical; if `TRUE` only count paths running child-to-parent.
+#' @return Numeric vector of path counts, aligned with `parents`. Returned as double
+#'   rather than integer because an undirected 100k-node skeleton reaches ~5e9, well
+#'   past R's 32-bit integer.
+#' @export
+betweenness <- function(parents, directed = TRUE) .Call(wrap__betweenness, parents, directed)
+
+#' How many nodes lie strictly below each node.
+#'
+#' This is what `navis::betweeness_centrality(from_ = ...)` actually computes, and
+#' what `navis::find_main_branchpoint(method = "betweenness")` — its one caller —
+#' wants.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param targets Optional integer vector of 0-based node indices; `NULL` counts
+#'   every node, otherwise only these are counted.
+#' @return Numeric vector of counts, aligned with `parents`. A node is never its own
+#'   descendant, so a leaf scores `0` even when it is itself a target. Double rather
+#'   than integer for the same reason as `betweenness`.
+#' @export
+descendant_counts <- function(parents, targets = NULL) .Call(wrap__descendant_counts, parents, targets)
+
 #' Find the minimal-length edges that reconnect the fragments of a skeleton.
 #'
 #' Given a per-node component label and node coordinates, this returns the set of
@@ -402,6 +550,272 @@ geodesic_nearest_mesh <- function(faces, n_vertices, vertices, sources, targets,
 #' @export
 geodesic_farthest_mesh <- function(faces, n_vertices, vertices, sources, targets, limit, threads) .Call(wrap__geodesic_farthest_mesh, faces, n_vertices, vertices, sources, targets, limit, threads)
 
+#' Unique undirected edges of a triangle mesh.
+#'
+#' Each face `(a, b, c)` contributes the edges `(a, b)`, `(b, c)`, `(c, a)`. Edges are
+#' undirected, so each pair is normalised to `[min, max]` before dedup; self-loops
+#' from degenerate faces are kept.
+#'
+#' @param faces Integer or numeric `(F, 3)` matrix of triangle vertex indices
+#'   (0-based).
+#' @param vertices Optional numeric `(V, 3)` matrix of vertex coordinates. If given,
+#'   also returns the euclidean length of each unique edge.
+#' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @return List with `edges` (integer `(n_unique, 2)` matrix of `[min, max]` rows,
+#'   sorted ascending by `(max, min)`) and `lengths` (numeric edge lengths, or `NULL`
+#'   when `vertices` was `NULL`).
+#' @export
+unique_edges <- function(faces, vertices = NULL, threads = NULL) .Call(wrap__unique_edges, faces, vertices, threads)
+
+#' Connected components of a graph given as an edge list.
+#'
+#' The edge-list counterpart of `mesh_connected_components`, using the same
+#' Union-Find: one integer array, no adjacency list.
+#'
+#' @param edges Integer or numeric `(E, 2)` matrix of edges (0-based node indices).
+#'   Direction is ignored; self-loops and parallel edges are harmless.
+#' @param n_nodes Integer; total number of nodes. Nodes named by no edge form
+#'   components of size one.
+#' @return Integer vector giving, per node, the smallest node index in its component.
+#' @export
+connected_components_graph <- function(edges, n_nodes) .Call(wrap__connected_components_graph, edges, n_nodes)
+
+#' Connected components of every level set at once.
+#'
+#' Given a label per node, finds the connected components of each subgraph induced by
+#' the nodes sharing a label — all labels in a single pass, by unioning an edge only
+#' when its two endpoints agree. This is the inner loop of wavefront-style mesh
+#' skeletonization, where the label is a binned geodesic distance and each component
+#' is one ring around the structure.
+#'
+#' Done conventionally that loop costs one subgraph construction plus one component
+#' search per distinct label; here it is one sweep over the edges.
+#'
+#' @param edges Integer or numeric `(E, 2)` matrix of edges (0-based node indices).
+#' @param n_nodes Integer; total number of nodes.
+#' @param labels Integer vector with one label per node. **Negative labels mark
+#'   excluded nodes**: they join no component and come back as `-1`. That is what lets
+#'   you feed in the output of a search that could not reach everything —
+#'   `geodesic_matrix_*` returns `-1` for unreachable — rather than lumping every
+#'   unreachable node into one bogus level.
+#' @return List with `ids` (integer component index per node in `[0, n_components)`,
+#'   or `-1` for excluded nodes; assigned in order of first appearance scanning nodes
+#'   low to high) and `n_components` (integer).
+#' @export
+level_set_components <- function(edges, n_nodes, labels) .Call(wrap__level_set_components, edges, n_nodes, labels)
+
+#' Contract nodes onto new ids, returning the simplified edge list.
+#'
+#' Both endpoints of every edge are pushed through `mapping`; edges that end up with
+#' both ends on the same new node are dropped, and the rest deduplicated. This is
+#' `igraph::contract_vertices()` followed by `simplify()`, fused — and, unlike that
+#' pair, it does not rewrite a graph object in place, so contracting costs no copy.
+#'
+#' @param edges Integer or numeric `(E, 2)` matrix of edges (0-based node indices).
+#' @param mapping Integer vector giving the new 0-based id of each old node. Ids need
+#'   not be contiguous, but the output is only as compact as the ids you supply.
+#' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @return Integer `(n_unique, 2)` matrix of the surviving edges as `[min, max]` rows.
+#' @export
+contract_vertices <- function(edges, mapping, threads = NULL) .Call(wrap__contract_vertices, edges, mapping, threads)
+
+#' Minimum (or maximum) spanning forest of an undirected graph.
+#'
+#' Kruskal's algorithm on the same Union-Find as the component search: sort the edges
+#' by weight, keep the ones that join two different components. Disconnected input is
+#' fine — each component contributes its own tree.
+#'
+#' @param edges Integer or numeric `(E, 2)` matrix of edges (0-based node indices).
+#' @param n_nodes Integer; total number of nodes.
+#' @param weights Optional numeric vector, one weight per edge; `NULL` treats every
+#'   edge as equal. Must be finite; negative weights are allowed.
+#' @param maximize Logical; return the *maximum* spanning forest instead. This exists
+#'   so you do not have to pass `1 / weights` to invert the ordering — a transform
+#'   that both loses precision and blows up on the zero weights that legitimately
+#'   occur.
+#' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @return Integer vector of 0-based **row indices into `edges`**, ordered by weight —
+#'   not the edges themselves, so you can index whatever per-edge data you hold with
+#'   the same vector. Remember to add 1 before using it to subset an R matrix.
+#' @export
+minimum_spanning_tree <- function(edges, n_nodes, weights = NULL, maximize = FALSE, threads = NULL) .Call(wrap__minimum_spanning_tree, edges, n_nodes, weights, maximize, threads)
+
+#' Orient a graph into a rooted spanning forest — one parent per node.
+#'
+#' `minimum_spanning_tree` picks *which* edges survive; this picks which way they
+#' point, which is what turns a bag of undirected edges into something you can walk,
+#' root, or write out as SWC. Cycles are fine — each component contributes a spanning
+#' tree of itself, so this doubles as a cycle-breaker.
+#'
+#' One search covers the whole graph. The obvious construction — a shortest-path tree
+#' per component — costs `O(components * n_nodes)` in output alone, which on a mesh
+#' that shatters into thousands of specks is gigabytes to answer a question whose
+#' answer is one vector.
+#'
+#' @param edges Integer or numeric `(E, 2)` matrix of edges (0-based node indices).
+#'   Direction is ignored.
+#' @param n_nodes Integer; total number of nodes. Nodes named by no edge are isolated
+#'   roots.
+#' @param weights Optional numeric vector, one length per edge. `NULL` gives the
+#'   breadth-first tree; weights give the shortest-path tree, which is a different
+#'   (and generally deeper) spanning tree. Neither is the minimum spanning tree — for
+#'   that, run `minimum_spanning_tree` first and orient the edges it keeps.
+#' @param roots Optional integer vector of 0-based nodes to root at; `NULL` roots each
+#'   component at its lowest node index. Components holding none of `roots` fall back
+#'   to that, so the result is always a complete forest. Two roots in the *same*
+#'   component split it into two trees, each node going to whichever root is nearer.
+#' @return List with `parents` (integer 0-based parent index per node, `-1` at a root)
+#'   and `order` (integer 0-based node indices in the order they settled — a node
+#'   always follows its parent, so relabelling by it guarantees parents get lower
+#'   indices than their children, which is exactly the SWC requirement).
+#' @export
+spanning_forest <- function(edges, n_nodes, weights = NULL, roots = NULL) .Call(wrap__spanning_forest, edges, n_nodes, weights, roots)
+
+#' Which edges are bridges — the ones whose removal would disconnect their component.
+#'
+#' Tarjan's algorithm, one depth-first sweep. The counterpart to
+#' `minimum_spanning_tree` rather than a variant of it: the MST asks which edges to
+#' *keep* to stay connected, this asks which ones may not be *dropped*. That is the
+#' question behind "prune this graph but do not shatter it".
+#'
+#' Parallel edges are honoured — two nodes joined twice are joined by a cycle, so
+#' neither of those edges is a bridge. Self-loops are never bridges.
+#'
+#' @param edges Integer or numeric `(E, 2)` matrix of edges (0-based node indices).
+#'   Direction is ignored.
+#' @param n_nodes Integer; total number of nodes.
+#' @return Logical vector with one flag per input edge, `TRUE` for a bridge.
+#' @export
+bridges <- function(edges, n_nodes) .Call(wrap__bridges, edges, n_nodes)
+
+#' Minimum spanning tree over a subset of mesh vertices, by geodesic distance.
+#'
+#' The tree that reconnects a scatter of surviving vertices through the mesh they were
+#' carved out of — the last step of a skeletonization, where the mesh has been thinned
+#' to a few thousand vertices that must be rejoined along the surface rather than
+#' through space.
+#'
+#' The obvious route is to ask for the `k x k` geodesic matrix and hand it to a matrix
+#' MST. That materialises `k^2` distances to use `k - 1` of them — 400 MB at
+#' `k = 10000`, before the `O(k^2)` MST itself — and needs `k` separate searches to
+#' fill. This never forms the matrix: following Mehlhorn's distance-network
+#' construction, one multi-source search partitions every vertex by which of `nodes`
+#' is nearest, and each mesh edge whose endpoints fall in different cells offers one
+#' candidate. An MST over those is an MST of the full distance network, so one sweep
+#' and one Kruskal replace `k` searches and a dense matrix.
+#'
+#' @param faces Integer or numeric `(F, 3)` matrix of triangle vertex indices
+#'   (0-based).
+#' @param n_vertices Integer; total number of vertices.
+#' @param nodes Integer vector of 0-based vertices to span. Must be distinct.
+#' @param vertices Optional numeric `(V, 3)` matrix of vertex coordinates. If given,
+#'   edges are weighted by their euclidean length; if `NULL`, distances are hop
+#'   counts.
+#' @param limit Optional numeric; do not join vertices further apart than this. The
+#'   result is then a *forest* when that disconnects the subset. Unlike a matrix
+#'   route's limit this also prunes the sweep, so it buys time rather than merely
+#'   discarding results.
+#' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @return List with `edges` (integer `(M, 2)` matrix of **0-based positions in
+#'   `nodes`**, not vertex indices — so `nodes[edges + 1]` maps back — ascending by
+#'   weight) and `weights` (numeric geodesic distance across each). The returned
+#'   weights are exactly the geodesic distances between the pairs they join, so they
+#'   are usable as lengths and not merely as an ordering.
+#' @export
+geodesic_mst_mesh <- function(faces, n_vertices, nodes, vertices = NULL, limit = NULL, threads = NULL) .Call(wrap__geodesic_mst_mesh, faces, n_vertices, nodes, vertices, limit, threads)
+
+#' Minimum spanning tree over a subset of graph nodes, by geodesic distance.
+#'
+#' The edge-list form of `geodesic_mst_mesh`, which explains why this never builds the
+#' `k x k` distance matrix the question seems to call for. Always undirected — a
+#' minimum spanning tree of a directed graph is a different problem (an arborescence)
+#' with a different algorithm.
+#'
+#' @param edges Integer or numeric `(E, 2)` matrix of edges (0-based node indices).
+#' @param n_nodes Integer; total number of nodes.
+#' @param nodes Integer vector of 0-based nodes to span. Must be distinct.
+#' @param weights Optional numeric vector, one length per edge; `NULL` counts edges.
+#' @param limit Optional numeric; do not join nodes further apart than this.
+#' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @return List with `edges` (integer `(M, 2)` matrix of 0-based positions in `nodes`,
+#'   ascending by weight) and `weights` (numeric geodesic distance across each).
+#' @export
+geodesic_mst_graph <- function(edges, n_nodes, nodes, weights = NULL, limit = NULL, threads = NULL) .Call(wrap__geodesic_mst_graph, edges, n_nodes, nodes, weights, limit, threads)
+
+#' Shortest path trees over a graph — distances *and* the route to each node.
+#'
+#' The predecessor-returning counterpart to `geodesic_matrix_graph`. Use this when you
+#' need the path itself; use `geodesic_matrix_graph` when the distance is enough, and
+#' `geodesic_path` when you want the node sequences rather than the raw chains.
+#'
+#' Because this takes a bare edge list there is no index to build or invalidate
+#' between calls, which is what algorithms that re-weight the graph every iteration
+#' need — TEASAR zeroes the edges along each path it extracts, then searches again.
+#'
+#' @param edges Integer or numeric `(E, 2)` matrix of edges (0-based node indices).
+#' @param n_nodes Integer; total number of nodes.
+#' @param weights Optional numeric vector, one length per edge; `NULL` counts edges.
+#'   Must be finite and non-negative. **Zero weights are explicitly allowed** — they
+#'   are how a penalised-path search makes an already-extracted route free to
+#'   re-traverse.
+#' @param directed Logical; if `TRUE` an edge `(u, v)` may only be traversed from `u`
+#'   to `v`.
+#' @param sources Optional integer vector of 0-based source nodes, one tree each;
+#'   `NULL` uses every node.
+#' @param limit Optional numeric; ignore nodes further away than this.
+#' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @return List with `distances` (numeric `(n_sources, n_nodes)` matrix, `-1` where
+#'   unreachable) and `predecessors` (integer matrix of the same shape giving, per
+#'   node, the node before it on the shortest path back to that row's source; `-1` for
+#'   the source itself and for unreachable nodes, so one `>= 0` test both walks the
+#'   path and terminates it).
+#' @export
+geodesic_predecessors <- function(edges, n_nodes, weights = NULL, directed = FALSE, sources = NULL, limit = NULL, threads = NULL) .Call(wrap__geodesic_predecessors, edges, n_nodes, weights, directed, sources, limit, threads)
+
+#' The shortest route from one source to each target, as node sequences.
+#'
+#' @param edges Integer or numeric `(E, 2)` matrix of edges (0-based node indices).
+#' @param n_nodes Integer; total number of nodes.
+#' @param source Integer; the 0-based node to start from.
+#' @param targets Integer vector of 0-based nodes to reach.
+#' @param weights Optional numeric vector, one length per edge; `NULL` counts edges.
+#' @param directed Logical; if `TRUE` an edge `(u, v)` may only be traversed from `u`
+#'   to `v`.
+#' @return List of integer vectors, one per target in `targets` order, each running
+#'   source-first to target-last. An unreachable target gives an empty vector.
+#' @export
+geodesic_path <- function(edges, n_nodes, source, targets, weights = NULL, directed = FALSE) .Call(wrap__geodesic_path, edges, n_nodes, source, targets, weights, directed)
+
+#' Greedily partition nodes into connected clusters of bounded radius.
+#'
+#' Repeatedly takes an unassigned node as a seed and grows a cluster outwards from it,
+#' absorbing any node reachable within `max_dist` that no earlier cluster has already
+#' claimed. Collapsing each cluster to its centroid gives a coarser graph whose nodes
+#' are spaced by roughly `max_dist`, which is what makes this useful as mesh or
+#' skeleton downsampling.
+#'
+#' The radius is the **true geodesic distance from the seed**, not the length of the
+#' walk that happened to reach it — so a node close to a seed is never excluded merely
+#' because a traversal arrived at it the long way round.
+#'
+#' @param edges Integer or numeric `(E, 2)` matrix of edges (0-based node indices).
+#'   Treated as undirected.
+#' @param n_nodes Integer; total number of nodes. Isolated nodes each become their own
+#'   cluster.
+#' @param max_dist Numeric; maximum distance from a cluster's seed. Must be finite and
+#'   non-negative.
+#' @param weights Optional numeric vector, one length per edge; `NULL` makes
+#'   `max_dist` a hop count.
+#' @param seeds Optional integer vector of 0-based nodes to try as seeds, in order of
+#'   preference. Any node left unassigned afterwards becomes a seed in ascending index
+#'   order; `NULL` seeds in ascending index order throughout.
+#' @return List with `labels` (integer cluster index per node, contiguous in
+#'   `[0, n_clusters)` and numbered in the order the clusters were grown; every node is
+#'   labelled) and `n_clusters` (integer).
+#' @export
+geodesic_clusters <- function(edges, n_nodes, max_dist, weights = NULL, seeds = NULL) .Call(wrap__geodesic_clusters, edges, n_nodes, max_dist, weights, seeds)
+
+#' Build an R numeric matrix from an `ndarray` `Array2<f64>`.
 #' The `limit_dist="auto"` value for a scoring matrix.
 #'
 #' @param smat_values Numeric scoring matrix, or `NULL` for the built-in FCWB
