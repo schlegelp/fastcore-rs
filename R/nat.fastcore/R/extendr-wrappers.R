@@ -473,10 +473,12 @@ mesh_connected_components <- function(faces, n_vertices) .Call(wrap__mesh_connec
 #'   every vertex.
 #' @param limit Optional numeric; ignore vertices further away than this.
 #' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @param precision Integer; 32 or 64, the width distances are accumulated at. The
+#'   result is numeric either way — R has no float32 — so this buys accuracy.
 #' @return Numeric matrix of geodesic distances (sources in rows, targets in
 #'   columns). Unreachable pairs are `-1`.
 #' @export
-geodesic_matrix_mesh <- function(faces, n_vertices, vertices, sources, targets, limit, threads) .Call(wrap__geodesic_matrix_mesh, faces, n_vertices, vertices, sources, targets, limit, threads)
+geodesic_matrix_mesh <- function(faces, n_vertices, vertices, sources, targets, limit, threads, precision = 32) .Call(wrap__geodesic_matrix_mesh, faces, n_vertices, vertices, sources, targets, limit, threads, precision)
 
 #' Geodesic distances over an arbitrary graph given as an edge list.
 #'
@@ -496,10 +498,12 @@ geodesic_matrix_mesh <- function(faces, n_vertices, vertices, sources, targets, 
 #'   node.
 #' @param limit Optional numeric; ignore nodes further away than this.
 #' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @param precision Integer; 32 or 64, the width distances are accumulated at. The
+#'   result is numeric either way — R has no float32 — so this buys accuracy.
 #' @return Numeric matrix of geodesic distances (sources in rows, targets in
 #'   columns). Unreachable pairs are `-1`.
 #' @export
-geodesic_matrix_graph <- function(edges, n_nodes, weights, directed, sources, targets, limit, threads) .Call(wrap__geodesic_matrix_graph, edges, n_nodes, weights, directed, sources, targets, limit, threads)
+geodesic_matrix_graph <- function(edges, n_nodes, weights, directed, sources, targets, limit, threads, precision = 32) .Call(wrap__geodesic_matrix_graph, edges, n_nodes, weights, directed, sources, targets, limit, threads, precision)
 
 #' Distance to the nearest target vertex, for each source vertex of a mesh.
 #'
@@ -522,9 +526,11 @@ geodesic_matrix_graph <- function(edges, n_nodes, weights, directed, sources, ta
 #'   every vertex.
 #' @param limit Optional numeric; ignore targets further away than this.
 #' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @param precision Integer; 32 or 64, the width distances are accumulated at. The
+#'   result is numeric either way — R has no float32 — so this buys accuracy.
 #' @return A list with `distances` and `nearest`.
 #' @export
-geodesic_nearest_mesh <- function(faces, n_vertices, vertices, sources, targets, limit, threads) .Call(wrap__geodesic_nearest_mesh, faces, n_vertices, vertices, sources, targets, limit, threads)
+geodesic_nearest_mesh <- function(faces, n_vertices, vertices, sources, targets, limit, threads, precision = 32) .Call(wrap__geodesic_nearest_mesh, faces, n_vertices, vertices, sources, targets, limit, threads, precision)
 
 #' Distance to the farthest target vertex, for each source vertex of a mesh.
 #'
@@ -546,9 +552,11 @@ geodesic_nearest_mesh <- function(faces, n_vertices, vertices, sources, targets,
 #'   every vertex.
 #' @param limit Optional numeric; ignore targets further away than this.
 #' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @param precision Integer; 32 or 64, the width distances are accumulated at. The
+#'   result is numeric either way — R has no float32 — so this buys accuracy.
 #' @return A list with `distances` and `farthest`.
 #' @export
-geodesic_farthest_mesh <- function(faces, n_vertices, vertices, sources, targets, limit, threads) .Call(wrap__geodesic_farthest_mesh, faces, n_vertices, vertices, sources, targets, limit, threads)
+geodesic_farthest_mesh <- function(faces, n_vertices, vertices, sources, targets, limit, threads, precision = 32) .Call(wrap__geodesic_farthest_mesh, faces, n_vertices, vertices, sources, targets, limit, threads, precision)
 
 #' Unique undirected edges of a triangle mesh.
 #'
@@ -634,11 +642,13 @@ contract_vertices <- function(edges, mapping, threads = NULL) .Call(wrap__contra
 #'   that both loses precision and blows up on the zero weights that legitimately
 #'   occur.
 #' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @param precision Integer; 32 or 64, the width the search accumulates at. Nothing
+#'   here returns a distance, so this changes only which answer close ties resolve to.
 #' @return Integer vector of 0-based **row indices into `edges`**, ordered by weight —
 #'   not the edges themselves, so you can index whatever per-edge data you hold with
 #'   the same vector. Remember to add 1 before using it to subset an R matrix.
 #' @export
-minimum_spanning_tree <- function(edges, n_nodes, weights = NULL, maximize = FALSE, threads = NULL) .Call(wrap__minimum_spanning_tree, edges, n_nodes, weights, maximize, threads)
+minimum_spanning_tree <- function(edges, n_nodes, weights = NULL, maximize = FALSE, threads = NULL, precision = 32) .Call(wrap__minimum_spanning_tree, edges, n_nodes, weights, maximize, threads, precision)
 
 #' Orient a graph into a rooted spanning forest — one parent per node.
 #'
@@ -664,12 +674,14 @@ minimum_spanning_tree <- function(edges, n_nodes, weights = NULL, maximize = FAL
 #'   component at its lowest node index. Components holding none of `roots` fall back
 #'   to that, so the result is always a complete forest. Two roots in the *same*
 #'   component split it into two trees, each node going to whichever root is nearer.
+#' @param precision Integer; 32 or 64, the width the search accumulates at. Nothing
+#'   here returns a distance, so this changes only which answer close ties resolve to.
 #' @return List with `parents` (integer 0-based parent index per node, `-1` at a root)
 #'   and `order` (integer 0-based node indices in the order they settled — a node
 #'   always follows its parent, so relabelling by it guarantees parents get lower
 #'   indices than their children, which is exactly the SWC requirement).
 #' @export
-parents_from_edges <- function(edges, n_nodes, weights = NULL, roots = NULL) .Call(wrap__parents_from_edges, edges, n_nodes, weights, roots)
+parents_from_edges <- function(edges, n_nodes, weights = NULL, roots = NULL, precision = 32) .Call(wrap__parents_from_edges, edges, n_nodes, weights, roots, precision)
 
 #' Which edges are bridges — the ones whose removal would disconnect their component.
 #'
@@ -716,13 +728,15 @@ bridges <- function(edges, n_nodes) .Call(wrap__bridges, edges, n_nodes)
 #'   route's limit this also prunes the sweep, so it buys time rather than merely
 #'   discarding results.
 #' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @param precision Integer; 32 or 64, the width distances are accumulated at. The
+#'   result is numeric either way — R has no float32 — so this buys accuracy.
 #' @return List with `edges` (integer `(M, 2)` matrix of **0-based positions in
 #'   `nodes`**, not vertex indices — so `nodes[edges + 1]` maps back — ascending by
 #'   weight) and `weights` (numeric geodesic distance across each). The returned
 #'   weights are exactly the geodesic distances between the pairs they join, so they
 #'   are usable as lengths and not merely as an ordering.
 #' @export
-geodesic_mst_mesh <- function(faces, n_vertices, nodes, vertices = NULL, limit = NULL, threads = NULL) .Call(wrap__geodesic_mst_mesh, faces, n_vertices, nodes, vertices, limit, threads)
+geodesic_mst_mesh <- function(faces, n_vertices, nodes, vertices = NULL, limit = NULL, threads = NULL, precision = 32) .Call(wrap__geodesic_mst_mesh, faces, n_vertices, nodes, vertices, limit, threads, precision)
 
 #' Minimum spanning tree over a subset of graph nodes, by geodesic distance.
 #'
@@ -737,10 +751,12 @@ geodesic_mst_mesh <- function(faces, n_vertices, nodes, vertices = NULL, limit =
 #' @param weights Optional numeric vector, one length per edge; `NULL` counts edges.
 #' @param limit Optional numeric; do not join nodes further apart than this.
 #' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @param precision Integer; 32 or 64, the width distances are accumulated at. The
+#'   result is numeric either way — R has no float32 — so this buys accuracy.
 #' @return List with `edges` (integer `(M, 2)` matrix of 0-based positions in `nodes`,
 #'   ascending by weight) and `weights` (numeric geodesic distance across each).
 #' @export
-geodesic_mst_graph <- function(edges, n_nodes, nodes, weights = NULL, limit = NULL, threads = NULL) .Call(wrap__geodesic_mst_graph, edges, n_nodes, nodes, weights, limit, threads)
+geodesic_mst_graph <- function(edges, n_nodes, nodes, weights = NULL, limit = NULL, threads = NULL, precision = 32) .Call(wrap__geodesic_mst_graph, edges, n_nodes, nodes, weights, limit, threads, precision)
 
 #' Shortest path trees over a graph — distances *and* the route to each node.
 #'
@@ -764,13 +780,15 @@ geodesic_mst_graph <- function(edges, n_nodes, nodes, weights = NULL, limit = NU
 #'   `NULL` uses every node.
 #' @param limit Optional numeric; ignore nodes further away than this.
 #' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @param precision Integer; 32 or 64, the width distances are accumulated at. The
+#'   result is numeric either way — R has no float32 — so this buys accuracy.
 #' @return List with `distances` (numeric `(n_sources, n_nodes)` matrix, `-1` where
 #'   unreachable) and `predecessors` (integer matrix of the same shape giving, per
 #'   node, the node before it on the shortest path back to that row's source; `-1` for
 #'   the source itself and for unreachable nodes, so one `>= 0` test both walks the
 #'   path and terminates it).
 #' @export
-geodesic_predecessors <- function(edges, n_nodes, weights = NULL, directed = FALSE, sources = NULL, limit = NULL, threads = NULL) .Call(wrap__geodesic_predecessors, edges, n_nodes, weights, directed, sources, limit, threads)
+geodesic_predecessors <- function(edges, n_nodes, weights = NULL, directed = FALSE, sources = NULL, limit = NULL, threads = NULL, precision = 32) .Call(wrap__geodesic_predecessors, edges, n_nodes, weights, directed, sources, limit, threads, precision)
 
 #' The shortest route from one source to each target, as node sequences.
 #'
@@ -781,10 +799,12 @@ geodesic_predecessors <- function(edges, n_nodes, weights = NULL, directed = FAL
 #' @param weights Optional numeric vector, one length per edge; `NULL` counts edges.
 #' @param directed Logical; if `TRUE` an edge `(u, v)` may only be traversed from `u`
 #'   to `v`.
+#' @param precision Integer; 32 or 64, the width the search accumulates at. Nothing
+#'   here returns a distance, so this changes only which answer close ties resolve to.
 #' @return List of integer vectors, one per target in `targets` order, each running
 #'   source-first to target-last. An unreachable target gives an empty vector.
 #' @export
-geodesic_path <- function(edges, n_nodes, source, targets, weights = NULL, directed = FALSE) .Call(wrap__geodesic_path, edges, n_nodes, source, targets, weights, directed)
+geodesic_path <- function(edges, n_nodes, source, targets, weights = NULL, directed = FALSE, precision = 32) .Call(wrap__geodesic_path, edges, n_nodes, source, targets, weights, directed, precision)
 
 #' Greedily partition nodes into connected clusters of bounded radius.
 #'
@@ -809,11 +829,13 @@ geodesic_path <- function(edges, n_nodes, source, targets, weights = NULL, direc
 #' @param seeds Optional integer vector of 0-based nodes to try as seeds, in order of
 #'   preference. Any node left unassigned afterwards becomes a seed in ascending index
 #'   order; `NULL` seeds in ascending index order throughout.
+#' @param precision Integer; 32 or 64, the width the search accumulates at. Nothing
+#'   here returns a distance, so this changes only which answer close ties resolve to.
 #' @return List with `labels` (integer cluster index per node, contiguous in
 #'   `[0, n_clusters)` and numbered in the order the clusters were grown; every node is
 #'   labelled) and `n_clusters` (integer).
 #' @export
-geodesic_clusters <- function(edges, n_nodes, max_dist, weights = NULL, seeds = NULL) .Call(wrap__geodesic_clusters, edges, n_nodes, max_dist, weights, seeds)
+geodesic_clusters <- function(edges, n_nodes, max_dist, weights = NULL, seeds = NULL, precision = 32) .Call(wrap__geodesic_clusters, edges, n_nodes, max_dist, weights, seeds, precision)
 
 #' The `limit_dist="auto"` value for a scoring matrix.
 #'

@@ -1,5 +1,6 @@
 use std::sync::RwLock;
 
+use ndarray::{ArrayView1, ArrayView2};
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -9,8 +10,28 @@ use fastcore::mesh::{
     geodesic_farthest_mesh, geodesic_matrix_graph, geodesic_matrix_mesh, geodesic_mst_graph,
     geodesic_mst_mesh, geodesic_nearest_mesh, geodesic_path_graph, geodesic_predecessors_graph,
     level_set_components, mesh_connected_components, minimum_spanning_tree, parents_from_edges,
-    unique_edges, GeodesicGraph,
+    unique_edges, GeodesicGraph, Weight,
 };
+
+/// Edge weights, at whatever width the caller already has them in.
+///
+/// As in `linkage`, `PyReadonlyArray1` extracts only on an *exact* dtype match, so this can
+/// never silently copy or cast — the array that arrives is the array the search runs on, and its
+/// dtype is what the answer comes back as. `float16` is deliberately absent: Dijkstra
+/// accumulates one addition per hop and `f16` runs out of mantissa within a handful of them.
+#[derive(FromPyObject)]
+pub enum WeightsIn<'py> {
+    F32(PyReadonlyArray1<'py, f32>),
+    F64(PyReadonlyArray1<'py, f64>),
+}
+
+/// The width to answer an *unweighted* query at.
+///
+/// Hop counts are integers and exact at either width, so this changes nothing about the numbers
+/// — only the dtype the caller gets back, which matters when the result is about to be combined
+/// with something else. Whenever `weights` is given its own dtype decides and this is not
+/// consulted; the Python wrapper is what turns a `dtype=` argument into the pair.
+type Float64 = bool;
 
 /// Borrow a 1-D array as a contiguous slice.
 ///
@@ -134,14 +155,17 @@ pub fn unique_edges_py<'py>(
 /// - `targets`:    uint32 target vertex indices, or `None` for all.
 /// - `limit`:      Prune the search at this distance (inclusive), or `None`.
 /// - `threads`:    Size of the thread pool, or `None` for all cores.
+/// - `float64`:    Accumulate and return distances in float64 rather than float32. `coords` is
+///   float64 either way — that is the *coordinates'* precision, and each edge length is
+///   computed from them at that width and rounded once on the way into the graph.
 ///
 /// Returns
 /// -------
-/// A (len(sources), len(targets)) float32 matrix; `-1` where unreachable.
+/// A (len(sources), len(targets)) float32 (or float64) matrix; `-1` where unreachable.
 #[pyfunction]
 #[pyo3(
     name = "geodesic_matrix_mesh",
-    signature = (faces, n_vertices, coords=None, sources=None, targets=None, limit=None, threads=None)
+    signature = (faces, n_vertices, coords=None, sources=None, targets=None, limit=None, threads=None, float64=false)
 )]
 #[allow(clippy::too_many_arguments)]
 pub fn geodesic_matrix_mesh_py<'py>(
@@ -151,21 +175,30 @@ pub fn geodesic_matrix_mesh_py<'py>(
     coords: Option<PyReadonlyArray2<f64>>,
     sources: Option<PyReadonlyArray1<u32>>,
     targets: Option<PyReadonlyArray1<u32>>,
-    limit: Option<f32>,
+    limit: Option<f64>,
     threads: Option<usize>,
-) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    float64: Float64,
+) -> PyResult<Bound<'py, PyAny>> {
     let src = as_opt_slice(&sources, "sources")?;
     let tgt = as_opt_slice(&targets, "targets")?;
-    let dists = geodesic_matrix_mesh(
-        faces.as_array(),
-        n_vertices,
-        coords.as_ref().map(|c| c.as_array()),
-        src,
-        tgt,
-        limit,
-        threads,
-    );
-    Ok(dists.into_pyarray(py))
+    let (f, c) = (faces.as_array(), coords.as_ref().map(|c| c.as_array()));
+    Ok(if float64 {
+        geodesic_matrix_mesh::<f64>(f, n_vertices, c, src, tgt, limit, threads)
+            .into_pyarray(py)
+            .into_any()
+    } else {
+        geodesic_matrix_mesh::<f32>(
+            f,
+            n_vertices,
+            c,
+            src,
+            tgt,
+            limit.map(f32::from_f64),
+            threads,
+        )
+        .into_pyarray(py)
+        .into_any()
+    })
 }
 
 /// Pairwise geodesic distances over an arbitrary undirected graph given as an edge list.
@@ -177,44 +210,74 @@ pub fn geodesic_matrix_mesh_py<'py>(
 /// ---------
 /// - `edges`:   (E, 2) uint32 array of undirected edges (node indices).
 /// - `n_nodes`: Total number of nodes.
-/// - `weights`:  (E, ) float32 edge lengths, or `None` for hop counts.
+/// - `weights`:  (E, ) float32 *or* float64 edge lengths, or `None` for hop counts.
 /// - `directed`: If true, an edge (u, v) may only be traversed from u to v.
 /// - `sources`, `targets`, `limit`, `threads`: as `geodesic_matrix_mesh`.
+/// - `float64`: The width for the unweighted case; see [`Float64`].
 ///
 /// Returns
 /// -------
-/// A (len(sources), len(targets)) float32 matrix; `-1` where unreachable.
+/// A (len(sources), len(targets)) matrix in the dtype of `weights`; `-1` where unreachable.
 #[pyfunction]
 #[pyo3(
     name = "geodesic_matrix_graph",
-    signature = (edges, n_nodes, weights=None, directed=false, sources=None, targets=None, limit=None, threads=None)
+    signature = (edges, n_nodes, weights=None, directed=false, sources=None, targets=None, limit=None, threads=None, float64=false)
 )]
 #[allow(clippy::too_many_arguments)]
 pub fn geodesic_matrix_graph_py<'py>(
     py: Python<'py>,
     edges: PyReadonlyArray2<u32>,
     n_nodes: usize,
-    weights: Option<PyReadonlyArray1<f32>>,
+    weights: Option<WeightsIn<'py>>,
     directed: bool,
     sources: Option<PyReadonlyArray1<u32>>,
     targets: Option<PyReadonlyArray1<u32>>,
-    limit: Option<f32>,
+    limit: Option<f64>,
     threads: Option<usize>,
-) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    float64: Float64,
+) -> PyResult<Bound<'py, PyAny>> {
     let src = as_opt_slice(&sources, "sources")?;
     let tgt = as_opt_slice(&targets, "targets")?;
-    let w = weights.as_ref().map(|w| w.as_array());
-    let dists = geodesic_matrix_graph(
-        edges.as_array(),
-        n_nodes,
-        w.as_ref(),
-        directed,
-        src,
-        tgt,
-        limit,
-        threads,
-    );
-    Ok(dists.into_pyarray(py))
+
+    #[allow(clippy::too_many_arguments)]
+    fn run<'py, W: Weight + numpy::Element>(
+        py: Python<'py>,
+        edges: ArrayView2<u32>,
+        n_nodes: usize,
+        weights: Option<&ArrayView1<W>>,
+        directed: bool,
+        sources: Option<&[u32]>,
+        targets: Option<&[u32]>,
+        limit: Option<f64>,
+        threads: Option<usize>,
+    ) -> Bound<'py, PyAny> {
+        geodesic_matrix_graph(
+            edges,
+            n_nodes,
+            weights,
+            directed,
+            sources,
+            targets,
+            limit.map(W::from_f64),
+            threads,
+        )
+        .into_pyarray(py)
+        .into_any()
+    }
+
+    let e = edges.as_array();
+    Ok(match weights {
+        Some(WeightsIn::F32(w)) => {
+            let w = w.as_array();
+            run(py, e, n_nodes, Some(&w), directed, src, tgt, limit, threads)
+        }
+        Some(WeightsIn::F64(w)) => {
+            let w = w.as_array();
+            run(py, e, n_nodes, Some(&w), directed, src, tgt, limit, threads)
+        }
+        None if float64 => run::<f64>(py, e, n_nodes, None, directed, src, tgt, limit, threads),
+        None => run::<f32>(py, e, n_nodes, None, directed, src, tgt, limit, threads),
+    })
 }
 
 /// For each source, the distance to its nearest target and that target's vertex index.
@@ -225,7 +288,7 @@ pub fn geodesic_matrix_graph_py<'py>(
 #[pyfunction]
 #[pyo3(
     name = "geodesic_nearest_mesh",
-    signature = (faces, n_vertices, coords=None, sources=None, targets=None, limit=None, threads=None)
+    signature = (faces, n_vertices, coords=None, sources=None, targets=None, limit=None, threads=None, float64=false)
 )]
 #[allow(clippy::too_many_arguments)]
 pub fn geodesic_nearest_mesh_py<'py>(
@@ -235,21 +298,28 @@ pub fn geodesic_nearest_mesh_py<'py>(
     coords: Option<PyReadonlyArray2<f64>>,
     sources: Option<PyReadonlyArray1<u32>>,
     targets: Option<PyReadonlyArray1<u32>>,
-    limit: Option<f32>,
+    limit: Option<f64>,
     threads: Option<usize>,
-) -> PyResult<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<i32>>)> {
+    float64: Float64,
+) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyArray1<i32>>)> {
     let src = as_opt_slice(&sources, "sources")?;
     let tgt = as_opt_slice(&targets, "targets")?;
-    let (dists, nodes) = geodesic_nearest_mesh(
-        faces.as_array(),
-        n_vertices,
-        coords.as_ref().map(|c| c.as_array()),
-        src,
-        tgt,
-        limit,
-        threads,
-    );
-    Ok((dists.into_pyarray(py), nodes.into_pyarray(py)))
+    let (f, c) = (faces.as_array(), coords.as_ref().map(|c| c.as_array()));
+    Ok(if float64 {
+        let (d, n) = geodesic_nearest_mesh::<f64>(f, n_vertices, c, src, tgt, limit, threads);
+        (d.into_pyarray(py).into_any(), n.into_pyarray(py))
+    } else {
+        let (d, n) = geodesic_nearest_mesh::<f32>(
+            f,
+            n_vertices,
+            c,
+            src,
+            tgt,
+            limit.map(f32::from_f64),
+            threads,
+        );
+        (d.into_pyarray(py).into_any(), n.into_pyarray(py))
+    })
 }
 
 /// Connected components of an undirected graph given as an edge list.
@@ -335,14 +405,16 @@ pub fn contract_vertices_py<'py>(
 /// ---------
 /// - `edges`:    (E, 2) uint32 array of undirected edges (node indices).
 /// - `n_nodes`:  Total number of nodes.
-/// - `weights`:  (E, ) float32 weights, or `None` to treat every edge as equal. Must be
-///   finite; negative weights are allowed.
+/// - `weights`:  (E, ) float32 or float64 weights, or `None` to treat every edge as equal. Must
+///   be finite; negative weights are allowed.
 /// - `maximize`: Return the maximum spanning forest instead.
 /// - `threads`:  Size of the thread pool, or `None` for all cores.
 ///
 /// Returns
 /// -------
-/// A 1-D int64 array of row indices into `edges`, ordered by weight.
+/// A 1-D int64 array of row indices into `edges`, ordered by weight. The dtype does not depend
+/// on the weights' — these are positions in the caller's array — but the *order* can, where two
+/// weights are close enough to compare equal at float32 and not at float64.
 #[pyfunction]
 #[pyo3(
     name = "minimum_spanning_tree",
@@ -352,12 +424,23 @@ pub fn minimum_spanning_tree_py<'py>(
     py: Python<'py>,
     edges: PyReadonlyArray2<u32>,
     n_nodes: usize,
-    weights: Option<PyReadonlyArray1<f32>>,
+    weights: Option<WeightsIn<'py>>,
     maximize: bool,
     threads: Option<usize>,
 ) -> Bound<'py, PyArray1<i64>> {
-    let w = weights.as_ref().map(|w| w.as_array());
-    minimum_spanning_tree(edges.as_array(), n_nodes, w.as_ref(), maximize, threads).into_pyarray(py)
+    let e = edges.as_array();
+    match weights {
+        Some(WeightsIn::F32(w)) => {
+            minimum_spanning_tree(e, n_nodes, Some(&w.as_array()), maximize, threads)
+        }
+        Some(WeightsIn::F64(w)) => {
+            minimum_spanning_tree(e, n_nodes, Some(&w.as_array()), maximize, threads)
+        }
+        // Unweighted: every edge is equal and the order is the input's, so the width is
+        // unobservable here — unlike the geodesic drivers, nothing is accumulated.
+        None => minimum_spanning_tree::<f32>(e, n_nodes, None, maximize, threads),
+    }
+    .into_pyarray(py)
 }
 
 /// Which edges are bridges — the ones whose removal would disconnect their component.
@@ -392,7 +475,8 @@ pub fn bridges_py<'py>(
 /// ---------
 /// - `edges`:   (E, 2) uint32 array of undirected edges (node indices).
 /// - `n_nodes`: Total number of nodes.
-/// - `weights`: (E, ) float32 edge lengths, or `None` for hop counts (breadth-first tree).
+/// - `weights`: (E, ) float32 or float64 edge lengths, or `None` for hop counts (breadth-first
+///   tree).
 /// - `roots`:   (R, ) uint32 nodes to root at, or `None` for the lowest node index in each
 ///   component. Components holding none of `roots` fall back to that.
 ///
@@ -400,19 +484,24 @@ pub fn bridges_py<'py>(
 /// -------
 /// `(parents, order)`: `parents` is a (n_nodes, ) int32 array of parent indices (`-1` at a
 /// root); `order` is a (n_nodes, ) uint32 topological order in which every node follows its
-/// parent.
+/// parent. Neither dtype depends on the weights', but which tree comes out can.
 #[pyfunction]
 #[pyo3(name = "parents_from_edges", signature = (edges, n_nodes, weights=None, roots=None))]
 pub fn parents_from_edges_py<'py>(
     py: Python<'py>,
     edges: PyReadonlyArray2<u32>,
     n_nodes: usize,
-    weights: Option<PyReadonlyArray1<f32>>,
+    weights: Option<WeightsIn<'py>>,
     roots: Option<PyReadonlyArray1<u32>>,
 ) -> PyResult<(Bound<'py, PyArray1<i32>>, Bound<'py, PyArray1<u32>>)> {
-    let w = weights.as_ref().map(|w| w.as_array());
     let r = as_opt_slice(&roots, "roots")?;
-    let (parents, order) = parents_from_edges(edges.as_array(), n_nodes, w.as_ref(), r);
+    let e = edges.as_array();
+    let (parents, order) = match weights {
+        Some(WeightsIn::F32(w)) => parents_from_edges(e, n_nodes, Some(&w.as_array()), r),
+        Some(WeightsIn::F64(w)) => parents_from_edges(e, n_nodes, Some(&w.as_array()), r),
+        // Unweighted: the breadth-first tree, which hop counts pin down at either width.
+        None => parents_from_edges::<f32>(e, n_nodes, None, r),
+    };
     Ok((parents.into_pyarray(py), order.into_pyarray(py)))
 }
 
@@ -430,65 +519,89 @@ pub fn parents_from_edges_py<'py>(
 ///   for hop counts.
 /// - `limit`:      Do not join vertices farther apart than this.
 /// - `threads`:    Size of the thread pool, or `None` for all cores.
+/// - `float64`:    Accumulate and return distances in float64; as `geodesic_matrix_mesh`.
 ///
 /// Returns
 /// -------
 /// `(edges, weights)`: `edges` is an (M, 2) int64 array of *positions in `nodes`*, ascending by
-/// weight; `weights` is the (M, ) float32 geodesic distance across each.
+/// weight; `weights` is the (M, ) float32 (or float64) geodesic distance across each.
 #[pyfunction]
 #[pyo3(
     name = "geodesic_mst_mesh",
-    signature = (faces, n_vertices, nodes, coords=None, limit=None, threads=None)
+    signature = (faces, n_vertices, nodes, coords=None, limit=None, threads=None, float64=false)
 )]
+#[allow(clippy::too_many_arguments)]
 pub fn geodesic_mst_mesh_py<'py>(
     py: Python<'py>,
     faces: PyReadonlyArray2<u32>,
     n_vertices: usize,
     nodes: PyReadonlyArray1<u32>,
     coords: Option<PyReadonlyArray2<f64>>,
-    limit: Option<f32>,
+    limit: Option<f64>,
     threads: Option<usize>,
-) -> PyResult<(Bound<'py, PyArray2<i64>>, Bound<'py, PyArray1<f32>>)> {
+    float64: Float64,
+) -> PyResult<(Bound<'py, PyArray2<i64>>, Bound<'py, PyAny>)> {
     let nodes = as_slice(&nodes, "nodes")?;
-    let (edges, weights) = geodesic_mst_mesh(
-        faces.as_array(),
-        n_vertices,
-        coords.as_ref().map(|c| c.as_array()),
-        nodes,
-        limit,
-        threads,
-    );
-    Ok((edges.into_pyarray(py), weights.into_pyarray(py)))
+    let (f, c) = (faces.as_array(), coords.as_ref().map(|c| c.as_array()));
+    Ok(if float64 {
+        let (e, w) = geodesic_mst_mesh::<f64>(f, n_vertices, c, nodes, limit, threads);
+        (e.into_pyarray(py), w.into_pyarray(py).into_any())
+    } else {
+        let (e, w) =
+            geodesic_mst_mesh::<f32>(f, n_vertices, c, nodes, limit.map(f32::from_f64), threads);
+        (e.into_pyarray(py), w.into_pyarray(py).into_any())
+    })
 }
 
 /// Minimum spanning tree over a subset of graph nodes, weighted by geodesic distance.
 ///
-/// The edge-list form of `geodesic_mst_mesh`; always undirected.
+/// The edge-list form of `geodesic_mst_mesh`; always undirected. The returned distances are in
+/// the dtype of `weights`.
 #[pyfunction]
 #[pyo3(
     name = "geodesic_mst_graph",
-    signature = (edges, n_nodes, nodes, weights=None, limit=None, threads=None)
+    signature = (edges, n_nodes, nodes, weights=None, limit=None, threads=None, float64=false)
 )]
+#[allow(clippy::too_many_arguments)]
 pub fn geodesic_mst_graph_py<'py>(
     py: Python<'py>,
     edges: PyReadonlyArray2<u32>,
     n_nodes: usize,
     nodes: PyReadonlyArray1<u32>,
-    weights: Option<PyReadonlyArray1<f32>>,
-    limit: Option<f32>,
+    weights: Option<WeightsIn<'py>>,
+    limit: Option<f64>,
     threads: Option<usize>,
-) -> PyResult<(Bound<'py, PyArray2<i64>>, Bound<'py, PyArray1<f32>>)> {
+    float64: Float64,
+) -> PyResult<(Bound<'py, PyArray2<i64>>, Bound<'py, PyAny>)> {
     let nodes = as_slice(&nodes, "nodes")?;
-    let w = weights.as_ref().map(|w| w.as_array());
-    let (mst, mst_w) = geodesic_mst_graph(
-        edges.as_array(),
-        n_nodes,
-        w.as_ref(),
-        nodes,
-        limit,
-        threads,
-    );
-    Ok((mst.into_pyarray(py), mst_w.into_pyarray(py)))
+
+    fn run<'py, W: Weight + numpy::Element>(
+        py: Python<'py>,
+        edges: ArrayView2<u32>,
+        n_nodes: usize,
+        weights: Option<&ArrayView1<W>>,
+        nodes: &[u32],
+        limit: Option<f64>,
+        threads: Option<usize>,
+    ) -> (Bound<'py, PyArray2<i64>>, Bound<'py, PyAny>) {
+        let (e, w) = geodesic_mst_graph(
+            edges,
+            n_nodes,
+            weights,
+            nodes,
+            limit.map(W::from_f64),
+            threads,
+        );
+        (e.into_pyarray(py), w.into_pyarray(py).into_any())
+    }
+
+    let e = edges.as_array();
+    Ok(match weights {
+        Some(WeightsIn::F32(w)) => run(py, e, n_nodes, Some(&w.as_array()), nodes, limit, threads),
+        Some(WeightsIn::F64(w)) => run(py, e, n_nodes, Some(&w.as_array()), nodes, limit, threads),
+        None if float64 => run::<f64>(py, e, n_nodes, None, nodes, limit, threads),
+        None => run::<f32>(py, e, n_nodes, None, nodes, limit, threads),
+    })
 }
 
 /// For each source, the distance to its farthest target and that target's vertex index.
@@ -497,7 +610,7 @@ pub fn geodesic_mst_graph_py<'py>(
 #[pyfunction]
 #[pyo3(
     name = "geodesic_farthest_mesh",
-    signature = (faces, n_vertices, coords=None, sources=None, targets=None, limit=None, threads=None)
+    signature = (faces, n_vertices, coords=None, sources=None, targets=None, limit=None, threads=None, float64=false)
 )]
 #[allow(clippy::too_many_arguments)]
 pub fn geodesic_farthest_mesh_py<'py>(
@@ -507,21 +620,28 @@ pub fn geodesic_farthest_mesh_py<'py>(
     coords: Option<PyReadonlyArray2<f64>>,
     sources: Option<PyReadonlyArray1<u32>>,
     targets: Option<PyReadonlyArray1<u32>>,
-    limit: Option<f32>,
+    limit: Option<f64>,
     threads: Option<usize>,
-) -> PyResult<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<i32>>)> {
+    float64: Float64,
+) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyArray1<i32>>)> {
     let src = as_opt_slice(&sources, "sources")?;
     let tgt = as_opt_slice(&targets, "targets")?;
-    let (dists, nodes) = geodesic_farthest_mesh(
-        faces.as_array(),
-        n_vertices,
-        coords.as_ref().map(|c| c.as_array()),
-        src,
-        tgt,
-        limit,
-        threads,
-    );
-    Ok((dists.into_pyarray(py), nodes.into_pyarray(py)))
+    let (f, c) = (faces.as_array(), coords.as_ref().map(|c| c.as_array()));
+    Ok(if float64 {
+        let (d, n) = geodesic_farthest_mesh::<f64>(f, n_vertices, c, src, tgt, limit, threads);
+        (d.into_pyarray(py).into_any(), n.into_pyarray(py))
+    } else {
+        let (d, n) = geodesic_farthest_mesh::<f32>(
+            f,
+            n_vertices,
+            c,
+            src,
+            tgt,
+            limit.map(f32::from_f64),
+            threads,
+        );
+        (d.into_pyarray(py).into_any(), n.into_pyarray(py))
+    })
 }
 
 /// Shortest-path trees over a graph — distances *and* the route to each node.
@@ -532,46 +652,75 @@ pub fn geodesic_farthest_mesh_py<'py>(
 /// ---------
 /// - `edges`:    (E, 2) uint32 array of edges (node indices).
 /// - `n_nodes`:  Total number of nodes.
-/// - `weights`:  (E, ) float32 edge lengths, or `None` for hop counts. Zero weights are
-///   allowed.
+/// - `weights`:  (E, ) float32 or float64 edge lengths, or `None` for hop counts. Zero weights
+///   are allowed.
 /// - `directed`: If `True`, an edge `(u, v)` may only be traversed from `u` to `v`.
 /// - `sources`:  (S, ) uint32 source nodes, or `None` for all nodes.
 /// - `limit`:    Prune the search at this distance.
 /// - `threads`:  Size of the thread pool, or `None` for all cores.
+/// - `float64`:  The width for the unweighted case; see [`Float64`].
 ///
 /// Returns
 /// -------
-/// `(distances, predecessors)`: a (S, n_nodes) float32 matrix, `-1` where unreachable, and a
-/// (S, n_nodes) int32 matrix holding the node before each node on its shortest path back to
-/// that row's source (`-1` for the source itself and for unreachable nodes).
+/// `(distances, predecessors)`: a (S, n_nodes) matrix in the dtype of `weights`, `-1` where
+/// unreachable, and a (S, n_nodes) int32 matrix holding the node before each node on its
+/// shortest path back to that row's source (`-1` for the source itself and for unreachable
+/// nodes).
 #[pyfunction]
 #[pyo3(
     name = "geodesic_predecessors",
-    signature = (edges, n_nodes, weights=None, directed=false, sources=None, limit=None, threads=None)
+    signature = (edges, n_nodes, weights=None, directed=false, sources=None, limit=None, threads=None, float64=false)
 )]
 #[allow(clippy::too_many_arguments)]
 pub fn geodesic_predecessors_py<'py>(
     py: Python<'py>,
     edges: PyReadonlyArray2<u32>,
     n_nodes: usize,
-    weights: Option<PyReadonlyArray1<f32>>,
+    weights: Option<WeightsIn<'py>>,
     directed: bool,
     sources: Option<PyReadonlyArray1<u32>>,
-    limit: Option<f32>,
+    limit: Option<f64>,
     threads: Option<usize>,
-) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i32>>)> {
+    float64: Float64,
+) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyArray2<i32>>)> {
     let src = as_opt_slice(&sources, "sources")?;
-    let w = weights.as_ref().map(|w| w.as_array());
-    let (dists, preds) = geodesic_predecessors_graph(
-        edges.as_array(),
-        n_nodes,
-        w.as_ref(),
-        directed,
-        src,
-        limit,
-        threads,
-    );
-    Ok((dists.into_pyarray(py), preds.into_pyarray(py)))
+
+    #[allow(clippy::too_many_arguments)]
+    fn run<'py, W: Weight + numpy::Element>(
+        py: Python<'py>,
+        edges: ArrayView2<u32>,
+        n_nodes: usize,
+        weights: Option<&ArrayView1<W>>,
+        directed: bool,
+        sources: Option<&[u32]>,
+        limit: Option<f64>,
+        threads: Option<usize>,
+    ) -> (Bound<'py, PyAny>, Bound<'py, PyArray2<i32>>) {
+        let (d, p) = geodesic_predecessors_graph(
+            edges,
+            n_nodes,
+            weights,
+            directed,
+            sources,
+            limit.map(W::from_f64),
+            threads,
+        );
+        (d.into_pyarray(py).into_any(), p.into_pyarray(py))
+    }
+
+    let e = edges.as_array();
+    Ok(match weights {
+        Some(WeightsIn::F32(w)) => {
+            let w = w.as_array();
+            run(py, e, n_nodes, Some(&w), directed, src, limit, threads)
+        }
+        Some(WeightsIn::F64(w)) => {
+            let w = w.as_array();
+            run(py, e, n_nodes, Some(&w), directed, src, limit, threads)
+        }
+        None if float64 => run::<f64>(py, e, n_nodes, None, directed, src, limit, threads),
+        None => run::<f32>(py, e, n_nodes, None, directed, src, limit, threads),
+    })
 }
 
 /// Node sequences of the shortest paths from one source to each target.
@@ -600,12 +749,22 @@ pub fn geodesic_path_py<'py>(
     n_nodes: usize,
     source: u32,
     targets: PyReadonlyArray1<u32>,
-    weights: Option<PyReadonlyArray1<f32>>,
+    weights: Option<WeightsIn<'py>>,
     directed: bool,
 ) -> PyResult<Vec<Bound<'py, PyArray1<u32>>>> {
     let tgt = as_slice(&targets, "targets")?;
-    let w = weights.as_ref().map(|w| w.as_array());
-    let paths = geodesic_path_graph(edges.as_array(), n_nodes, w.as_ref(), directed, source, tgt);
+    let e = edges.as_array();
+    // Node ids, so the width is invisible in the output — but not in *which* route wins, which
+    // is why this takes the weights at their own width rather than casting to f32.
+    let paths = match weights {
+        Some(WeightsIn::F32(w)) => {
+            geodesic_path_graph(e, n_nodes, Some(&w.as_array()), directed, source, tgt)
+        }
+        Some(WeightsIn::F64(w)) => {
+            geodesic_path_graph(e, n_nodes, Some(&w.as_array()), directed, source, tgt)
+        }
+        None => geodesic_path_graph::<f32>(e, n_nodes, None, directed, source, tgt),
+    };
     Ok(paths.into_iter().map(|p| p.into_pyarray(py)).collect())
 }
 
@@ -620,14 +779,15 @@ pub fn geodesic_path_py<'py>(
 /// - `edges`:    (E, 2) uint32 array of undirected edges (node indices).
 /// - `n_nodes`:  Total number of nodes.
 /// - `max_dist`: Maximum distance from a cluster's seed.
-/// - `weights`:  (E, ) float32 edge lengths, or `None` for hop counts.
+/// - `weights`:  (E, ) float32 or float64 edge lengths, or `None` for hop counts.
 /// - `seeds`:    (S, ) uint32 preferred seeds, in order of preference. Any node still
 ///   unassigned afterwards seeds a cluster of its own, in ascending index order.
 ///
 /// Returns
 /// -------
 /// `(labels, n_clusters)`: `labels` is a 1-D int32 array of contiguous cluster ids in
-/// `[0, n_clusters)`, numbered in the order the clusters were grown.
+/// `[0, n_clusters)`, numbered in the order the clusters were grown. The width shows up in
+/// *which* nodes fall inside a ball, not in the dtype.
 #[pyfunction]
 #[pyo3(
     name = "geodesic_clusters",
@@ -637,13 +797,19 @@ pub fn geodesic_clusters_py<'py>(
     py: Python<'py>,
     edges: PyReadonlyArray2<u32>,
     n_nodes: usize,
-    max_dist: f32,
-    weights: Option<PyReadonlyArray1<f32>>,
+    max_dist: f64,
+    weights: Option<WeightsIn<'py>>,
     seeds: Option<PyReadonlyArray1<u32>>,
 ) -> PyResult<(Bound<'py, PyArray1<i32>>, usize)> {
     let sd = as_opt_slice(&seeds, "seeds")?;
-    let w = weights.as_ref().map(|w| w.as_array());
-    let (labels, n) = geodesic_clusters(edges.as_array(), n_nodes, max_dist, w.as_ref(), sd);
+    let e = edges.as_array();
+    let (labels, n) = match weights {
+        Some(WeightsIn::F32(w)) => {
+            geodesic_clusters(e, n_nodes, f32::from_f64(max_dist), Some(&w.as_array()), sd)
+        }
+        Some(WeightsIn::F64(w)) => geodesic_clusters(e, n_nodes, max_dist, Some(&w.as_array()), sd),
+        None => geodesic_clusters::<f32>(e, n_nodes, f32::from_f64(max_dist), None, sd),
+    };
     Ok((labels.into_pyarray(py), n))
 }
 

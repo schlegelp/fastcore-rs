@@ -4,7 +4,14 @@
 \alias{geodesic_clusters}
 \title{Greedily partition nodes into connected clusters of bounded radius.}
 \usage{
-geodesic_clusters(edges, n_nodes, max_dist, weights = NULL, seeds = NULL)
+geodesic_clusters(
+  edges,
+  n_nodes,
+  max_dist,
+  weights = NULL,
+  seeds = NULL,
+  precision = 32
+)
 }
 \arguments{
 \item{edges}{Integer or numeric \verb{(E, 2)} matrix of edges (0-based node indices).
@@ -22,6 +29,9 @@ non-negative.}
 \item{seeds}{Optional integer vector of 0-based nodes to try as seeds, in order of
 preference. Any node left unassigned afterwards becomes a seed in ascending index
 order; \code{NULL} seeds in ascending index order throughout.}
+
+\item{precision}{Integer; 32 or 64, the width the search accumulates at. Nothing
+here returns a distance, so this changes only which answer close ties resolve to.}
 }
 \value{
 List with \code{labels} (integer cluster index per node, contiguous in

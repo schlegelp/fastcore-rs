@@ -68,7 +68,7 @@ fn run(label: &str, faces: ArrayView2<u32>, coords: ArrayView2<f64>, n: usize) {
 
     // Weighted, 64 sources, all targets — the workload scipy is used for today.
     let t = time_it(
-        || geodesic_matrix_mesh(faces, n, Some(coords), Some(&sources), None, None, None),
+        || geodesic_matrix_mesh::<f32>(faces, n, Some(coords), Some(&sources), None, None, None),
         3,
     );
     println!(
@@ -79,7 +79,7 @@ fn run(label: &str, faces: ArrayView2<u32>, coords: ArrayView2<f64>, n: usize) {
 
     // Unweighted takes the BFS path — no heap at all.
     let t_bfs = time_it(
-        || geodesic_matrix_mesh(faces, n, None, Some(&sources), None, None, None),
+        || geodesic_matrix_mesh::<f32>(faces, n, None, Some(&sources), None, None, None),
         3,
     );
     println!(
@@ -93,7 +93,7 @@ fn run(label: &str, faces: ArrayView2<u32>, coords: ArrayView2<f64>, n: usize) {
     // A local query: few sources, tight limit. This is where pruning at relaxation and the
     // touched-list reset earn their keep — scipy cannot early-exit on targets at all.
     let t_lim = time_it(
-        || geodesic_matrix_mesh(faces, n, Some(coords), Some(&few), None, Some(0.05), None),
+        || geodesic_matrix_mesh::<f32>(faces, n, Some(coords), Some(&few), None, Some(0.05), None),
         3,
     );
     println!(

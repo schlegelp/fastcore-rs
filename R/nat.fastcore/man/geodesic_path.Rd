@@ -10,7 +10,8 @@ geodesic_path(
   source,
   targets,
   weights = NULL,
-  directed = FALSE
+  directed = FALSE,
+  precision = 32
 )
 }
 \arguments{
@@ -26,6 +27,9 @@ geodesic_path(
 
 \item{directed}{Logical; if \code{TRUE} an edge \verb{(u, v)} may only be traversed from \code{u}
 to \code{v}.}
+
+\item{precision}{Integer; 32 or 64, the width the search accumulates at. Nothing
+here returns a distance, so this changes only which answer close ties resolve to.}
 }
 \value{
 List of integer vectors, one per target in \code{targets} order, each running

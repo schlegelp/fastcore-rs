@@ -263,3 +263,44 @@ test_that("caller mistakes surface as R errors, not as silent nonsense", {
   # A weights vector that does not match the edge count.
   expect_error(minimum_spanning_tree(edges, 5, c(1, 2)))
 })
+
+test_that("precision picks the width the search accumulates at", {
+  edges <- .ring_with_tail()
+  w <- c(1, 1, 1, 1, 1)
+  faces <- .square_faces()
+  verts <- .square_verts()
+
+  # `geodesic_matrix_*` take their optional arguments positionally; NULL is the
+  # "not given" value, as everywhere else in these bindings.
+  mg <- function(...) geodesic_matrix_graph(edges, 5, w, FALSE, NULL, NULL, NULL, NULL, ...)
+  mm <- function(v, ...) geodesic_matrix_mesh(faces, 4L, v, NULL, NULL, NULL, NULL, ...)
+
+  # Integer weights are exact at both widths, so the two must agree to the bit --
+  # otherwise `precision` would be selecting a different algorithm, not a width.
+  expect_identical(mg(precision = 32L), mg(precision = 64L))
+  expect_identical(
+    geodesic_predecessors(edges, 5, w, precision = 32L)$predecessors,
+    geodesic_predecessors(edges, 5, w, precision = 64L)$predecessors
+  )
+  expect_identical(
+    geodesic_path(edges, 5, 0L, c(2L, 4L), w, precision = 64L),
+    geodesic_path(edges, 5, 0L, c(2L, 4L), w)
+  )
+
+  # Unweighted searches are hop counts, which both widths hold exactly.
+  expect_identical(mm(NULL, precision = 64L), mm(NULL))
+
+  # 32 is the default, so an explicit 32 changes nothing.
+  expect_identical(mm(verts, precision = 32L), mm(verts))
+
+  # Where the two differ is accuracy. The square's diagonal is sqrt(2), which is
+  # irrational and so is rounded at both widths -- but only 64 lands within a
+  # double's own tolerance of it.
+  d32 <- mm(verts)[2, 3]
+  d64 <- mm(verts, precision = 64L)[2, 3]
+  expect_equal(d64, sqrt(2), tolerance = 1e-15)
+  expect_gt(abs(d32 - sqrt(2)), abs(d64 - sqrt(2)))
+
+  # Anything but 32 or 64 is a mistake, not a silent fallback.
+  expect_error(mg(precision = 16L))
+})

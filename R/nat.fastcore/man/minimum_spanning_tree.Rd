@@ -9,7 +9,8 @@ minimum_spanning_tree(
   n_nodes,
   weights = NULL,
   maximize = FALSE,
-  threads = NULL
+  threads = NULL,
+  precision = 32
 )
 }
 \arguments{
@@ -26,6 +27,9 @@ that both loses precision and blows up on the zero weights that legitimately
 occur.}
 
 \item{threads}{Optional integer; number of threads. \code{NULL} uses all cores.}
+
+\item{precision}{Integer; 32 or 64, the width the search accumulates at. Nothing
+here returns a distance, so this changes only which answer close ties resolve to.}
 }
 \value{
 Integer vector of 0-based \strong{row indices into \code{edges}}, ordered by weight —

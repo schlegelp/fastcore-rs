@@ -116,6 +116,64 @@ brute-force references under `hypothesis`, across a fixture matrix that includes
 100k-deep chains — the traversals are iterative precisely because the recursive versions
 segfault there.
 
+**The geodesic searches run in float64 on request.** Dijkstra sums one weight per hop, so
+a path of `k` hops carries up to `k` roundings; at float32 and `k` in the tens of
+thousands — a densely sampled arbor, a fine mesh — the drift becomes visible against an
+exact answer, and comparisons against `scipy.sparse.csgraph`, which works in float64
+unconditionally, stop agreeing to the last bits. It also matters when weights span a wide
+dynamic range, since `fl(du + w)` loses `w` entirely once `du` exceeds it by 2^24.
+
+The width is now a type parameter on the core rather than baked into it: `Adjacency`,
+the search scratch, both kernels and every driver in `mesh` are generic over a new
+`mesh::Weight` trait, implemented for `f32` and `f64`. The heap key stays an integer
+compare on the raw IEEE bits — see `Weight::Bits` for why that is an exact ordering and
+not an approximation — so the float32 path is unchanged, in both results and speed.
+
+In Python the rule is **your dtype in, your dtype out**, the one
+[`linkage`](python/wrappers.md) already follows for score matrices: float64 weights give
+float64 distances, anything else gives float32.
+
+```python
+fastcore.geodesic_matrix_graph(edges, n, weights=w.astype(np.float64))  # -> float64
+fastcore.geodesic_matrix_graph(edges, n, weights=w, dtype=np.float64)   # -> float64
+```
+
+A new `dtype` argument overrides that in either direction, on
+`geodesic_matrix_graph`, `geodesic_matrix_mesh`, `geodesic_nearest_mesh`,
+`geodesic_farthest_mesh`, `geodesic_predecessors` and the two `geodesic_mst_*`. Only
+something carrying a float64 *dtype* counts as having asked: a list of Python floats does
+not, because `np.asarray([1.0, 2.0])` is float64 by numpy's default rather than by
+anyone's intent, and honouring it would quietly double the output of every caller who
+passes one.
+
+!!! warning "This changes the return dtype for existing callers"
+
+    If you already pass a float64 `weights` **array**, you were getting it cast down to
+    float32 and a float32 result; you now get float64 — twice the output memory, and about
+    10% slower. Pass `dtype=np.float32` to keep the old behaviour. Callers passing lists,
+    int arrays or no weights at all are unaffected.
+
+The mesh functions default to float32 and take `dtype` alone, with no input dtype read
+off `vertices`. Those are *coordinates*, taken at float64 either way — each edge length is
+computed from them at that width and rounded once on the way in — so reading the
+distances' width off them would flip nearly every existing call to float64 and double the
+largest thing this library allocates. A full `V x V` matrix is already 107 GB at
+`V = 164k`.
+
+`geodesic_path`, `geodesic_clusters`, `parents_from_edges` and `minimum_spanning_tree`
+have no `dtype` argument, because none of them returns a distance — but all four honour
+the weights' own width, since it decides which route or which tie wins.
+
+`GeodesicGraph` stays float32. It is the type for "large graph, many small queries", which
+is exactly the case where float32 is the right width and where doubling the several
+node-sized arrays it keeps resident across a whole run would be felt.
+
+R gets a `precision` argument (32 or 64, default 32) on the eleven corresponding
+functions, matching `nblast(precision = )`. R has no float32 type, so unlike Python there
+is nothing to read the choice off — weights arrive as doubles whatever the caller meant by
+them, and the result goes back as doubles either way — so this buys accuracy, not a
+different return type.
+
 **Interface polish, ahead of 1.0.** Small things that cost nothing to change now and get
 expensive once the API is frozen.
 

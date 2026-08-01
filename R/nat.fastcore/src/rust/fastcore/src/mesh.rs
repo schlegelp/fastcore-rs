@@ -1,9 +1,162 @@
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 use rayon::prelude::*;
-use std::cmp::Reverse;
+use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 
 use crate::nblast::with_pool;
+
+// ---------------------------------------------------------------------------
+// Edge weight width
+// ---------------------------------------------------------------------------
+
+/// The width a graph's edge lengths — and therefore its distances — are carried at: `f32` or
+/// `f64`.
+///
+/// A local trait for the same reason [`crate::linkage::Dissim`] and [`crate::matches::Score`]
+/// are: it pins down exactly what the kernels need and nothing else. `num::Float` would drag in
+/// a hundred methods, none of which is the one that actually matters here — [`Bits`](Self::Bits).
+///
+/// # Why `Bits`
+///
+/// Every search in this module keys its heap on the raw IEEE bit pattern rather than on the
+/// float. For *non-negative* floats — which distances always are, since weights are lengths and
+/// we start at zero — that pattern is monotone read as an unsigned integer, so `Ord` on the bits
+/// *is* `Ord` on the floats, exactly, `+inf` included. That buys a derived `Ord` on
+/// [`HeapEntry`] (hence no `partial_cmp().unwrap()` and no NaN panic path) and an integer
+/// compare in the sift loop. Making the width generic therefore means carrying the integer of
+/// matching width alongside it, which is what this associated type is.
+///
+/// # Why `Packed`
+///
+/// The same monotonicity is what lets [`Adjacency::compact`] order a row by neighbour and then
+/// by weight in a single sort, so that the shortest of a set of parallel edges comes first.
+/// Which needs a `(neighbour, weight-bits)` value that is `Ord` — and *how* it is spelt is worth
+/// a type rather than a tuple, because the obvious tuple is measurably slower.
+///
+/// A `(u32, u32)` compares lexicographically in five instructions: two `cmp`/`cset` pairs and a
+/// `csel`. The equivalent `u64` compares in two. LLVM cannot bridge the gap, and not for want of
+/// trying: on a little-endian target the tuple's first field lands in the *low* half of a 64-bit
+/// load, so one wide compare would order by weight before neighbour — the wrong answer. The only
+/// way to get the single compare is to place the fields deliberately, which is what `f32`'s impl
+/// does; the sort is the inner loop of the adjacency build, so it is worth the associated type.
+///
+/// `f64` has no such option — 32 + 64 bits do not fit in a register pair to begin with — so it
+/// uses the tuple, and pays the five instructions it was always going to pay.
+///
+/// # Choosing a width
+///
+/// `f32` is the default throughout and is the right one for mesh and skeleton work: a 24-bit
+/// mantissa resolves a 100 mm neuron to ~6 nm, and the distance arrays are the largest thing
+/// these functions allocate — a `(V, V)` matrix at `V = 164k` is 107 GB in `f32` and 215 GB in
+/// `f64`.
+///
+/// `f64` earns its keep where the *accumulation* is long rather than the graph large. Dijkstra
+/// sums one weight per hop, so a path of `k` hops carries up to `k` roundings; at `f32` and
+/// `k` in the tens of thousands — a densely sampled arbor, a fine mesh — the drift becomes
+/// visible against an exact answer, and comparisons against `scipy.sparse.csgraph`, which works
+/// in `f64` unconditionally, stop agreeing to the last bits. It also matters when weights span
+/// a wide dynamic range, since `fl(du + w)` loses `w` entirely once `du` exceeds it by 2^24.
+pub trait Weight:
+    Copy + PartialOrd + std::ops::Add<Output = Self> + std::fmt::Display + Send + Sync + 'static
+{
+    /// The unsigned integer of the same width, used as the order-preserving heap key.
+    type Bits: Copy + Ord + Send + Sync;
+    /// A `(neighbour, weight-bits)` pair that is `Ord` by neighbour first and weight second.
+    /// Opaque on purpose — see the note above; only [`pack`](Self::pack) and
+    /// [`unpack`](Self::unpack) may assume a layout.
+    type Packed: Copy + Ord + Send + Sync;
+
+    const ZERO: Self;
+    const ONE: Self;
+    /// The unreachable sentinel the drivers prefill and return. `-1`, not `NaN`: it survives
+    /// the trip through numpy and R unchanged, and it is what the rest of the crate uses.
+    const NEG_ONE: Self;
+    const INFINITY: Self;
+
+    fn to_bits(self) -> Self::Bits;
+    fn from_bits(bits: Self::Bits) -> Self;
+    fn pack(node: u32, bits: Self::Bits) -> Self::Packed;
+    fn unpack(packed: Self::Packed) -> (u32, Self::Bits);
+    fn is_finite(self) -> bool;
+    fn is_infinite(self) -> bool;
+    /// A total order over *all* floats, negatives included — what
+    /// [`minimum_spanning_tree`] sorts on, since unlike the geodesic searches it accepts
+    /// negative weights and so cannot use the bit-pattern trick.
+    fn total_cmp(&self, other: &Self) -> Ordering;
+    /// Narrow an `f64` to this width. Mesh edge lengths are computed from `f64` coordinates and
+    /// land here, which is the only place a value enters at a width that is not already `Self`.
+    fn from_f64(x: f64) -> Self;
+}
+
+/// Everything but [`Weight::Packed`], which is the one member the two impls genuinely differ on.
+macro_rules! impl_weight {
+    ($t:ty, $bits:ty) => {
+        const ZERO: Self = 0.0;
+        const ONE: Self = 1.0;
+        const NEG_ONE: Self = -1.0;
+        const INFINITY: Self = <$t>::INFINITY;
+
+        #[inline(always)]
+        fn to_bits(self) -> Self::Bits {
+            <$t>::to_bits(self)
+        }
+        #[inline(always)]
+        fn from_bits(bits: Self::Bits) -> Self {
+            <$t>::from_bits(bits)
+        }
+        #[inline(always)]
+        fn is_finite(self) -> bool {
+            <$t>::is_finite(self)
+        }
+        #[inline(always)]
+        fn is_infinite(self) -> bool {
+            <$t>::is_infinite(self)
+        }
+        #[inline(always)]
+        fn total_cmp(&self, other: &Self) -> Ordering {
+            <$t>::total_cmp(self, other)
+        }
+        #[inline(always)]
+        fn from_f64(x: f64) -> Self {
+            x as $t
+        }
+    };
+}
+
+impl Weight for f32 {
+    type Bits = u32;
+    /// Both halves in one integer, neighbour in the high bits. This is the placement the
+    /// generic `(u32, u32)` cannot express and the reason `Packed` is a type — see above.
+    type Packed = u64;
+
+    impl_weight!(f32, u32);
+
+    #[inline(always)]
+    fn pack(node: u32, bits: u32) -> u64 {
+        ((node as u64) << 32) | bits as u64
+    }
+    #[inline(always)]
+    fn unpack(packed: u64) -> (u32, u32) {
+        ((packed >> 32) as u32, packed as u32)
+    }
+}
+
+impl Weight for f64 {
+    type Bits = u64;
+    /// 96 bits do not pack, so the derived lexicographic `Ord` on a tuple is the best available.
+    type Packed = (u32, u64);
+
+    impl_weight!(f64, u64);
+
+    #[inline(always)]
+    fn pack(node: u32, bits: u64) -> (u32, u64) {
+        (node, bits)
+    }
+    #[inline(always)]
+    fn unpack(packed: (u32, u64)) -> (u32, u64) {
+        packed
+    }
+}
 
 /// Path-halving find: iterative, no stack allocation.
 /// Makes every other node on the path point to its grandparent.
@@ -468,10 +621,14 @@ pub fn contract_vertices(
 /// A 1-D i64 array of *row indices into `edges`*, ascending by weight — not the edges
 /// themselves, so the caller can index whatever per-edge data it holds (weights, ids,
 /// attributes) with the same array. Length is `n_nodes - (number of components)`.
-pub fn minimum_spanning_tree(
+///
+/// Generic over the weight width; see [`Weight`]. Which one is chosen does not change *which*
+/// edges are kept unless two weights are so close that they compare equal at `f32` and not at
+/// `f64` — and then the tie-break on edge index still makes the answer deterministic.
+pub fn minimum_spanning_tree<W: Weight>(
     edges: ArrayView2<u32>,
     n_nodes: usize,
-    weights: Option<&ArrayView1<f32>>,
+    weights: Option<&ArrayView1<W>>,
     maximize: bool,
     threads: Option<usize>,
 ) -> Array1<i64> {
@@ -484,7 +641,7 @@ pub fn minimum_spanning_tree(
             w.len()
         );
         for &x in w {
-            assert!(x.is_finite(), "edge weights must be finite, got {x}");
+            assert!(W::is_finite(x), "edge weights must be finite, got {x}");
         }
     }
 
@@ -497,9 +654,7 @@ pub fn minimum_spanning_tree(
             // `partial_cmp().unwrap()` panic path. Ties break on the edge index, which makes
             // the chosen tree reproducible across runs and thread counts.
             order.par_sort_unstable_by(|&a, &b| {
-                w[a as usize]
-                    .total_cmp(&w[b as usize])
-                    .then_with(|| a.cmp(&b))
+                W::total_cmp(&w[a as usize], &w[b as usize]).then_with(|| a.cmp(&b))
             });
             if maximize {
                 order.reverse();
@@ -684,19 +839,40 @@ pub fn bridges(edges: ArrayView2<u32>, n_nodes: usize) -> Array1<bool> {
 ///
 /// `weights` is `None` for the unweighted (hop-count) case, which lets the BFS kernel avoid
 /// touching a weight array it would only ever read 1.0 from.
-pub struct Adjacency {
+///
+/// `W` is the width lengths are stored and accumulated at; see [`Weight`].
+pub struct Adjacency<W: Weight> {
     /// `offsets[v]..offsets[v + 1]` is the slice of `nbrs` holding v's neighbours.
     offsets: Vec<u32>,
     nbrs: Vec<u32>,
     /// Length of each arc, parallel to `nbrs`. `None` => unit weights.
-    weights: Option<Vec<f32>>,
+    weights: Option<Vec<W>>,
     /// Whether an edge was stored as one arc or two. Recorded because the searches are not the
     /// only thing that cares: re-weighting an undirected edge has to move *both* of its arcs to
     /// keep the adjacency symmetric, and only the builder knows there are two.
     directed: bool,
 }
 
-impl Adjacency {
+impl<W: Weight> Adjacency<W> {
+    /// TODO: the build is ~5-15% slower than the pre-generic version and nobody knows why.
+    ///
+    /// Making the width generic cost that much on `from_faces` / `from_edges` / `induced`,
+    /// measured against the commit before it on the `8 src, limit=0.05` line of
+    /// `examples/profile_mesh.rs` — the case where the build, not the search, is the whole
+    /// cost. The searches themselves are at parity, so this is confined to the three
+    /// constructors here.
+    ///
+    /// The one mechanism that *was* found is already fixed: a `(u32, u32)` pair compares in
+    /// five instructions where the packed `u64` compares in two, which is why [`Weight::Packed`]
+    /// is an associated type rather than a tuple. That accounted for some of it and not all.
+    ///
+    /// Ruled out, so as not to be re-investigated: the output gather in
+    /// [`geodesic_matrix_impl`] (isolated, identical), the generic-vs-concrete gather codegen
+    /// (the generic one is *smaller*), `vec![W::pack(0, 0); n]` losing `Vec`'s zeroed-allocation
+    /// path (tried a `const ZERO_PACKED`; no effect), and both search kernels. `compact` and
+    /// the constructors differ from their pre-generic form only in ways that must fold at
+    /// `f32`, so the remaining suspicion is instantiation-dependent inlining — which wants a
+    /// look at the IR rather than more guessing.
     #[inline]
     fn n_nodes(&self) -> usize {
         self.offsets.len() - 1
@@ -716,7 +892,7 @@ impl Adjacency {
     ///
     /// Cannot *add* an edge: growing the CSR would mean rebuilding it, which is exactly the
     /// cost re-weighting in place exists to avoid.
-    fn set_edge(&mut self, u: u32, v: u32, w: f32) -> bool {
+    fn set_edge(&mut self, u: u32, v: u32, w: W) -> bool {
         // `&&` short-circuits, so the reverse arc is only touched once the forward one is known
         // to exist — a missing edge cannot leave a half-applied edit behind.
         self.set_arc(u, v, w) && (self.directed || self.set_arc(v, u, w))
@@ -733,7 +909,7 @@ impl Adjacency {
     /// Returns `false` for an arc that is not present, including every arc of an unweighted
     /// graph: there is no weight array to write into, and inventing one would silently turn a
     /// BFS graph into a Dijkstra one.
-    fn set_arc(&mut self, u: u32, v: u32, w: f32) -> bool {
+    fn set_arc(&mut self, u: u32, v: u32, w: W) -> bool {
         let r = self.row(u);
         let Adjacency { nbrs, weights, .. } = self;
         let Some(weights) = weights.as_mut() else {
@@ -755,9 +931,10 @@ impl Adjacency {
     /// Compaction is safe in place because we only ever *remove* elements, so the write
     /// cursor never overtakes the read cursor.
     ///
-    /// `keyed` rows pack (neighbour, payload) into a u64 so that one sort orders by
-    /// neighbour first and payload second; see `from_edges`.
-    fn compact(offsets: &mut [u32], packed: &mut Vec<u64>, n_nodes: usize) {
+    /// Rows hold [`Weight::Packed`] values, ordered by neighbour first and payload second, so
+    /// one sort per row does both; see `from_edges` and the note on `Packed` for why that is a
+    /// type rather than a tuple.
+    fn compact(offsets: &mut [u32], packed: &mut Vec<W::Packed>, n_nodes: usize) {
         let old: Vec<u32> = offsets.to_vec();
         let mut w: usize = 0;
         for u in 0..n_nodes {
@@ -767,18 +944,20 @@ impl Adjacency {
             packed[lo..hi].sort_unstable();
 
             offsets[u] = w as u32;
-            let mut prev = u64::MAX;
+            // No neighbour can be `u32::MAX`: the CSR offsets are `u32`, so `n_nodes` is
+            // strictly below it and every id is below that.
+            let mut prev = u32::MAX;
             for k in lo..hi {
                 let p = packed[k];
-                let v = (p >> 32) as u32;
+                let v = W::unpack(p).0;
                 // Keep the first entry per neighbour. Because the row is sorted and the
-                // payload sits in the low bits, "first" is the *smallest* payload — which is
+                // payload is the second element, "first" is the *smallest* payload — which is
                 // what we want for parallel edges: the shortest one is the only one that can
                 // ever be on a shortest path.
-                if (prev >> 32) as u32 != v && v as usize != u {
+                if prev != v && v as usize != u {
                     packed[w] = p;
                     w += 1;
-                    prev = p;
+                    prev = v;
                 }
             }
         }
@@ -828,11 +1007,12 @@ impl Adjacency {
         // Scatter. The payload is unused here (weights come from `coords` after dedup, so we
         // never compute a length we then throw away), but reusing the packed representation
         // lets us share `compact`.
-        let mut packed: Vec<u64> = vec![0; offsets[n_nodes] as usize];
+        let zero = W::ZERO.to_bits();
+        let mut packed: Vec<W::Packed> = vec![W::pack(0, zero); offsets[n_nodes] as usize];
         let mut cursor: Vec<u32> = offsets[..n_nodes].to_vec();
         let mut put = |u: u32, v: u32| {
             let slot = &mut cursor[u as usize];
-            packed[*slot as usize] = (v as u64) << 32;
+            packed[*slot as usize] = W::pack(v, zero);
             *slot += 1;
         };
         for face in faces.rows() {
@@ -847,22 +1027,26 @@ impl Adjacency {
         drop(cursor);
 
         Self::compact(&mut offsets, &mut packed, n_nodes);
-        let nbrs: Vec<u32> = packed.iter().map(|&p| (p >> 32) as u32).collect();
+        let nbrs: Vec<u32> = packed.iter().map(|&p| W::unpack(p).0).collect();
 
         // Weights last, so we only pay for arcs that survived dedup.
+        //
+        // The length itself is always computed in f64 — the coordinates arrive at that width,
+        // and rounding once at the end is strictly better than rounding the deltas first — and
+        // narrowed to `W` on the way into the array.
         //
         // d(u,v) and d(v,u) are computed independently but come out bit-identical: the
         // expression squares each delta, and (a-b)^2 == (b-a)^2 exactly in IEEE. The
         // adjacency is therefore *exactly* symmetric — an asymmetric weight would silently
         // break d(s,t) == d(t,s).
         let weights = coords.map(|c| {
-            let mut out: Vec<f32> = Vec::with_capacity(nbrs.len());
+            let mut out: Vec<W> = Vec::with_capacity(nbrs.len());
             for u in 0..n_nodes {
                 let (ux, uy, uz) = (c[[u, 0]], c[[u, 1]], c[[u, 2]]);
                 for &v in &nbrs[offsets[u] as usize..offsets[u + 1] as usize] {
                     let v = v as usize;
                     let (dx, dy, dz) = (ux - c[[v, 0]], uy - c[[v, 1]], uz - c[[v, 2]]);
-                    out.push((dx * dx + dy * dy + dz * dz).sqrt() as f32);
+                    out.push(W::from_f64((dx * dx + dy * dy + dz * dz).sqrt()));
                 }
             }
             out
@@ -885,7 +1069,7 @@ impl Adjacency {
     pub fn from_edges(
         edges: ArrayView2<u32>,
         n_nodes: usize,
-        weights: Option<&ArrayView1<f32>>,
+        weights: Option<&ArrayView1<W>>,
         directed: bool,
     ) -> Self {
         assert_eq!(edges.ncols(), 2, "`edges` must have shape (E, 2)");
@@ -921,16 +1105,18 @@ impl Adjacency {
             offsets[i + 1] += offsets[i];
         }
 
-        // Pack (neighbour, weight-bits) into one u64 so a single sort orders by neighbour and
-        // then by weight. That works because a non-negative f32's IEEE bit pattern is
-        // monotone when read as a u32 — the same fact the heap key relies on. Sorting ascending
-        // therefore puts the *shortest* parallel edge first, and `compact` keeps the first.
-        let mut packed: Vec<u64> = vec![0; offsets[n_nodes] as usize];
+        // Pack (neighbour, weight-bits) so a single sort orders by neighbour and then by
+        // weight. That works because a non-negative float's IEEE bit pattern is monotone read
+        // as an unsigned integer — the same fact the heap key relies on; see [`Weight::Bits`].
+        // Sorting ascending therefore puts the *shortest* parallel edge first, and `compact`
+        // keeps the first.
+        let zero = W::ZERO.to_bits();
+        let mut packed: Vec<W::Packed> = vec![W::pack(0, zero); offsets[n_nodes] as usize];
         let mut cursor: Vec<u32> = offsets[..n_nodes].to_vec();
         {
-            let mut put = |u: u32, v: u32, wbits: u32| {
+            let mut put = |u: u32, v: u32, wbits: W::Bits| {
                 let slot = &mut cursor[u as usize];
-                packed[*slot as usize] = ((v as u64) << 32) | wbits as u64;
+                packed[*slot as usize] = W::pack(v, wbits);
                 *slot += 1;
             };
             for (i, e) in edges.rows().into_iter().enumerate() {
@@ -938,12 +1124,12 @@ impl Adjacency {
                     Some(w) => {
                         let x = w[i];
                         assert!(
-                            x >= 0.0 && x.is_finite(),
+                            x >= W::ZERO && W::is_finite(x),
                             "edge weights must be finite and non-negative, got {x}"
                         );
                         x.to_bits()
                     }
-                    None => 0,
+                    None => zero,
                 };
                 put(e[0], e[1], wbits);
                 if !directed {
@@ -955,12 +1141,12 @@ impl Adjacency {
 
         Self::compact(&mut offsets, &mut packed, n_nodes);
 
-        let nbrs: Vec<u32> = packed.iter().map(|&p| (p >> 32) as u32).collect();
+        let nbrs: Vec<u32> = packed.iter().map(|&p| W::unpack(p).0).collect();
         let weights = weights.map(|_| {
             packed
                 .iter()
-                .map(|&p| f32::from_bits(p as u32))
-                .collect::<Vec<f32>>()
+                .map(|&p| W::from_bits(W::unpack(p).1))
+                .collect()
         });
 
         Adjacency {
@@ -979,14 +1165,14 @@ impl Adjacency {
     /// in the order the kernels visit neighbours, which is what makes tie-breaking, and
     /// therefore every result, identical either way.
     ///
-    fn induced(&self, keep: &[u32]) -> Adjacency {
+    fn induced(&self, keep: &[u32]) -> Adjacency<W> {
         let n_old = self.n_nodes();
         let new_id = inverse_index(keep, n_old);
 
         // Packed (neighbour, weight-bits) rows, as in `from_edges`, so one sort per row orders
         // by the *new* index while keeping each arc's weight welded to it.
         let mut offsets: Vec<u32> = vec![0; keep.len() + 1];
-        let mut packed: Vec<u64> = Vec::new();
+        let mut packed: Vec<W::Packed> = Vec::new();
         for (i, &v) in keep.iter().enumerate() {
             let r = self.row(v);
             let start = packed.len();
@@ -996,8 +1182,8 @@ impl Adjacency {
                     let bits = self
                         .weights
                         .as_ref()
-                        .map_or(0, |w| w[r.start + k].to_bits());
-                    packed.push(((m as u64) << 32) | bits as u64);
+                        .map_or_else(|| W::ZERO.to_bits(), |w| w[r.start + k].to_bits());
+                    packed.push(W::pack(m, bits));
                 }
             }
             packed[start..].sort_unstable();
@@ -1005,11 +1191,13 @@ impl Adjacency {
         }
         // No dedup or self-loop pass: the source rows have neither, and `new_id` is injective,
         // so neither can appear here.
-        let nbrs: Vec<u32> = packed.iter().map(|&p| (p >> 32) as u32).collect();
-        let weights = self
-            .weights
-            .as_ref()
-            .map(|_| packed.iter().map(|&p| f32::from_bits(p as u32)).collect());
+        let nbrs: Vec<u32> = packed.iter().map(|&p| W::unpack(p).0).collect();
+        let weights = self.weights.as_ref().map(|_| {
+            packed
+                .iter()
+                .map(|&p| W::from_bits(W::unpack(p).1))
+                .collect()
+        });
 
         Adjacency {
             offsets,
@@ -1024,21 +1212,20 @@ impl Adjacency {
 // Search kernels
 // ---------------------------------------------------------------------------
 
-/// Min-heap entry, 8 packed bytes.
+/// Min-heap entry: a distance key and the node it belongs to. Eight bytes at `f32`, sixteen at
+/// `f64`.
 ///
-/// The distance is stored as its raw IEEE bit pattern. For *non-negative* floats — which ours
-/// always are, since weights are lengths and we start at 0 — that bit pattern is monotone when
-/// compared as a `u32`, so `Ord` on the bits *is* `Ord` on the floats, exactly, `+inf`
-/// included. This is not an approximation to be tolerated: it buys a derived `Ord` (hence no
-/// `partial_cmp().unwrap()` and no NaN panic path), an integer compare in the sift loop, and an
-/// 8-byte POD entry that packs four to a cache line.
+/// The distance is stored as its raw IEEE bit pattern — see [`Weight::Bits`] for why that is an
+/// exact ordering rather than an approximation to be tolerated. It buys a derived `Ord` (hence
+/// no `partial_cmp().unwrap()` and no NaN panic path), an integer compare in the sift loop, and
+/// at `f32` a POD entry that packs four to a cache line.
 ///
 /// `dist_bits` must stay the first field — the derived `Ord` is lexicographic in declaration
 /// order. Tie-breaking on `node` makes the order total, so results are reproducible across
 /// runs and thread counts.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct HeapEntry {
-    dist_bits: u32,
+struct HeapEntry<B: Ord> {
+    dist_bits: B,
     node: u32,
 }
 
@@ -1050,10 +1237,10 @@ struct HeapEntry {
 const NO_PRED: u32 = u32::MAX;
 
 /// Per-worker scratch. Allocated once per rayon chunk and reused across every source in it.
-struct Scratch {
+struct Scratch<W: Weight> {
     /// Tentative distance per node. `INFINITY` = not reached.
     /// Invariant: all-`INFINITY` on entry to and exit from every search.
-    dist: Vec<f32>,
+    dist: Vec<W>,
     /// The node before each node on its shortest path back to the source, or [`NO_PRED`].
     /// Empty unless the caller asked for predecessors — an empty `Vec` does not allocate, so
     /// the distance-only drivers pay nothing for it.
@@ -1066,17 +1253,17 @@ struct Scratch {
     src: Vec<u32>,
     /// Nodes whose `dist` is finite, so the reset walks only what we actually touched.
     touched: Vec<u32>,
-    heap: BinaryHeap<Reverse<HeapEntry>>,
+    heap: BinaryHeap<Reverse<HeapEntry<W::Bits>>>,
     /// BFS ping-pong frontiers. `Vec::new()` does not allocate, so the Dijkstra path pays
     /// nothing for these and the BFS path pays nothing for `heap`.
     cur: Vec<u32>,
     next: Vec<u32>,
 }
 
-impl Scratch {
+impl<W: Weight> Scratch<W> {
     fn new(n_nodes: usize) -> Self {
         Scratch {
-            dist: vec![f32::INFINITY; n_nodes],
+            dist: vec![W::INFINITY; n_nodes],
             pred: Vec::new(),
             src: Vec::new(),
             touched: Vec::new(),
@@ -1144,13 +1331,13 @@ impl Scratch {
     fn reset(&mut self) {
         let track_pred = !self.pred.is_empty();
         if self.touched.len() * 4 >= self.dist.len() {
-            self.dist.fill(f32::INFINITY);
+            self.dist.fill(W::INFINITY);
             if track_pred {
                 self.pred.fill(NO_PRED);
             }
         } else {
             for &v in &self.touched {
-                self.dist[v as usize] = f32::INFINITY;
+                self.dist[v as usize] = W::INFINITY;
                 if track_pred {
                     self.pred[v as usize] = NO_PRED;
                 }
@@ -1186,16 +1373,20 @@ enum Visit {
 /// the interesting nodes have settled) and [`Grow`] (collect items until a budget is spent)
 /// each compile to their own specialised loop with the dispatch folded away — the same reason
 /// `PRED` is a const parameter rather than a flag.
-trait Visitor {
+///
+/// Generic over the distance width so a visitor may be written for one width only — [`Grow`]
+/// and [`Collect`] are, since the type that drives them is `f32`-only — or for both, as
+/// [`Targets`] and [`NoVisitor`] are.
+trait Visitor<W: Weight> {
     /// Note that `node` has settled at distance `d`, and say how the search should proceed.
-    fn settle(&mut self, node: u32, d: f32) -> Visit;
+    fn settle(&mut self, node: u32, d: W) -> Visit;
 }
 
 /// Which targets a search is waiting on, and what it learned when it settled them.
 ///
 /// Shared by the matrix, nearest and farthest drivers, because all three want the same thing
 /// (stop as early as the question allows) and differ only in what they keep.
-struct Targets<'a> {
+struct Targets<'a, W: Weight> {
     /// `None` => every node is a target, so there is nothing to exit early from.
     mask: Option<&'a [bool]>,
     /// Unique targets that must settle before the search can stop.
@@ -1206,16 +1397,16 @@ struct Targets<'a> {
     /// Stop as soon as the first target settles (nearest).
     stop_at_first: bool,
     /// First target settled, i.e. the nearest. Dijkstra settles in increasing distance order.
-    first: Option<(u32, f32)>,
+    first: Option<(u32, W)>,
     /// Last target settled, i.e. the farthest — free, for the same reason.
-    last: Option<(u32, f32)>,
+    last: Option<(u32, W)>,
 }
 
 /// Targets never wall: a target is something to *find*, not something to route around, so
 /// every settled node is expanded until the search is done.
-impl Visitor for Targets<'_> {
+impl<W: Weight> Visitor<W> for Targets<'_, W> {
     #[inline]
-    fn settle(&mut self, node: u32, d: f32) -> Visit {
+    fn settle(&mut self, node: u32, d: W) -> Visit {
         let is_target = match self.mask {
             Some(m) => m[node as usize],
             None => true,
@@ -1265,13 +1456,13 @@ impl Visitor for Targets<'_> {
 ///
 /// `reached` collects every node whose distance goes finite for the first time — the nodes a
 /// caller must later reset, and equally the nodes that have just become reachable.
-fn dijkstra_drain<const PRED: bool, V: Visitor>(
-    adj: &Adjacency,
-    dist: &mut [f32],
+fn dijkstra_drain<W: Weight, const PRED: bool, V: Visitor<W>>(
+    adj: &Adjacency<W>,
+    dist: &mut [W],
     pred: &mut [u32],
     reached: &mut Vec<u32>,
-    heap: &mut BinaryHeap<Reverse<HeapEntry>>,
-    limit: f32,
+    heap: &mut BinaryHeap<Reverse<HeapEntry<W::Bits>>>,
+    limit: W,
     vis: &mut V,
 ) {
     let weights = adj
@@ -1288,7 +1479,7 @@ fn dijkstra_drain<const PRED: bool, V: Visitor>(
         if dist_bits != dist[u as usize].to_bits() {
             continue;
         }
-        let du = f32::from_bits(dist_bits);
+        let du = W::from_bits(dist_bits);
 
         match vis.settle(u, du) {
             Visit::Stop => return,
@@ -1300,15 +1491,16 @@ fn dijkstra_drain<const PRED: bool, V: Visitor>(
 
         let r = adj.row(u);
         for (&v, &w) in adj.nbrs[r.clone()].iter().zip(&weights[r]) {
-            // Accumulating in f32 keeps Dijkstra's invariant: w >= 0 and round-to-nearest gives
-            // fl(du + w) >= du, so the key never moves backwards.
+            // Accumulating at the graph's own width keeps Dijkstra's invariant, whichever it
+            // is: w >= 0 and round-to-nearest gives fl(du + w) >= du, so the key never moves
+            // backwards.
             let nd = du + w;
             if nd > limit {
                 continue; // prune here, not at pop — this is where the memory win lives
             }
             let slot = &mut dist[v as usize];
             if nd < *slot {
-                if slot.is_infinite() {
+                if W::is_infinite(*slot) {
                     reached.push(v);
                 }
                 *slot = nd;
@@ -1339,8 +1531,8 @@ fn dijkstra_drain<const PRED: bool, V: Visitor>(
 /// Unit weights make the frontier monotone by construction, so this needs no priority queue at
 /// all: two ping-pong frontiers give O(V + E) with no sift, no stale entries and no float
 /// compares. Routing the unweighted case through `dijkstra_drain` would be several times slower
-/// for no reason. Hop counts are integers and exact in f32 up to 2^24; no mesh has a 16M-hop
-/// path.
+/// for no reason. Hop counts are integers and exact in f32 up to 2^24 (and in f64 far beyond
+/// it); no mesh has a 16M-hop path, so the unweighted answer does not depend on the width.
 ///
 /// `PRED` as there. A node is claimed by whichever frontier member reaches it first, so ties
 /// within a level resolve in frontier order — deterministic, and acyclic for free because `dist`
@@ -1350,28 +1542,28 @@ fn dijkstra_drain<const PRED: bool, V: Visitor>(
 /// a cold array (everything `INFINITY`) is the same test and on a warm one keeps only genuine
 /// improvements. `reached` collects the nodes that go finite for the first time.
 #[allow(clippy::too_many_arguments)]
-fn bfs_drain<const PRED: bool, V: Visitor>(
-    adj: &Adjacency,
-    dist: &mut [f32],
+fn bfs_drain<W: Weight, const PRED: bool, V: Visitor<W>>(
+    adj: &Adjacency<W>,
+    dist: &mut [W],
     pred: &mut [u32],
     reached: &mut Vec<u32>,
     cur: &mut Vec<u32>,
     next: &mut Vec<u32>,
-    limit: f32,
+    limit: W,
     vis: &mut V,
 ) {
     // `level` is the depth we are about to emit, so guarding *before* the increment keeps a
     // node at distance exactly `limit` and drops one at `limit + 1` — the same inclusive
     // boundary `dijkstra_drain` has, and the same one scipy has.
-    let mut level: f32 = 0.0;
+    let mut level: W = W::ZERO;
     while !cur.is_empty() && level < limit {
-        level += 1.0;
+        level = level + W::ONE;
         for &u in cur.iter() {
             let r = adj.row(u);
             for &v in &adj.nbrs[r] {
                 let slot = &mut dist[v as usize];
                 if level < *slot {
-                    if slot.is_infinite() {
+                    if W::is_infinite(*slot) {
                         reached.push(v);
                     }
                     *slot = level;
@@ -1395,9 +1587,9 @@ fn bfs_drain<const PRED: bool, V: Visitor>(
 /// they leave behind. Monomorphisation erases it completely.
 struct NoVisitor;
 
-impl Visitor for NoVisitor {
+impl<W: Weight> Visitor<W> for NoVisitor {
     #[inline]
-    fn settle(&mut self, _node: u32, _d: f32) -> Visit {
+    fn settle(&mut self, _node: u32, _d: W) -> Visit {
         Visit::Expand
     }
 }
@@ -1408,12 +1600,14 @@ impl Visitor for NoVisitor {
 /// *nearest source* in one forward pass over the output: a node's predecessor always settles
 /// before the node itself, so by the time we reach a node its predecessor's source is already
 /// known. Scanning `pred` chains per node instead would be O(depth) apiece.
+///
+/// `f32`-only, because [`GeodesicGraph`] — its only caller — is.
 struct Collect<'a> {
     nodes: &'a mut Vec<u32>,
     dists: &'a mut Vec<f32>,
 }
 
-impl Visitor for Collect<'_> {
+impl Visitor<f32> for Collect<'_> {
     #[inline]
     fn settle(&mut self, node: u32, d: f32) -> Visit {
         self.nodes.push(node);
@@ -1429,9 +1623,9 @@ impl Visitor for Collect<'_> {
 /// only make them allocate a second buffer holding a copy. Implemented on the vector itself
 /// rather than a wrapper struct so callers pass `&mut order` directly, without a block whose
 /// only job is to end the wrapper's borrow before the vector is read back.
-impl Visitor for Vec<u32> {
+impl<W: Weight> Visitor<W> for Vec<u32> {
     #[inline]
-    fn settle(&mut self, node: u32, _d: f32) -> Visit {
+    fn settle(&mut self, node: u32, _d: W) -> Visit {
         self.push(node);
         Visit::Expand
     }
@@ -1439,14 +1633,14 @@ impl Visitor for Vec<u32> {
 
 /// Search outwards from one source — the single-source case of [`search_from_many`].
 #[inline]
-fn search_from<const PRED: bool, V: Visitor>(
-    adj: &Adjacency,
+fn search_from<W: Weight, const PRED: bool, V: Visitor<W>>(
+    adj: &Adjacency<W>,
     source: u32,
-    limit: f32,
+    limit: W,
     vis: &mut V,
-    scratch: &mut Scratch,
+    scratch: &mut Scratch<W>,
 ) {
-    search_from_many::<PRED, V>(adj, std::slice::from_ref(&source), limit, vis, scratch);
+    search_from_many::<W, PRED, V>(adj, std::slice::from_ref(&source), limit, vis, scratch);
 }
 
 /// Seed a search from a set of sources, giving each node its distance to the *nearest* of them.
@@ -1465,12 +1659,12 @@ fn search_from<const PRED: bool, V: Visitor>(
 ///
 /// `scratch` must arrive clean, and the caller resets it afterwards — including when `vis` stops
 /// the search early and leaves the frontier holding entries.
-fn search_from_many<const PRED: bool, V: Visitor>(
-    adj: &Adjacency,
+fn search_from_many<W: Weight, const PRED: bool, V: Visitor<W>>(
+    adj: &Adjacency<W>,
     sources: &[u32],
-    limit: f32,
+    limit: W,
     vis: &mut V,
-    scratch: &mut Scratch,
+    scratch: &mut Scratch<W>,
 ) {
     let weighted = adj.weights.is_some();
     let Scratch {
@@ -1485,15 +1679,15 @@ fn search_from_many<const PRED: bool, V: Visitor>(
 
     for &s in sources {
         let slot = &mut dist[s as usize];
-        if *slot == 0.0 {
+        if *slot == W::ZERO {
             continue; // a repeated source; it is already on the frontier
         }
-        debug_assert!(slot.is_infinite(), "scratch was not clean");
-        *slot = 0.0;
+        debug_assert!(W::is_infinite(*slot), "scratch was not clean");
+        *slot = W::ZERO;
         touched.push(s);
         if weighted {
             heap.push(Reverse(HeapEntry {
-                dist_bits: 0,
+                dist_bits: W::ZERO.to_bits(),
                 node: s,
             }));
         } else {
@@ -1502,7 +1696,7 @@ fn search_from_many<const PRED: bool, V: Visitor>(
             // ever settles nodes it *discovers*. So settle them here — and note the frontier is
             // seeded *after* the visit, which is what gives `Wall` its meaning: a walled source
             // never enters `cur`, so it does not conduct.
-            match vis.settle(s, 0.0) {
+            match vis.settle(s, W::ZERO) {
                 Visit::Stop => return,
                 Visit::Wall => {}
                 Visit::Expand => cur.push(s),
@@ -1511,9 +1705,9 @@ fn search_from_many<const PRED: bool, V: Visitor>(
     }
 
     if weighted {
-        dijkstra_drain::<PRED, V>(adj, dist, pred, touched, heap, limit, vis);
+        dijkstra_drain::<W, PRED, V>(adj, dist, pred, touched, heap, limit, vis);
     } else {
-        bfs_drain::<PRED, V>(adj, dist, pred, touched, cur, next, limit, vis);
+        bfs_drain::<W, PRED, V>(adj, dist, pred, touched, cur, next, limit, vis);
     }
 }
 
@@ -1554,13 +1748,13 @@ fn target_mask(targets: &[u32], n_nodes: usize) -> (Option<Vec<bool>>, u32) {
 }
 
 /// Pairwise distances between `sources` and `targets` over a prebuilt adjacency.
-fn geodesic_matrix_impl(
-    adj: &Adjacency,
+fn geodesic_matrix_impl<W: Weight>(
+    adj: &Adjacency<W>,
     sources: Option<&[u32]>,
     targets: Option<&[u32]>,
-    limit: Option<f32>,
+    limit: Option<W>,
     threads: Option<usize>,
-) -> Array2<f32> {
+) -> Array2<W> {
     let n_nodes = adj.n_nodes();
     let all: Vec<u32> = if sources.is_none() || targets.is_none() {
         (0..n_nodes as u32).collect()
@@ -1572,17 +1766,19 @@ fn geodesic_matrix_impl(
 
     let (n_rows, n_cols) = (sources.len(), targets.len());
     if n_rows == 0 || n_cols == 0 {
-        return Array2::zeros((n_rows, n_cols)); // par_chunks_mut(0) would panic
+        // par_chunks_mut(0) would panic. One dimension is zero, so the buffer is empty.
+        return Array2::from_shape_vec((n_rows, n_cols), Vec::new())
+            .expect("an empty buffer fits any shape with a zero dimension");
     }
 
     let (mask, n_targets) = target_mask(targets, n_nodes);
-    let limit = limit.unwrap_or(f32::INFINITY);
+    let limit = limit.unwrap_or(W::INFINITY);
 
     // -1 is the crate's unreachable sentinel (navis maps it to np.inf on receipt). The gather
     // below writes every cell, so the prefill is defence-in-depth — but a memset is noise next
     // to S searches, and a missed cell surfacing as a plausible 0.0 instead of an obvious -1 is
     // not a trade worth making.
-    let mut flat: Vec<f32> = vec![-1.0; n_rows * n_cols];
+    let mut flat: Vec<W> = vec![W::NEG_ONE; n_rows * n_cols];
 
     with_pool(threads, || {
         // One chunk per worker, one set of scratch buffers per chunk.
@@ -1609,7 +1805,7 @@ fn geodesic_matrix_impl(
                         first: None,
                         last: None,
                     };
-                    search_from::<false, _>(adj, s, limit, &mut tgt, &mut scratch);
+                    search_from::<W, false, _>(adj, s, limit, &mut tgt, &mut scratch);
 
                     // Gather at the end rather than writing cells as targets settle: this
                     // preserves the caller's `targets` order exactly and handles duplicate
@@ -1618,13 +1814,13 @@ fn geodesic_matrix_impl(
                     match mask {
                         None => {
                             for (cell, &d) in row.iter_mut().zip(scratch.dist.iter()) {
-                                *cell = if d.is_finite() { d } else { -1.0 };
+                                *cell = if W::is_finite(d) { d } else { W::NEG_ONE };
                             }
                         }
                         Some(_) => {
                             for (cell, &t) in row.iter_mut().zip(targets) {
                                 let d = scratch.dist[t as usize];
-                                *cell = if d.is_finite() { d } else { -1.0 };
+                                *cell = if W::is_finite(d) { d } else { W::NEG_ONE };
                             }
                         }
                     }
@@ -1640,14 +1836,14 @@ fn geodesic_matrix_impl(
 }
 
 /// Distance to the nearest (or farthest) target, for each source.
-fn geodesic_extreme_impl(
-    adj: &Adjacency,
+fn geodesic_extreme_impl<W: Weight>(
+    adj: &Adjacency<W>,
     sources: Option<&[u32]>,
     targets: Option<&[u32]>,
-    limit: Option<f32>,
+    limit: Option<W>,
     threads: Option<usize>,
     farthest: bool,
-) -> (Array1<f32>, Array1<i32>) {
+) -> (Array1<W>, Array1<i32>) {
     let n_nodes = adj.n_nodes();
     let all: Vec<u32> = if sources.is_none() || targets.is_none() {
         (0..n_nodes as u32).collect()
@@ -1659,13 +1855,13 @@ fn geodesic_extreme_impl(
 
     let n_rows = sources.len();
     if n_rows == 0 {
-        return (Array1::zeros(0), Array1::zeros(0));
+        return (Array1::from_vec(Vec::new()), Array1::from_vec(Vec::new()));
     }
 
     let (mask, n_targets) = target_mask(targets, n_nodes);
-    let limit = limit.unwrap_or(f32::INFINITY);
+    let limit = limit.unwrap_or(W::INFINITY);
 
-    let mut dists: Vec<f32> = vec![-1.0; n_rows];
+    let mut dists: Vec<W> = vec![W::NEG_ONE; n_rows];
     let mut nodes: Vec<i32> = vec![-1; n_rows];
 
     with_pool(threads, || {
@@ -1703,7 +1899,7 @@ fn geodesic_extreme_impl(
                         first: None,
                         last: None,
                     };
-                    search_from::<false, _>(adj, s, limit, &mut tgt, &mut scratch);
+                    search_from::<W, false, _>(adj, s, limit, &mut tgt, &mut scratch);
 
                     if let Some((node, d)) = if farthest { tgt.last } else { tgt.first } {
                         *dcell = d;
@@ -1724,12 +1920,12 @@ fn geodesic_extreme_impl(
 /// if it is complete — walking it from a target steps through nodes the caller never asked
 /// for — so restricting the columns would not save the search any work, only make the result
 /// unusable.
-fn geodesic_predecessors_impl(
-    adj: &Adjacency,
+fn geodesic_predecessors_impl<W: Weight>(
+    adj: &Adjacency<W>,
     sources: Option<&[u32]>,
-    limit: Option<f32>,
+    limit: Option<W>,
     threads: Option<usize>,
-) -> (Array2<f32>, Array2<i32>) {
+) -> (Array2<W>, Array2<i32>) {
     let n_nodes = adj.n_nodes();
     let all: Vec<u32> = if sources.is_none() {
         (0..n_nodes as u32).collect()
@@ -1741,13 +1937,14 @@ fn geodesic_predecessors_impl(
     let n_rows = sources.len();
     if n_rows == 0 || n_nodes == 0 {
         return (
-            Array2::zeros((n_rows, n_nodes)),
+            Array2::from_shape_vec((n_rows, n_nodes), Vec::new())
+                .expect("an empty buffer fits any shape with a zero dimension"),
             Array2::zeros((n_rows, n_nodes)),
         );
     }
 
-    let limit = limit.unwrap_or(f32::INFINITY);
-    let mut dflat: Vec<f32> = vec![-1.0; n_rows * n_nodes];
+    let limit = limit.unwrap_or(W::INFINITY);
+    let mut dflat: Vec<W> = vec![W::NEG_ONE; n_rows * n_nodes];
     let mut pflat: Vec<i32> = vec![-1; n_rows * n_nodes];
 
     with_pool(threads, || {
@@ -1774,10 +1971,10 @@ fn geodesic_predecessors_impl(
                         first: None,
                         last: None,
                     };
-                    search_from::<true, _>(adj, s, limit, &mut tgt, &mut scratch);
+                    search_from::<W, true, _>(adj, s, limit, &mut tgt, &mut scratch);
 
                     for (cell, &d) in drow.iter_mut().zip(scratch.dist.iter()) {
-                        *cell = if d.is_finite() { d } else { -1.0 };
+                        *cell = if W::is_finite(d) { d } else { W::NEG_ONE };
                     }
                     for (cell, &p) in prow.iter_mut().zip(scratch.pred.iter()) {
                         *cell = if p == NO_PRED { -1 } else { p as i32 };
@@ -1822,17 +2019,21 @@ fn geodesic_predecessors_impl(
 ///
 /// Returns
 /// -------
-/// A `(sources.len(), targets.len())` f32 matrix. Unreachable pairs — disconnected, or beyond
-/// `limit` — are `-1.0`.
-pub fn geodesic_matrix_mesh(
+/// A `(sources.len(), targets.len())` matrix at the chosen width. Unreachable pairs —
+/// disconnected, or beyond `limit` — are `-1.0`.
+///
+/// `W` picks the width lengths are accumulated and returned at; see [`Weight`]. Note that
+/// `coords` is `f64` either way — that is the coordinates' own precision, and each edge length
+/// is computed from them in `f64` and rounded once on the way into the adjacency.
+pub fn geodesic_matrix_mesh<W: Weight>(
     faces: ArrayView2<u32>,
     n_vertices: usize,
     coords: Option<ArrayView2<f64>>,
     sources: Option<&[u32]>,
     targets: Option<&[u32]>,
-    limit: Option<f32>,
+    limit: Option<W>,
     threads: Option<usize>,
-) -> Array2<f32> {
+) -> Array2<W> {
     let adj = Adjacency::from_faces(faces, n_vertices, coords);
     geodesic_matrix_impl(&adj, sources, targets, limit, threads)
 }
@@ -1850,17 +2051,20 @@ pub fn geodesic_matrix_mesh(
 ///   and non-negative. Parallel edges collapse to the shortest.
 /// - `directed`: If `true`, an edge `(u, v)` may only be traversed from `u` to `v`.
 /// - `sources`, `targets`, `limit`, `threads`: as `geodesic_matrix_mesh`.
+///
+/// The weights' own width is the distances' width — `f32` in, `f32` out; `f64` in, `f64` out.
+/// See [`Weight`] for which to want.
 #[allow(clippy::too_many_arguments)]
-pub fn geodesic_matrix_graph(
+pub fn geodesic_matrix_graph<W: Weight>(
     edges: ArrayView2<u32>,
     n_nodes: usize,
-    weights: Option<&ArrayView1<f32>>,
+    weights: Option<&ArrayView1<W>>,
     directed: bool,
     sources: Option<&[u32]>,
     targets: Option<&[u32]>,
-    limit: Option<f32>,
+    limit: Option<W>,
     threads: Option<usize>,
-) -> Array2<f32> {
+) -> Array2<W> {
     let adj = Adjacency::from_edges(edges, n_nodes, weights, directed);
     geodesic_matrix_impl(&adj, sources, targets, limit, threads)
 }
@@ -1875,15 +2079,15 @@ pub fn geodesic_matrix_graph(
 /// A source that is itself a target is matched to its nearest *distinct* target, never to
 /// itself. Sources with no reachable distinct target (disconnected, or beyond `limit`) get
 /// `-1.0` / `-1`. Ties break towards the lower vertex index.
-pub fn geodesic_nearest_mesh(
+pub fn geodesic_nearest_mesh<W: Weight>(
     faces: ArrayView2<u32>,
     n_vertices: usize,
     coords: Option<ArrayView2<f64>>,
     sources: Option<&[u32]>,
     targets: Option<&[u32]>,
-    limit: Option<f32>,
+    limit: Option<W>,
     threads: Option<usize>,
-) -> (Array1<f32>, Array1<i32>) {
+) -> (Array1<W>, Array1<i32>) {
     let adj = Adjacency::from_faces(faces, n_vertices, coords);
     geodesic_extreme_impl(&adj, sources, targets, limit, threads, false)
 }
@@ -1896,15 +2100,15 @@ pub fn geodesic_nearest_mesh(
 ///
 /// Same conventions as `geodesic_nearest_mesh`: distinct targets only, `-1.0` / `-1` when none
 /// is reachable.
-pub fn geodesic_farthest_mesh(
+pub fn geodesic_farthest_mesh<W: Weight>(
     faces: ArrayView2<u32>,
     n_vertices: usize,
     coords: Option<ArrayView2<f64>>,
     sources: Option<&[u32]>,
     targets: Option<&[u32]>,
-    limit: Option<f32>,
+    limit: Option<W>,
     threads: Option<usize>,
-) -> (Array1<f32>, Array1<i32>) {
+) -> (Array1<W>, Array1<i32>) {
     let adj = Adjacency::from_faces(faces, n_vertices, coords);
     geodesic_extreme_impl(&adj, sources, targets, limit, threads, true)
 }
@@ -1936,15 +2140,15 @@ pub fn geodesic_farthest_mesh(
 /// own deterministic order — reproducible run to run and independent of `threads`, since each
 /// source is searched in isolation. It is deliberately *not* the lowest-index predecessor: see
 /// `dijkstra_drain` for why rewriting on a tie is unsound once zero-weight edges are in play.
-pub fn geodesic_predecessors_graph(
+pub fn geodesic_predecessors_graph<W: Weight>(
     edges: ArrayView2<u32>,
     n_nodes: usize,
-    weights: Option<&ArrayView1<f32>>,
+    weights: Option<&ArrayView1<W>>,
     directed: bool,
     sources: Option<&[u32]>,
-    limit: Option<f32>,
+    limit: Option<W>,
     threads: Option<usize>,
-) -> (Array2<f32>, Array2<i32>) {
+) -> (Array2<W>, Array2<i32>) {
     let adj = Adjacency::from_edges(edges, n_nodes, weights, directed);
     geodesic_predecessors_impl(&adj, sources, limit, threads)
 }
@@ -1960,10 +2164,10 @@ pub fn geodesic_predecessors_graph(
 /// Returns one path per target, ordered source-first / target-last (so `path[0]` is always
 /// `source` and `path.last()` the target). An unreachable target gives an empty path. A target
 /// equal to `source` gives the one-element path `[source]`.
-pub fn geodesic_path_graph(
+pub fn geodesic_path_graph<W: Weight>(
     edges: ArrayView2<u32>,
     n_nodes: usize,
-    weights: Option<&ArrayView1<f32>>,
+    weights: Option<&ArrayView1<W>>,
     directed: bool,
     source: u32,
     targets: &[u32],
@@ -1973,7 +2177,11 @@ pub fn geodesic_path_graph(
 }
 
 /// `geodesic_path_graph` over a prebuilt adjacency.
-fn geodesic_path_impl(adj: &Adjacency, source: u32, targets: &[u32]) -> Vec<Vec<u32>> {
+fn geodesic_path_impl<W: Weight>(
+    adj: &Adjacency<W>,
+    source: u32,
+    targets: &[u32],
+) -> Vec<Vec<u32>> {
     let n_nodes = adj.n_nodes();
     assert!(
         (source as usize) < n_nodes,
@@ -1999,12 +2207,12 @@ fn geodesic_path_impl(adj: &Adjacency, source: u32, targets: &[u32]) -> Vec<Vec<
         first: None,
         last: None,
     };
-    search_from::<true, _>(adj, source, f32::INFINITY, &mut tgt, &mut scratch);
+    search_from::<W, true, _>(adj, source, W::INFINITY, &mut tgt, &mut scratch);
 
     targets
         .iter()
         .map(|&t| {
-            if !scratch.dist[t as usize].is_finite() {
+            if !W::is_finite(scratch.dist[t as usize]) {
                 return Vec::new();
             }
             // Walk back to the source, then reverse. The chain is finite because `dist` never
@@ -2059,11 +2267,11 @@ fn geodesic_path_impl(adj: &Adjacency, source: u32, targets: &[u32]) -> Vec<Vec<
 ///
 /// This is inherently sequential: cluster *n* depends on everything every earlier cluster
 /// claimed, so there is no `threads` argument to give.
-pub fn geodesic_clusters(
+pub fn geodesic_clusters<W: Weight>(
     edges: ArrayView2<u32>,
     n_nodes: usize,
-    max_dist: f32,
-    weights: Option<&ArrayView1<f32>>,
+    max_dist: W,
+    weights: Option<&ArrayView1<W>>,
     seeds: Option<&[u32]>,
 ) -> (Vec<i32>, usize) {
     let adj = Adjacency::from_edges(edges, n_nodes, weights, false);
@@ -2074,14 +2282,14 @@ pub fn geodesic_clusters(
 ///
 /// Unlike the free function this inherits the adjacency's direction: given a directed one it
 /// grows out-balls, which is a different (if equally well-defined) partition.
-fn geodesic_clusters_impl(
-    adj: &Adjacency,
-    max_dist: f32,
+fn geodesic_clusters_impl<W: Weight>(
+    adj: &Adjacency<W>,
+    max_dist: W,
     seeds: Option<&[u32]>,
 ) -> (Vec<i32>, usize) {
     let n_nodes = adj.n_nodes();
     assert!(
-        max_dist >= 0.0 && max_dist.is_finite(),
+        max_dist >= W::ZERO && W::is_finite(max_dist),
         "`max_dist` must be finite and non-negative, got {max_dist}"
     );
     if let Some(s) = seeds {
@@ -2116,7 +2324,7 @@ fn geodesic_clusters_impl(
             first: None,
             last: None,
         };
-        search_from::<false, _>(adj, seed, max_dist, &mut tgt, &mut scratch);
+        search_from::<W, false, _>(adj, seed, max_dist, &mut tgt, &mut scratch);
 
         // `touched` is exactly the ball: a node lands there when its distance first goes
         // finite, and relaxation prunes anything past `max_dist`. So the claim is O(ball),
@@ -2143,15 +2351,15 @@ fn geodesic_clusters_impl(
 /// Split out because the two rounds — the caller's roots, then whatever they missed — differ
 /// only in their seed set, and the book-keeping that turns a settled node into a parent entry
 /// is the part that is easy to get subtly wrong.
-fn spanning_sweep(
-    adj: &Adjacency,
+fn spanning_sweep<W: Weight>(
+    adj: &Adjacency<W>,
     seeds: &[u32],
-    scratch: &mut Scratch,
+    scratch: &mut Scratch<W>,
     parents: &mut [i32],
     order: &mut Vec<u32>,
 ) {
     let start = order.len();
-    search_from_many::<true, _>(adj, seeds, f32::INFINITY, order, scratch);
+    search_from_many::<W, true, _>(adj, seeds, W::INFINITY, order, scratch);
     for &v in &order[start..] {
         let p = scratch.pred[v as usize];
         parents[v as usize] = if p == NO_PRED { -1 } else { p as i32 };
@@ -2198,10 +2406,10 @@ fn spanning_sweep(
 ///
 /// Among equal-length routes the parent is whichever settled first, which is deterministic but
 /// otherwise arbitrary — as it is for any spanning tree of a graph with more than one.
-pub fn parents_from_edges(
+pub fn parents_from_edges<W: Weight>(
     edges: ArrayView2<u32>,
     n_nodes: usize,
-    weights: Option<&ArrayView1<f32>>,
+    weights: Option<&ArrayView1<W>>,
     roots: Option<&[u32]>,
 ) -> (Array1<i32>, Array1<u32>) {
     let adj = Adjacency::from_edges(edges, n_nodes, weights, false);
@@ -2209,7 +2417,10 @@ pub fn parents_from_edges(
 }
 
 /// `parents_from_edges` over a prebuilt adjacency.
-fn parents_from_edges_impl(adj: &Adjacency, roots: Option<&[u32]>) -> (Array1<i32>, Array1<u32>) {
+fn parents_from_edges_impl<W: Weight>(
+    adj: &Adjacency<W>,
+    roots: Option<&[u32]>,
+) -> (Array1<i32>, Array1<u32>) {
     let n_nodes = adj.n_nodes();
     // Defaulting to the empty slice rather than to every node: an unrooted component is not an
     // error here, it just falls to the loop below.
@@ -2239,7 +2450,7 @@ fn parents_from_edges_impl(adj: &Adjacency, roots: Option<&[u32]>) -> (Array1<i3
         spanning_sweep(adj, seeds, &mut scratch, &mut parents, &mut order);
     }
     for v in 0..n_nodes as u32 {
-        if !scratch.dist[v as usize].is_finite() {
+        if !W::is_finite(scratch.dist[v as usize]) {
             spanning_sweep(adj, &[v], &mut scratch, &mut parents, &mut order);
         }
     }
@@ -2288,24 +2499,27 @@ fn parents_from_edges_impl(adj: &Adjacency, roots: Option<&[u32]>) -> (Array1<i3
 ///
 /// `M` is `nodes.len() - 1` when every node can reach every other within `limit`, and less when
 /// they cannot: nodes in different components of the graph are never joined.
-fn geodesic_mst_impl(
-    adj: &Adjacency,
+fn geodesic_mst_impl<W: Weight>(
+    adj: &Adjacency<W>,
     nodes: &[u32],
-    limit: Option<f32>,
+    limit: Option<W>,
     threads: Option<usize>,
-) -> (Array2<i64>, Array1<f32>) {
+) -> (Array2<i64>, Array1<W>) {
     let n_nodes = adj.n_nodes();
 
     // Which of `nodes` each graph node *is*, if any — what turns the "nearest source" a search
     // reports (a node index) back into a position in the caller's array.
     let term_of = inverse_index(nodes, n_nodes);
-    let limit = limit.unwrap_or(f32::INFINITY);
+    let limit = limit.unwrap_or(W::INFINITY);
+    // A NaN fails `>= ZERO` too — every IEEE comparison against NaN is false — so this one
+    // test covers both.
     assert!(
-        limit >= 0.0 && !limit.is_nan(),
+        limit >= W::ZERO,
         "`limit` must be non-negative, got {limit}"
     );
     if nodes.len() < 2 {
-        return (Array2::zeros((0, 2)), Array1::zeros(0)); // nothing to join
+        // Nothing to join.
+        return (Array2::zeros((0, 2)), Array1::from_vec(Vec::new()));
     }
 
     // --- One sweep: every node's distance to the nearest of `nodes`, and which one that is.
@@ -2318,7 +2532,7 @@ fn geodesic_mst_impl(
     let mut scratch = Scratch::new(n_nodes);
     scratch.enable_sources(n_nodes);
     let mut settled: Vec<u32> = Vec::new();
-    search_from_many::<true, _>(adj, nodes, limit, &mut settled, &mut scratch);
+    search_from_many::<W, true, _>(adj, nodes, limit, &mut settled, &mut scratch);
     // Fills `scratch.src`, which is what the candidate loop reads; the returned copy is the
     // form `ball` wants and is of no use here.
     scratch.resolve_sources_into(&settled);
@@ -2332,10 +2546,10 @@ fn geodesic_mst_impl(
     // the cell boundaries rather than by the edge count.
     let weights = adj.weights.as_deref();
     let mut cand: Vec<u32> = Vec::new();
-    let mut cand_w: Vec<f32> = Vec::new();
+    let mut cand_w: Vec<W> = Vec::new();
     for u in 0..n_nodes as u32 {
         let du = dist[u as usize];
-        if !du.is_finite() {
+        if !W::is_finite(du) {
             continue; // beyond `limit` of every node, or in a component holding none
         }
         let ou = owner[u as usize];
@@ -2347,10 +2561,10 @@ fn geodesic_mst_impl(
                 continue;
             }
             let dv = dist[v as usize];
-            if !dv.is_finite() || owner[v as usize] == ou {
+            if !W::is_finite(dv) || owner[v as usize] == ou {
                 continue;
             }
-            let w = weights.map_or(1.0, |w| w[r.start + k]);
+            let w = weights.map_or(W::ONE, |w| w[r.start + k]);
             let cw = du + w + dv;
             // A candidate over `limit` cannot be on the answer: every pair within `limit` still
             // has a candidate at exactly its distance, which is what makes the prune sound.
@@ -2377,7 +2591,7 @@ fn geodesic_mst_impl(
     );
 
     let mut out_e: Vec<i64> = Vec::with_capacity(keep.len() * 2);
-    let mut out_w: Vec<f32> = Vec::with_capacity(keep.len());
+    let mut out_w: Vec<W> = Vec::with_capacity(keep.len());
     for &i in &keep {
         let e = cand.row(i as usize);
         out_e.push(e[0] as i64);
@@ -2395,14 +2609,14 @@ fn geodesic_mst_impl(
 /// See [`geodesic_mst_impl`] for what this computes and why it does not build the distance
 /// matrix. Arguments are those of [`geodesic_matrix_mesh`], with `nodes` naming the vertices to
 /// span.
-pub fn geodesic_mst_mesh(
+pub fn geodesic_mst_mesh<W: Weight>(
     faces: ArrayView2<u32>,
     n_vertices: usize,
     coords: Option<ArrayView2<f64>>,
     nodes: &[u32],
-    limit: Option<f32>,
+    limit: Option<W>,
     threads: Option<usize>,
-) -> (Array2<i64>, Array1<f32>) {
+) -> (Array2<i64>, Array1<W>) {
     let adj = Adjacency::from_faces(faces, n_vertices, coords);
     geodesic_mst_impl(&adj, nodes, limit, threads)
 }
@@ -2411,14 +2625,14 @@ pub fn geodesic_mst_mesh(
 ///
 /// The edge-list form of [`geodesic_mst_mesh`]. Always undirected — a minimum spanning tree of
 /// a directed graph is a different problem (an arborescence) with a different algorithm.
-pub fn geodesic_mst_graph(
+pub fn geodesic_mst_graph<W: Weight>(
     edges: ArrayView2<u32>,
     n_nodes: usize,
-    weights: Option<&ArrayView1<f32>>,
+    weights: Option<&ArrayView1<W>>,
     nodes: &[u32],
-    limit: Option<f32>,
+    limit: Option<W>,
     threads: Option<usize>,
-) -> (Array2<i64>, Array1<f32>) {
+) -> (Array2<i64>, Array1<W>) {
     let adj = Adjacency::from_edges(edges, n_nodes, weights, false);
     geodesic_mst_impl(&adj, nodes, limit, threads)
 }
@@ -2491,7 +2705,7 @@ struct Grow<'a> {
     source: u32,
 }
 
-impl Visitor for Grow<'_> {
+impl Visitor<f32> for Grow<'_> {
     #[inline]
     fn settle(&mut self, node: u32, d: f32) -> Visit {
         let r = self.offsets[node as usize] as usize..self.offsets[node as usize + 1] as usize;
@@ -2598,8 +2812,18 @@ impl std::error::Error for SetWeightsError {}
 /// but is measured in cloud points — which is what keeps a patch of a cloud far sparser than
 /// its mesh connected, since the empty nodes in between conduct without contributing — while a
 /// distance matrix stays a matrix over the graph. See [`Grow`] for how the two roles interact.
+///
+/// # Width
+///
+/// `f32` only, unlike the free functions, which are generic over [`Weight`]. The type exists
+/// for the calling pattern where the *graph* is large and the queries small — meshes and
+/// skeletons — which is exactly where `f32` is the right width and where doubling every
+/// node-sized array it holds resident across a whole run would be felt. The incremental
+/// farthest-point state alone is three of them. A caller who needs `f64` over a graph they hold
+/// wants the free functions, which rebuild the adjacency per call and so are not the thing this
+/// type is for.
 pub struct GeodesicGraph {
-    adj: Adjacency,
+    adj: Adjacency<f32>,
     /// Item CSR, as consumed by [`Grow`]. Materialised even for the default one-item-per-node
     /// case so the kernel keeps a single path; it costs 8 bytes per node against an adjacency
     /// that is an order of magnitude larger.
@@ -2610,7 +2834,7 @@ pub struct GeodesicGraph {
     item_node: Vec<u32>,
     /// Reused across queries. This is the allocation the whole type exists to keep: it is
     /// O(n_nodes) and would otherwise be paid, and zeroed, once per fragment.
-    scratch: Scratch,
+    scratch: Scratch<f32>,
     /// Farthest-point-sampling state: for each *node*, the distance to the nearest source
     /// folded in so far, `INFINITY` where no source reaches it. Empty until the first
     /// [`farthest_seed`](Self::farthest_seed) call — callers who only ever `grow` pay nothing.
@@ -2686,7 +2910,7 @@ impl GeodesicGraph {
     /// Assemble from an adjacency and an item-to-node map that are already known good.
     ///
     /// The shared tail of [`new`](Self::new) and [`subset`](Self::subset).
-    fn from_parts(adj: Adjacency, item_node: Vec<u32>) -> Self {
+    fn from_parts(adj: Adjacency<f32>, item_node: Vec<u32>) -> Self {
         let n_nodes = adj.n_nodes();
         assert!(
             item_node.len() <= u32::MAX as usize,
@@ -2846,7 +3070,7 @@ impl GeodesicGraph {
             nodes: &mut nodes,
             dists: &mut dists,
         };
-        search_from_many::<true, _>(&self.adj, sources, max_dist, &mut vis, &mut self.scratch);
+        search_from_many::<f32, true, _>(&self.adj, sources, max_dist, &mut vis, &mut self.scratch);
 
         let srcs = self.scratch.resolve_sources(&nodes);
         self.scratch.reset();
@@ -3052,7 +3276,7 @@ impl GeodesicGraph {
         };
         // No `limit`: the budget is a count, so there is no radius to prune at. The search is
         // bounded instead by `Visit::Stop` the moment the budget is spent.
-        search_from::<false, _>(
+        search_from::<f32, false, _>(
             &self.adj,
             source,
             f32::INFINITY,
@@ -3240,7 +3464,7 @@ impl GeodesicGraph {
         // empty predecessor slice is never indexed.
         let no_pred: &mut [u32] = &mut [];
         if weighted {
-            dijkstra_drain::<false, _>(
+            dijkstra_drain::<f32, false, _>(
                 adj,
                 fps_min,
                 no_pred,
@@ -3250,7 +3474,7 @@ impl GeodesicGraph {
                 &mut NoVisitor,
             );
         } else {
-            bfs_drain::<false, _>(
+            bfs_drain::<f32, false, _>(
                 adj,
                 fps_min,
                 no_pred,
@@ -3362,6 +3586,14 @@ mod tests {
     use super::*;
     use ndarray::{array, Array2};
 
+    /// "No weights", at the default width.
+    ///
+    /// Everything here is generic over [`Weight`] now, so a bare `None` in the weights slot of
+    /// a call whose other arguments are all integers leaves `W` with nothing to infer from.
+    /// Naming the width once is tidier than a turbofish on every unweighted test — and the
+    /// tests that care about the width say so by using `f64` explicitly.
+    const NO_W: Option<&'static ArrayView1<'static, f32>> = None;
+
     /// A regular `n x n` grid of vertices, triangulated by splitting each cell along its
     /// (0,0)->(1,1) diagonal.
     ///
@@ -3397,7 +3629,7 @@ mod tests {
     fn adjacency_dedups_and_drops_self_loops() {
         // Two triangles sharing edge 1-2.
         let faces = array![[0u32, 1, 2], [1, 2, 3]];
-        let adj = Adjacency::from_faces(faces.view(), 4, None);
+        let adj = Adjacency::<f32>::from_faces(faces.view(), 4, None);
 
         // Shared edge 1-2 appears in both faces; without dedup vertex 1 would list 2 twice.
         assert_eq!(&adj.nbrs[adj.row(0)], &[1, 2]);
@@ -3413,7 +3645,7 @@ mod tests {
     fn degenerate_face_produces_no_self_loop() {
         // Face (0, 0, 1) is degenerate: it would union 0 with itself.
         let faces = array![[0u32, 0, 1]];
-        let adj = Adjacency::from_faces(faces.view(), 2, None);
+        let adj = Adjacency::<f32>::from_faces(faces.view(), 2, None);
         assert_eq!(&adj.nbrs[adj.row(0)], &[1]);
         assert_eq!(&adj.nbrs[adj.row(1)], &[0]);
     }
@@ -3423,7 +3655,7 @@ mod tests {
         // An asymmetric weight would silently break d(s,t) == d(t,s), so assert *bit*
         // equality, not approximate equality.
         let (faces, coords) = grid(6, 0.7);
-        let adj = Adjacency::from_faces(faces.view(), 36, Some(coords.view()));
+        let adj = Adjacency::<f32>::from_faces(faces.view(), 36, Some(coords.view()));
         let w = adj.weights.as_ref().unwrap();
 
         for u in 0..36u32 {
@@ -3441,7 +3673,7 @@ mod tests {
         let n = 12;
         let s = 0.3f64;
         let (faces, coords) = grid(n, s);
-        let d = geodesic_matrix_mesh(
+        let d = geodesic_matrix_mesh::<f32>(
             faces.view(),
             n * n,
             Some(coords.view()),
@@ -3468,7 +3700,8 @@ mod tests {
     fn unweighted_distances_match_the_grid_closed_form() {
         let n = 12;
         let (faces, _) = grid(n, 1.0);
-        let d = geodesic_matrix_mesh(faces.view(), n * n, None, Some(&[0]), None, None, None);
+        let d =
+            geodesic_matrix_mesh::<f32>(faces.view(), n * n, None, Some(&[0]), None, None, None);
 
         for i in 0..n {
             for j in 0..n {
@@ -3490,7 +3723,15 @@ mod tests {
             [11.0, 0.0, 0.0],
             [10.0, 1.0, 0.0],
         ];
-        let d = geodesic_matrix_mesh(faces.view(), 6, Some(coords.view()), None, None, None, None);
+        let d = geodesic_matrix_mesh::<f32>(
+            faces.view(),
+            6,
+            Some(coords.view()),
+            None,
+            None,
+            None,
+            None,
+        );
 
         for i in 0..6 {
             for j in 0..6 {
@@ -3508,7 +3749,7 @@ mod tests {
     fn isolated_vertex_reaches_only_itself() {
         // Vertex 3 is counted but appears in no face.
         let faces = array![[0u32, 1, 2]];
-        let d = geodesic_matrix_mesh(faces.view(), 4, None, None, None, None, None);
+        let d = geodesic_matrix_mesh::<f32>(faces.view(), 4, None, None, None, None, None);
         assert_eq!(d[[3, 3]], 0.0);
         for j in 0..3 {
             assert_eq!(d[[3, j]], -1.0);
@@ -3519,7 +3760,7 @@ mod tests {
     #[test]
     fn full_matrix_is_exactly_symmetric() {
         let (faces, coords) = grid(9, 1.3);
-        let d = geodesic_matrix_mesh(
+        let d = geodesic_matrix_mesh::<f32>(
             faces.view(),
             81,
             Some(coords.view()),
@@ -3545,7 +3786,7 @@ mod tests {
     fn subsetting_agrees_with_slicing_the_full_matrix() {
         // The cheapest way to catch index-mapping bugs, and it needs no external oracle.
         let (faces, coords) = grid(10, 0.9);
-        let full = geodesic_matrix_mesh(
+        let full = geodesic_matrix_mesh::<f32>(
             faces.view(),
             100,
             Some(coords.view()),
@@ -3557,7 +3798,7 @@ mod tests {
 
         let sources = [7u32, 0, 93, 42];
         let targets = [11u32, 99, 3];
-        let sub = geodesic_matrix_mesh(
+        let sub = geodesic_matrix_mesh::<f32>(
             faces.view(),
             100,
             Some(coords.view()),
@@ -3580,7 +3821,7 @@ mod tests {
         // `remaining` permanently above zero and quietly disable the exit.
         let (faces, coords) = grid(8, 1.0);
         let targets = [5u32, 5, 5, 20];
-        let d = geodesic_matrix_mesh(
+        let d = geodesic_matrix_mesh::<f32>(
             faces.view(),
             64,
             Some(coords.view()),
@@ -3600,7 +3841,7 @@ mod tests {
         // Match scipy: a node at distance exactly `limit` is kept, one just beyond is not.
         let (faces, coords) = grid(10, 1.0);
         let n = 100;
-        let full = geodesic_matrix_mesh(
+        let full = geodesic_matrix_mesh::<f32>(
             faces.view(),
             n,
             Some(coords.view()),
@@ -3614,7 +3855,7 @@ mod tests {
         let exact = full[[0, 3]];
         assert!((exact - 3.0).abs() < 1e-6, "fixture assumption: {exact}");
 
-        let at = geodesic_matrix_mesh(
+        let at = geodesic_matrix_mesh::<f32>(
             faces.view(),
             n,
             Some(coords.view()),
@@ -3625,7 +3866,7 @@ mod tests {
         );
         assert_eq!(at[[0, 3]], exact, "distance == limit must be kept");
 
-        let just_under = geodesic_matrix_mesh(
+        let just_under = geodesic_matrix_mesh::<f32>(
             faces.view(),
             n,
             Some(coords.view()),
@@ -3654,7 +3895,7 @@ mod tests {
     fn results_do_not_depend_on_thread_count() {
         // The real race detector.
         let (faces, coords) = grid(11, 0.6);
-        let reference = geodesic_matrix_mesh(
+        let reference = geodesic_matrix_mesh::<f32>(
             faces.view(),
             121,
             Some(coords.view()),
@@ -3664,7 +3905,7 @@ mod tests {
             Some(1),
         );
         for n in [2usize, 3, 7, 16] {
-            let got = geodesic_matrix_mesh(
+            let got = geodesic_matrix_mesh::<f32>(
                 faces.view(),
                 121,
                 Some(coords.view()),
@@ -3740,7 +3981,7 @@ mod tests {
         let sources = [0u32];
         let targets = [0u32, 1, 48];
 
-        let (dn, nn) = geodesic_nearest_mesh(
+        let (dn, nn) = geodesic_nearest_mesh::<f32>(
             faces.view(),
             n,
             Some(coords.view()),
@@ -3752,7 +3993,7 @@ mod tests {
         assert_eq!(nn[0], 1, "nearest distinct target should be vertex 1");
         assert!((dn[0] - 1.0).abs() < 1e-6);
 
-        let (df, nf) = geodesic_farthest_mesh(
+        let (df, nf) = geodesic_farthest_mesh::<f32>(
             faces.view(),
             n,
             Some(coords.view()),
@@ -3771,7 +4012,7 @@ mod tests {
         let n = 81;
         let targets = [3u32, 40, 77];
 
-        let full = geodesic_matrix_mesh(
+        let full = geodesic_matrix_mesh::<f32>(
             faces.view(),
             n,
             Some(coords.view()),
@@ -3780,7 +4021,7 @@ mod tests {
             None,
             None,
         );
-        let (dn, _) = geodesic_nearest_mesh(
+        let (dn, _) = geodesic_nearest_mesh::<f32>(
             faces.view(),
             n,
             Some(coords.view()),
@@ -3812,8 +4053,15 @@ mod tests {
     fn nearest_with_no_reachable_target_is_minus_one() {
         // Two disjoint triangles; the only target lives in the other component.
         let faces = array![[0u32, 1, 2], [3, 4, 5]];
-        let (d, n) =
-            geodesic_nearest_mesh(faces.view(), 6, None, Some(&[0, 1]), Some(&[4]), None, None);
+        let (d, n) = geodesic_nearest_mesh::<f32>(
+            faces.view(),
+            6,
+            None,
+            Some(&[0, 1]),
+            Some(&[4]),
+            None,
+            None,
+        );
         assert_eq!(d.to_vec(), vec![-1.0, -1.0]);
         assert_eq!(n.to_vec(), vec![-1, -1]);
     }
@@ -3932,7 +4180,8 @@ mod tests {
         let edges: Array2<u32> = edges.mapv(|v| v as u32);
 
         // Hop distance from a corner, which on this grid is max(i, j) — a genuine wavefront.
-        let d = geodesic_matrix_mesh(faces.view(), n_nodes, None, Some(&[0]), None, None, None);
+        let d =
+            geodesic_matrix_mesh::<f32>(faces.view(), n_nodes, None, Some(&[0]), None, None, None);
         let labels: Array1<i64> = d.row(0).iter().map(|&x| x as i64).collect();
 
         let (ids, n_comp) = level_set_components(edges.view(), n_nodes, labels.view());
@@ -4040,7 +4289,7 @@ mod tests {
         assert_eq!(mst.to_vec(), vec![0i64, 1]);
 
         // Unweighted behaves the same as all-equal weights.
-        let mst = minimum_spanning_tree(edges.view(), 3, None, false, None);
+        let mst = minimum_spanning_tree(edges.view(), 3, NO_W, false, None);
         assert_eq!(mst.to_vec(), vec![0i64, 1]);
     }
 
@@ -4197,7 +4446,7 @@ mod tests {
         // Edges given "backwards" on purpose: orientation must come from the search, not from
         // the order the endpoints happen to be written in.
         let edges = array![[1u32, 0], [2, 1], [3, 2]];
-        let (parents, order) = parents_from_edges(edges.view(), 4, None, None);
+        let (parents, order) = parents_from_edges(edges.view(), 4, NO_W, None);
         assert_eq!(parents.to_vec(), vec![-1, 0, 1, 2]);
         assert_eq!(order.to_vec(), vec![0u32, 1, 2, 3]);
         check_forest(edges.view(), 4, parents.as_slice().unwrap(), order.as_slice().unwrap());
@@ -4207,7 +4456,7 @@ mod tests {
     fn parents_from_edges_breaks_cycles() {
         // A 4-ring. Any spanning tree drops exactly one edge; BFS from 0 drops the far one.
         let edges = array![[0u32, 1], [1, 2], [2, 3], [3, 0]];
-        let (parents, order) = parents_from_edges(edges.view(), 4, None, None);
+        let (parents, order) = parents_from_edges(edges.view(), 4, NO_W, None);
         check_forest(edges.view(), 4, parents.as_slice().unwrap(), order.as_slice().unwrap());
         assert_eq!(parents[0], -1);
         // 1 and 3 are one hop from the root, 2 is two hops via either.
@@ -4220,7 +4469,7 @@ mod tests {
         // Two paths and an isolated node — the same representatives
         // `connected_components_graph` labels components by.
         let edges = array![[2u32, 1], [1, 0], [5, 4]];
-        let (parents, order) = parents_from_edges(edges.view(), 7, None, None);
+        let (parents, order) = parents_from_edges(edges.view(), 7, NO_W, None);
         assert_eq!(parents.to_vec(), vec![-1, 0, 1, -1, -1, 4, -1]);
         // Components are swept in ascending order of their lowest node.
         assert_eq!(order.to_vec(), vec![0u32, 1, 2, 3, 4, 5, 6]);
@@ -4231,19 +4480,19 @@ mod tests {
     fn given_roots_win_and_the_rest_fall_back() {
         // Path 0-1-2-3 rooted at 3: every link reverses.
         let edges = array![[0u32, 1], [1, 2], [2, 3]];
-        let (parents, order) = parents_from_edges(edges.view(), 4, None, Some(&[3]));
+        let (parents, order) = parents_from_edges(edges.view(), 4, NO_W, Some(&[3]));
         assert_eq!(parents.to_vec(), vec![1, 2, 3, -1]);
         assert_eq!(order.to_vec(), vec![3u32, 2, 1, 0]);
 
         // A root in one component leaves the other to the fallback rule.
         let edges = array![[0u32, 1], [1, 2], [5, 6]];
-        let (parents, order) = parents_from_edges(edges.view(), 7, None, Some(&[2]));
+        let (parents, order) = parents_from_edges(edges.view(), 7, NO_W, Some(&[2]));
         assert_eq!(parents.to_vec(), vec![1, 2, -1, -1, -1, -1, 5]);
         check_forest(edges.view(), 7, parents.as_slice().unwrap(), order.as_slice().unwrap());
 
         // Two roots inside one component split it — each node goes to the nearer.
         let edges = array![[0u32, 1], [1, 2], [2, 3]];
-        let (parents, _) = parents_from_edges(edges.view(), 4, None, Some(&[0, 3]));
+        let (parents, _) = parents_from_edges(edges.view(), 4, NO_W, Some(&[0, 3]));
         assert_eq!(parents.to_vec(), vec![-1, 0, 3, -1]);
     }
 
@@ -4252,7 +4501,7 @@ mod tests {
         // 0-2 direct but expensive; 0-1-2 is two cheap hops. Unweighted picks the direct edge,
         // weighted routes through 1.
         let edges = array![[0u32, 1], [1, 2], [0, 2]];
-        let (hops, _) = parents_from_edges(edges.view(), 3, None, None);
+        let (hops, _) = parents_from_edges(edges.view(), 3, NO_W, None);
         assert_eq!(hops.to_vec(), vec![-1, 0, 0]);
 
         let w = array![1.0f32, 1.0, 5.0];
@@ -4274,7 +4523,7 @@ mod tests {
         }
         let n_nodes = n_small * 4;
         let edges = Array2::from_shape_vec((flat.len() / 2, 2), flat).unwrap();
-        let (parents, order) = parents_from_edges(edges.view(), n_nodes, None, None);
+        let (parents, order) = parents_from_edges(edges.view(), n_nodes, NO_W, None);
         check_forest(
             edges.view(),
             n_nodes,
@@ -4312,7 +4561,7 @@ mod tests {
     /// What the caller would otherwise do: materialise the k x k geodesic matrix and Kruskal it.
     /// Returns the total weight, which is the invariant an MST pins down — the edge *set* need
     /// not match, since ties have more than one right answer.
-    fn dense_mst_weight(adj: &Adjacency, nodes: &[u32], limit: Option<f32>) -> f64 {
+    fn dense_mst_weight(adj: &Adjacency<f32>, nodes: &[u32], limit: Option<f32>) -> f64 {
         let d = geodesic_matrix_impl(adj, Some(nodes), Some(nodes), limit, None);
         let k = nodes.len();
         let mut flat: Vec<u32> = Vec::new();
@@ -4340,7 +4589,7 @@ mod tests {
         // the individual reported distances must match what the k x k route gives.
         let n = 9usize;
         let (faces, coords) = grid(n, 1.0);
-        let adj = Adjacency::from_faces(faces.view(), n * n, Some(coords.view()));
+        let adj = Adjacency::<f32>::from_faces(faces.view(), n * n, Some(coords.view()));
         let nodes: Vec<u32> = vec![0, 8, 40, 72, 80, 13, 55];
 
         let (edges, weights) = geodesic_mst_impl(&adj, &nodes, None, None);
@@ -4372,7 +4621,9 @@ mod tests {
             let n_nodes = 12 + case % 18;
             let n_edges = n_nodes * 2;
             let edges = random_edges(&mut state, n_nodes, n_edges);
-            let w: Array1<f32> = (0..n_edges).map(|_| (rng(&mut state) * 10.0) as f32).collect();
+            let w: Array1<f32> = (0..n_edges)
+                .map(|_| (rng(&mut state) * 10.0) as f32)
+                .collect();
             let adj = Adjacency::from_edges(edges.view(), n_nodes, Some(&w.view()), false);
 
             // Every third node, so the subset is scattered rather than contiguous.
@@ -4418,7 +4669,7 @@ mod tests {
     #[test]
     fn geodesic_mst_degenerate_inputs() {
         let edges = array![[0u32, 1], [1, 2]];
-        let adj = Adjacency::from_edges(edges.view(), 3, None, false);
+        let adj = Adjacency::from_edges(edges.view(), 3, NO_W, false);
 
         // Fewer than two nodes: nothing to span.
         for nodes in [vec![], vec![1u32]] {
@@ -4436,7 +4687,7 @@ mod tests {
     #[should_panic(expected = "more than once")]
     fn geodesic_mst_rejects_duplicate_nodes() {
         let edges = array![[0u32, 1], [1, 2]];
-        let adj = Adjacency::from_edges(edges.view(), 3, None, false);
+        let adj = Adjacency::from_edges(edges.view(), 3, NO_W, false);
         geodesic_mst_impl(&adj, &[0, 2, 0], None, None);
     }
 
@@ -4449,8 +4700,14 @@ mod tests {
         let n_verts = n * n;
         let nodes: Vec<u32> = vec![0, 6, 24, 42, 48];
 
-        let (mesh_e, mesh_w) =
-            geodesic_mst_mesh(faces.view(), n_verts, Some(coords.view()), &nodes, None, None);
+        let (mesh_e, mesh_w) = geodesic_mst_mesh::<f32>(
+            faces.view(),
+            n_verts,
+            Some(coords.view()),
+            &nodes,
+            None,
+            None,
+        );
 
         let (edges, _, _, lengths) =
             unique_edges(faces.view(), Some(coords.view()), false, false, None);
@@ -4498,7 +4755,7 @@ mod tests {
         );
 
         assert_eq!(
-            minimum_spanning_tree(edges.view(), 3, None, false, None).len(),
+            minimum_spanning_tree(edges.view(), 3, NO_W, false, None).len(),
             0
         );
     }
@@ -4628,7 +4885,7 @@ mod tests {
         // Two disjoint triangles, plus an isolated node.
         let edges = array![[0u32, 1], [1, 2], [0, 2], [3, 4], [4, 5], [3, 5]];
         let (dist, pred) =
-            geodesic_predecessors_graph(edges.view(), 7, None, false, Some(&[0]), None, None);
+            geodesic_predecessors_graph(edges.view(), 7, NO_W, false, Some(&[0]), None, None);
 
         for v in 3..7 {
             assert_eq!(dist[[0, v]], -1.0);
@@ -4686,7 +4943,7 @@ mod tests {
     #[test]
     fn paths_to_unreachable_targets_are_empty() {
         let edges = array![[0u32, 1], [2, 3]];
-        let paths = geodesic_path_graph(edges.view(), 4, None, false, 0, &[1, 3, 0]);
+        let paths = geodesic_path_graph(edges.view(), 4, NO_W, false, 0, &[1, 3, 0]);
         assert_eq!(paths, vec![vec![0, 1], vec![], vec![0]]);
     }
 
@@ -5559,7 +5816,7 @@ mod tests {
             geodesic_matrix_graph(
                 edges.view(),
                 n,
-                None,
+                NO_W,
                 false,
                 Some(&srcs),
                 None,
@@ -5726,5 +5983,268 @@ mod tests {
         let item_nodes = [5u32, 0, 2];
         let mut g = GeodesicGraph::new(edges.view(), 6, None, false, Some(&item_nodes));
         assert_eq!(g.item_components(), vec![4, 0, 1]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Weight width
+    // -----------------------------------------------------------------------
+
+    /// `f64` weights and `f32` weights must give the *same* answer wherever `f32` is exact,
+    /// or the two instantiations are not the same algorithm.
+    ///
+    /// Small integer weights are the case where that holds: every weight, and every sum of
+    /// them along any path in these graphs, lands exactly on both widths, so the two matrices
+    /// have to agree to the bit — not merely to a tolerance. Random graphs, so the agreement
+    /// is tested across cycles, parallel edges, self-loops and disconnected components rather
+    /// than on one hand-picked shape.
+    #[test]
+    fn the_two_widths_agree_wherever_f32_is_exact() {
+        let mut state = 0x5eed_1234_u64;
+        for &(n_nodes, n_edges) in &[(1usize, 0usize), (6, 8), (40, 90), (120, 400)] {
+            let edges = random_edges(&mut state, n_nodes, n_edges);
+            // 1..=16: integers, so exact at both widths, and small enough that no path sum
+            // can leave f32's exactly-representable range.
+            let w32: Array1<f32> = (0..n_edges)
+                .map(|_| (rng(&mut state) * 16.0) as u32 as f32 + 1.0)
+                .collect();
+            let w64: Array1<f64> = w32.iter().map(|&x| x as f64).collect();
+
+            let d32 = geodesic_matrix_graph(
+                edges.view(),
+                n_nodes,
+                Some(&w32.view()),
+                false,
+                None,
+                None,
+                None,
+                None,
+            );
+            let d64 = geodesic_matrix_graph(
+                edges.view(),
+                n_nodes,
+                Some(&w64.view()),
+                false,
+                None,
+                None,
+                None,
+                None,
+            );
+            assert_eq!(d32.shape(), d64.shape());
+            for (a, b) in d32.iter().zip(d64.iter()) {
+                assert_eq!(*a as f64, *b, "{n_nodes} nodes / {n_edges} edges");
+            }
+
+            // The predecessor trees have to match too — same relaxation order, so the same
+            // route is chosen among equal-length ones.
+            let (_, p32) = geodesic_predecessors_graph(
+                edges.view(),
+                n_nodes,
+                Some(&w32.view()),
+                false,
+                None,
+                None,
+                None,
+            );
+            let (_, p64) = geodesic_predecessors_graph(
+                edges.view(),
+                n_nodes,
+                Some(&w64.view()),
+                false,
+                None,
+                None,
+                None,
+            );
+            assert_eq!(p32, p64);
+
+            // As do the derived structures: spanning forest, clusters, geodesic MST.
+            assert_eq!(
+                parents_from_edges(edges.view(), n_nodes, Some(&w32.view()), None),
+                parents_from_edges(edges.view(), n_nodes, Some(&w64.view()), None)
+            );
+            assert_eq!(
+                geodesic_clusters(edges.view(), n_nodes, 5.0f32, Some(&w32.view()), None),
+                geodesic_clusters(edges.view(), n_nodes, 5.0f64, Some(&w64.view()), None)
+            );
+
+            let nodes: Vec<u32> = (0..n_nodes as u32).step_by(3).collect();
+            let (e32, mw32) =
+                geodesic_mst_graph(edges.view(), n_nodes, Some(&w32.view()), &nodes, None, None);
+            let (e64, mw64) =
+                geodesic_mst_graph(edges.view(), n_nodes, Some(&w64.view()), &nodes, None, None);
+            assert_eq!(e32, e64);
+            for (a, b) in mw32.iter().zip(mw64.iter()) {
+                assert_eq!(*a as f64, *b);
+            }
+        }
+    }
+
+    /// Hop counts do not depend on the width at all: BFS emits integers, which both widths
+    /// hold exactly at any depth a graph can reach.
+    #[test]
+    fn unweighted_searches_are_width_independent() {
+        let (faces, _) = grid(9, 1.0);
+        let d32 = geodesic_matrix_mesh::<f32>(faces.view(), 81, None, None, None, None, None);
+        let d64 = geodesic_matrix_mesh::<f64>(faces.view(), 81, None, None, None, None, None);
+        for (a, b) in d32.iter().zip(d64.iter()) {
+            assert_eq!(*a as f64, *b);
+        }
+    }
+
+    /// The point of the wider width: a long accumulation drifts at `f32` and does not at `f64`.
+    ///
+    /// The grid has a closed-form metric (see [`grid`]), so this is measured against an exact
+    /// answer rather than against the other width — otherwise "closer" would only mean "they
+    /// differ". Two roundings feed the `f32` drift: the edge lengths themselves, computed in
+    /// `f64` from the coordinates and narrowed on the way in, and one addition per hop.
+    #[test]
+    fn f64_tracks_the_closed_form_where_f32_drifts() {
+        let n = 48;
+        let s = 0.3f64;
+        let (faces, coords) = grid(n, s);
+
+        let exact = |i: usize, j: usize| {
+            s * (2f64.sqrt() * i.min(j) as f64 + (i as isize - j as isize).abs() as f64)
+        };
+        let worst = |d: &dyn Fn(usize, usize) -> f64| {
+            let mut worst = 0f64;
+            for i in 0..n {
+                for j in 0..n {
+                    worst = worst.max((d(i, j) - exact(i, j)).abs());
+                }
+            }
+            worst
+        };
+
+        let d32 = geodesic_matrix_mesh::<f32>(
+            faces.view(),
+            n * n,
+            Some(coords.view()),
+            Some(&[0]),
+            None,
+            None,
+            None,
+        );
+        let d64 = geodesic_matrix_mesh::<f64>(
+            faces.view(),
+            n * n,
+            Some(coords.view()),
+            Some(&[0]),
+            None,
+            None,
+            None,
+        );
+        let e32 = worst(&|i, j| d32[[0, i * n + j]] as f64);
+        let e64 = worst(&|i, j| d64[[0, i * n + j]]);
+
+        // The far corner is ~20 units out over ~70 hops, where an f32 ulp is ~2e-6.
+        assert!(e64 < 1e-12, "f64 should track the closed form: {e64}");
+        assert!(
+            e32 > 1e-7,
+            "fixture assumption: f32 should visibly drift, got {e32}"
+        );
+        assert!(e64 < e32, "{e64} vs {e32}");
+    }
+
+    /// A shortest path `f32` cannot see at all.
+    ///
+    /// Two routes from 0 to 2: the direct edge at `1 + 1e-10`, and the two-hop route at
+    /// `1 + 1e-8`. An `f32` ulp at 1.0 is ~1.2e-7, so at that width every one of those numbers
+    /// *is* 1.0 and the two routes tie; at `f64` the direct edge is genuinely shorter. This is
+    /// the case where the width changes the answer rather than merely the container it comes
+    /// back in.
+    #[test]
+    fn f64_resolves_a_difference_f32_rounds_away() {
+        let edges = array![[0u32, 1], [1, 2], [0, 2]];
+        let w64 = array![1.0f64, 1e-8, 1.0000000001];
+        let w32: Array1<f32> = w64.iter().map(|&x| x as f32).collect();
+
+        let d32 = geodesic_matrix_graph(
+            edges.view(),
+            3,
+            Some(&w32.view()),
+            false,
+            None,
+            None,
+            None,
+            None,
+        );
+        let d64 = geodesic_matrix_graph(
+            edges.view(),
+            3,
+            Some(&w64.view()),
+            false,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // Everything collapses to 1.0 at f32 — including the weights, before the search runs.
+        assert_eq!(d32[[0, 2]], 1.0f32);
+        // At f64 the direct edge wins, and by exactly what it should.
+        assert_eq!(d64[[0, 2]], 1.0000000001f64);
+        assert!(d64[[0, 2]] < 1.0 + 1e-8, "the two-hop route should lose");
+    }
+
+    /// The conventions the drivers are built on hold at `f64` too: the `-1` unreachable
+    /// sentinel, the inclusive `limit` boundary, and degenerate shapes.
+    #[test]
+    fn f64_keeps_the_module_conventions() {
+        // Two components, so there are genuinely unreachable pairs.
+        let edges = array![[0u32, 1], [2, 3]];
+        let w = array![1.5f64, 2.5];
+        let d = geodesic_matrix_graph(
+            edges.view(),
+            4,
+            Some(&w.view()),
+            false,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(d[[0, 1]], 1.5);
+        assert_eq!(d[[0, 2]], -1.0);
+        assert_eq!(d[[2, 3]], 2.5);
+
+        // `limit` keeps a node at exactly the bound and drops anything past it.
+        let at = geodesic_matrix_graph(
+            edges.view(),
+            4,
+            Some(&w.view()),
+            false,
+            None,
+            None,
+            Some(1.5f64),
+            None,
+        );
+        assert_eq!(at[[0, 1]], 1.5);
+        assert_eq!(at[[2, 3]], -1.0);
+
+        // Empty source or target sets give an empty matrix, not a panic.
+        let empty = geodesic_matrix_graph(
+            edges.view(),
+            4,
+            Some(&w.view()),
+            false,
+            Some(&[]),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(empty.shape(), &[0, 4]);
+
+        // As does an empty graph through the predecessor driver.
+        let none = Array2::<u32>::zeros((0, 2));
+        let (dist, pred) = geodesic_predecessors_graph(
+            none.view(),
+            0,
+            None::<&ArrayView1<f64>>,
+            false,
+            None,
+            None,
+            None,
+        );
+        assert_eq!((dist.shape(), pred.shape()), (&[0, 0][..], &[0, 0][..]));
     }
 }

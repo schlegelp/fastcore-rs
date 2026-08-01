@@ -70,6 +70,45 @@ a `-1` sentinel is needed and your dtype is unsigned, the result is promoted to
 [`descendant_counts`](morphology.md#navis_fastcore.descendant_counts)): they grow
 as the square of the component size and overflow 32 bits on a 100k-node skeleton.
 
+### Float return dtypes
+
+Distances are `float32` by default and `float64` on request. The rule is **your
+dtype in, your dtype out**, the same one [`linkage`](wrappers.md) follows for score
+matrices: hand
+[`geodesic_matrix_graph`](mesh.md#navis_fastcore.geodesic_matrix_graph) a `float64`
+`weights` array and the distances come back `float64`; anything else gives
+`float32`.
+
+```python
+fastcore.geodesic_matrix_graph(edges, n, weights=w.astype(np.float64))  # float64
+fastcore.geodesic_matrix_graph(edges, n, weights=w, dtype=np.float64)   # float64
+```
+
+A `dtype` argument overrides that in either direction. Only something carrying a
+`float64` *dtype* counts as having asked — a list of Python floats does not, since
+`np.asarray([1.0, 2.0])` is `float64` by numpy's default rather than by your intent.
+
+Which to want: Dijkstra sums one weight per hop, so a path of `k` hops carries up to
+`k` roundings. `float32` is right for mesh and skeleton work — a 24-bit mantissa
+resolves a 100 mm neuron to ~6 nm, and the distance array is by far the largest
+thing these functions allocate. `float64` earns its keep when the *accumulation* is
+long rather than the graph large (tens of thousands of hops), when weights span a
+wide dynamic range, or when you are comparing against `scipy.sparse.csgraph`, which
+works in `float64` unconditionally.
+
+Two families sit outside the "your dtype in" half of this rule.
+
+**The mesh functions** ([`geodesic_matrix_mesh`](mesh.md#navis_fastcore.geodesic_matrix_mesh)
+and friends) default to `float32` and take `dtype` alone. Their `vertices` are
+*coordinates*, taken at `float64` either way — each edge length is computed from them
+at that width and rounded once on the way into the graph — so there is no distance
+dtype to read off them.
+
+**[`GeodesicGraph`](mesh.md#navis_fastcore.GeodesicGraph)** is `float32` only. It
+exists for "large graph, many small queries", which is the case where `float32` is
+the right width and where doubling the node-sized arrays it holds resident for a
+whole run would be felt.
+
 ## Available functions
 
 Operations on [rooted trees](../concepts/trees.md):

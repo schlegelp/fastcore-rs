@@ -10,7 +10,8 @@ geodesic_mst_graph(
   nodes,
   weights = NULL,
   limit = NULL,
-  threads = NULL
+  threads = NULL,
+  precision = 32
 )
 }
 \arguments{
@@ -25,6 +26,9 @@ geodesic_mst_graph(
 \item{limit}{Optional numeric; do not join nodes further apart than this.}
 
 \item{threads}{Optional integer; number of threads. \code{NULL} uses all cores.}
+
+\item{precision}{Integer; 32 or 64, the width distances are accumulated at. The
+result is numeric either way — R has no float32 — so this buys accuracy.}
 }
 \value{
 List with \code{edges} (integer \verb{(M, 2)} matrix of 0-based positions in \code{nodes},

@@ -394,7 +394,9 @@ def minimum_spanning_tree(edges, n_nodes, weights=None, maximize=False, threads=
     weights :  (E, ) array, optional
                Weight per edge. If ``None`` every edge counts as equal (any
                spanning forest, edges preferred in input order). Must be finite;
-               negative weights are allowed.
+               negative weights are allowed. A float64 array is compared at that
+               width rather than being narrowed, which can change *which* edges are
+               kept where two weights tie at float32 and not at float64.
     maximize : bool
                Return the *maximum* spanning forest instead. This exists so you do
                not have to pass ``1 / weights`` to invert the ordering — a
@@ -434,18 +436,13 @@ def minimum_spanning_tree(edges, n_nodes, weights=None, maximize=False, threads=
     """
     edges, n_nodes = _prep_edges(edges, n_nodes)
 
-    if weights is not None:
-        weights = np.ascontiguousarray(np.asarray(weights, dtype=np.float32).ravel())
-        if len(weights) != len(edges):
-            raise ValueError(
-                f"`weights` must have one entry per edge: got {len(weights)} "
-                f"for {len(edges)} edges"
-            )
-
     return _fastcore.minimum_spanning_tree(
         edges,
         n_nodes,
-        weights,
+        # No `dtype`: the output is row indices. The weights' own width is honoured
+        # because it decides the sort order where two weights are close enough to
+        # compare equal at float32 and not at float64.
+        _prep_weights(weights, edges)[0],
         bool(maximize),
         None if threads is None else int(threads),
     )
@@ -546,7 +543,9 @@ def parents_from_edges(edges, n_nodes, weights=None, roots=None):
               give the shortest-path tree, which is a different (and generally
               deeper) spanning tree. Neither is the minimum spanning tree — for
               that, run :func:`~navis_fastcore.minimum_spanning_tree` first and
-              orient the edges it keeps.
+              orient the edges it keeps. A float64 array is accumulated at that
+              width rather than being narrowed, which can change which tree comes
+              out. There is no ``dtype`` argument because both outputs are ids.
     roots :   iterable, optional
               Nodes to root at. If ``None`` each component is rooted at its lowest
               node index — the same representative
@@ -614,7 +613,9 @@ def parents_from_edges(edges, n_nodes, weights=None, roots=None):
     return _fastcore.parents_from_edges(
         edges,
         n_nodes,
-        _prep_weights(weights, edges),
+        # No `dtype`: both outputs are ids. The weights' own width still decides
+        # which spanning tree comes out, so it is honoured rather than flattened.
+        _prep_weights(weights, edges)[0],
         _prep_indices(roots, n_nodes, "roots"),
     )
 
@@ -628,7 +629,7 @@ def _prep_mst_nodes(nodes, n_nodes):
 
 
 def geodesic_mst_mesh(
-    faces, nodes, vertices=None, n_vertices=None, limit=None, threads=None
+    faces, nodes, vertices=None, n_vertices=None, limit=None, threads=None, dtype=None
 ):
     """Minimum spanning tree over a subset of mesh vertices, by geodesic distance.
 
@@ -672,6 +673,14 @@ def geodesic_mst_mesh(
                  than merely discarding results.
     threads :    int, optional
                  Number of threads to use. If ``None`` uses all available cores.
+    dtype :      float32 | float64, optional
+                 Width the distances are accumulated and returned at. Defaults to
+                 float32. Unlike the graph functions there is no input dtype to read
+                 this off: ``vertices`` are *coordinates*, taken at float64 either
+                 way, and each edge length is computed from them at that width and
+                 rounded once on the way into the graph. Ask for float64 when the
+                 paths are long enough for the per-hop accumulation to matter — and
+                 note the output doubles in size.
 
     Returns
     -------
@@ -680,8 +689,9 @@ def geodesic_mst_mesh(
                  ``nodes[edges]`` maps back, and any per-node data you hold indexes
                  the same way. Ascending by weight, as
                  :func:`~navis_fastcore.minimum_spanning_tree`.
-    weights :    (M, ) float32 array
-                 Geodesic distance across each of those edges.
+    weights :    (M, ) array
+                 Geodesic distance across each of those edges, in the resolved
+                 ``dtype``.
 
     ``M`` is ``len(nodes) - 1`` when every node can reach every other within
     ``limit``, and less when they cannot: vertices in different components of the
@@ -719,10 +729,13 @@ def geodesic_mst_mesh(
         vertices,
         _prep_limit(limit),
         None if threads is None else int(threads),
+        _width_of(dtype),
     )
 
 
-def geodesic_mst_graph(edges, n_nodes, nodes, weights=None, limit=None, threads=None):
+def geodesic_mst_graph(
+    edges, n_nodes, nodes, weights=None, limit=None, threads=None, dtype=None
+):
     """Minimum spanning tree over a subset of graph nodes, by geodesic distance.
 
     The edge-list form of :func:`~navis_fastcore.geodesic_mst_mesh`, which explains
@@ -746,13 +759,17 @@ def geodesic_mst_graph(edges, n_nodes, nodes, weights=None, limit=None, threads=
               :func:`~navis_fastcore.geodesic_mst_mesh`.
     threads : int, optional
               Number of threads to use. If ``None`` uses all available cores.
+    dtype :   float32 | float64, optional
+              Width the distances are accumulated and returned at. If ``None``
+              (default) it follows ``weights``: float64 in, float64 out.
 
     Returns
     -------
     edges :   (M, 2) int64 array
               Rows of *positions in* ``nodes``, ascending by weight.
-    weights : (M, ) float32 array
-              Geodesic distance across each of those edges.
+    weights : (M, ) array
+              Geodesic distance across each of those edges, in the resolved
+              ``dtype``.
 
     Examples
     --------
@@ -781,13 +798,15 @@ def geodesic_mst_graph(edges, n_nodes, nodes, weights=None, limit=None, threads=
     edges, n_nodes = _prep_edges(edges, n_nodes)
     nodes = _prep_mst_nodes(nodes, n_nodes)
 
+    weights, float64 = _prep_weights(weights, edges, dtype)
     return _fastcore.geodesic_mst_graph(
         edges,
         n_nodes,
         nodes,
-        _prep_weights(weights, edges),
+        weights,
         _prep_limit(limit),
         None if threads is None else int(threads),
+        float64,
     )
 
 
@@ -885,6 +904,7 @@ def geodesic_matrix_mesh(
     targets=None,
     limit=None,
     threads=None,
+    dtype=None,
 ):
     """Calculate geodesic ("along-the-mesh-edge") distances on a triangle mesh.
 
@@ -929,12 +949,20 @@ def geodesic_matrix_mesh(
                  Number of threads to use. If ``None`` uses all available cores. Set
                  to 1 if you are already inside a multiprocessing pool, to avoid
                  oversubscribing the machine.
+    dtype :      float32 | float64, optional
+                 Width the distances are accumulated and returned at. Defaults to
+                 float32. Unlike the graph functions there is no input dtype to read
+                 this off: ``vertices`` are *coordinates*, taken at float64 either
+                 way, and each edge length is computed from them at that width and
+                 rounded once on the way into the graph. Ask for float64 when the
+                 paths are long enough for the per-hop accumulation to matter — and
+                 note the output doubles in size.
 
     Returns
     -------
-    matrix :     (len(sources), len(targets)) float32 array
-                 Geodesic distances. Unreachable pairs — disconnected, or beyond
-                 ``limit`` — are set to ``-1``.
+    matrix :     (len(sources), len(targets)) array
+                 Geodesic distances in the resolved ``dtype``. Unreachable pairs —
+                 disconnected, or beyond ``limit`` — are set to ``-1``.
 
     Examples
     --------
@@ -975,6 +1003,7 @@ def geodesic_matrix_mesh(
         _prep_indices(targets, n_vertices, "targets"),
         _prep_limit(limit),
         None if threads is None else int(threads),
+        _width_of(dtype),
     )
 
 
@@ -987,6 +1016,7 @@ def geodesic_matrix_graph(
     targets=None,
     limit=None,
     threads=None,
+    dtype=None,
 ):
     """Calculate geodesic distances over an arbitrary graph.
 
@@ -1015,11 +1045,25 @@ def geodesic_matrix_graph(
                  Ignore any nodes further away than this.
     threads :    int, optional
                  Number of threads to use. If ``None`` uses all available cores.
+    dtype :      float32 | float64, optional
+                 Width the distances are accumulated and returned at. If ``None``
+                 (default) it follows ``weights``: a float64 array in gives float64
+                 out, anything else gives float32. See the note below.
 
     Returns
     -------
-    matrix :     (len(sources), len(targets)) float32 array
-                 Geodesic distances; ``-1`` where unreachable.
+    matrix :     (len(sources), len(targets)) array
+                 Geodesic distances in the resolved dtype; ``-1`` where unreachable.
+
+    Notes
+    -----
+    Dijkstra sums one weight per hop, so a path of ``k`` hops carries up to ``k``
+    roundings. float32 is right for mesh and skeleton work — a 24-bit mantissa
+    resolves a 100 mm neuron to ~6 nm, and the matrix is by far the largest thing
+    this allocates. float64 earns its keep when the *accumulation* is long rather
+    than the graph large (tens of thousands of hops), when weights span a wide
+    dynamic range, or when you are comparing against
+    ``scipy.sparse.csgraph``, which works in float64 unconditionally.
 
     Examples
     --------
@@ -1035,6 +1079,21 @@ def geodesic_matrix_graph(
            [1., 0., 1.],
            [2., 1., 0.]], dtype=float32)
 
+    Hand it float64 weights and the distances come back float64:
+
+    >>> fastcore.geodesic_matrix_graph(edges, 3, weights=weights.astype(np.float64))
+    array([[0., 1., 2.],
+           [1., 0., 1.],
+           [2., 1., 0.]])
+
+    ``dtype`` overrides that in either direction — here asking for float64 from a
+    float32 input, which is what you want when the weights were measured coarsely
+    but the paths are long enough for the accumulation to matter:
+
+    >>> fastcore.geodesic_matrix_graph(edges, 3, weights=weights,
+    ...                                dtype=np.float64).dtype
+    dtype('float64')
+
     """
     edges = np.asarray(edges, dtype=np.uint32, order="C")
     if edges.ndim != 2 or edges.shape[1] != 2:
@@ -1048,14 +1107,7 @@ def geodesic_matrix_graph(
             f"`edges` references node {edges.max()} but n_nodes = {n_nodes}"
         )
 
-    if weights is not None:
-        weights = np.ascontiguousarray(np.asarray(weights, dtype=np.float32).ravel())
-        if len(weights) != len(edges):
-            raise ValueError(
-                f"`weights` must have one entry per edge: got {len(weights)} "
-                f"for {len(edges)} edges"
-            )
-
+    weights, float64 = _prep_weights(weights, edges, dtype)
     return _fastcore.geodesic_matrix_graph(
         edges,
         n_nodes,
@@ -1065,6 +1117,7 @@ def geodesic_matrix_graph(
         _prep_indices(targets, n_nodes, "targets"),
         _prep_limit(limit),
         None if threads is None else int(threads),
+        float64,
     )
 
 
@@ -1076,6 +1129,7 @@ def geodesic_nearest_mesh(
     targets=None,
     limit=None,
     threads=None,
+    dtype=None,
 ):
     """For each source vertex, find the nearest target vertex on a mesh.
 
@@ -1102,12 +1156,20 @@ def geodesic_nearest_mesh(
                  Ignore any targets further away than this.
     threads :    int, optional
                  Number of threads to use. If ``None`` uses all available cores.
+    dtype :      float32 | float64, optional
+                 Width the distances are accumulated and returned at. Defaults to
+                 float32. Unlike the graph functions there is no input dtype to read
+                 this off: ``vertices`` are *coordinates*, taken at float64 either
+                 way, and each edge length is computed from them at that width and
+                 rounded once on the way into the graph. Ask for float64 when the
+                 paths are long enough for the per-hop accumulation to matter — and
+                 note the output doubles in size.
 
     Returns
     -------
-    distances :  (len(sources), ) float32 array
-                 Distance from each source to its nearest target; ``-1`` if no
-                 target is reachable.
+    distances :  (len(sources), ) array
+                 Distance from each source to its nearest target, in the resolved
+                 ``dtype``; ``-1`` if no target is reachable.
     nearest :    (len(sources), ) int32 array
                  Vertex index of that nearest target; ``-1`` if none is reachable.
 
@@ -1145,6 +1207,7 @@ def geodesic_nearest_mesh(
         _prep_indices(targets, n_vertices, "targets"),
         _prep_limit(limit),
         None if threads is None else int(threads),
+        _width_of(dtype),
     )
 
 
@@ -1156,6 +1219,7 @@ def geodesic_farthest_mesh(
     targets=None,
     limit=None,
     threads=None,
+    dtype=None,
 ):
     """For each source vertex, find the farthest target vertex on a mesh.
 
@@ -1181,12 +1245,20 @@ def geodesic_farthest_mesh(
                  Ignore any targets further away than this.
     threads :    int, optional
                  Number of threads to use. If ``None`` uses all available cores.
+    dtype :      float32 | float64, optional
+                 Width the distances are accumulated and returned at. Defaults to
+                 float32. Unlike the graph functions there is no input dtype to read
+                 this off: ``vertices`` are *coordinates*, taken at float64 either
+                 way, and each edge length is computed from them at that width and
+                 rounded once on the way into the graph. Ask for float64 when the
+                 paths are long enough for the per-hop accumulation to matter — and
+                 note the output doubles in size.
 
     Returns
     -------
-    distances :  (len(sources), ) float32 array
-                 Distance from each source to its farthest target; ``-1`` if no
-                 target is reachable.
+    distances :  (len(sources), ) array
+                 Distance from each source to its farthest target, in the resolved
+                 ``dtype``; ``-1`` if no target is reachable.
     farthest :   (len(sources), ) int32 array
                  Vertex index of that farthest target; ``-1`` if none is reachable.
 
@@ -1221,20 +1293,79 @@ def geodesic_farthest_mesh(
         _prep_indices(targets, n_vertices, "targets"),
         _prep_limit(limit),
         None if threads is None else int(threads),
+        _width_of(dtype),
     )
 
 
-def _prep_weights(weights, edges):
-    """Coerce optional edge weights to a contiguous float32 array of the right length."""
+#: The two widths a geodesic search runs at. ``float16`` is absent deliberately:
+#: Dijkstra accumulates one addition per hop, and float16 runs out of mantissa
+#: within a handful of them.
+_F32 = np.dtype(np.float32)
+_F64 = np.dtype(np.float64)
+
+
+def _width_of(dtype):
+    """Validate an explicit ``dtype`` and say whether it is float64.
+
+    For the callers whose width is *only* ever explicit — the mesh functions, whose
+    ``vertices`` are coordinates rather than distances and so carry no width to read.
+    """
+    if dtype is None:
+        return False
+    d = np.dtype(dtype)
+    if d not in (_F32, _F64):
+        raise ValueError(
+            f"`dtype` must be float32 or float64, got {d}. Distances are "
+            "accumulated one edge at a time, so anything narrower runs out "
+            "of mantissa within a few hops."
+        )
+    return d == _F64
+
+
+def _prep_weights(weights, edges, dtype=None):
+    """Coerce optional edge weights, and resolve the width, in one step.
+
+    Returns ``(weights, float64)`` — deliberately both, because the extension needs
+    the array *and* a flag for the unweighted case, and the two must agree. Resolving
+    the width separately and then remembering to pass it here as well is exactly the
+    mistake this signature makes unavailable.
+
+    The width is the caller's ``dtype`` if given, else the weights' *own* dtype —
+    float64 in, float64 out, the rule :func:`~navis_fastcore.linkage` already follows
+    for score matrices — else float32.
+
+    Only something that actually carries a ``dtype`` counts as having stated one. A
+    plain list does not: ``np.asarray([1.0, 2.0])`` is float64 by numpy's default
+    rather than by anyone's intent, and honouring that would quietly double the output
+    of every caller who passes a list of Python floats. Pass ``dtype`` if that is what
+    you meant.
+
+    Weights already at the resolved width pass through without a copy; anything else
+    is cast, which is what makes a list of Python floats or a column of ints work.
+    """
+    if dtype is not None:
+        float64 = _width_of(dtype)
+    else:
+        # `is not None` first, and not merely for tidiness: `np.dtype` reads `None` as
+        # float64 and `np.dtype.__eq__` coerces its operand, so `None == _F64` is
+        # *True* and every unweighted call would quietly come back float64. A dtype
+        # numpy cannot name (a pandas nullable column) compares unequal rather than
+        # raising, and so lands on the float32 default, which casts fine below.
+        given = getattr(weights, "dtype", None)
+        float64 = given is not None and given == _F64
+
     if weights is None:
-        return None
-    weights = np.ascontiguousarray(np.asarray(weights, dtype=np.float32).ravel())
+        return None, float64
+
+    weights = np.ascontiguousarray(
+        np.asarray(weights, dtype=_F64 if float64 else _F32).ravel()
+    )
     if len(weights) != len(edges):
         raise ValueError(
             f"`weights` must have one entry per edge: got {len(weights)} "
             f"for {len(edges)} edges"
         )
-    return weights
+    return weights, float64
 
 
 def geodesic_predecessors(
@@ -1245,6 +1376,7 @@ def geodesic_predecessors(
     sources=None,
     limit=None,
     threads=None,
+    dtype=None,
 ):
     """Shortest path tree(s) - distances *and* the route to each node.
 
@@ -1279,16 +1411,21 @@ def geodesic_predecessors(
                  Ignore any nodes further away than this.
     threads :    int, optional
                  Number of threads to use. If ``None`` uses all available cores.
+    dtype :      float32 | float64, optional
+                 Width the distances are accumulated and returned at, as
+                 :func:`~navis_fastcore.geodesic_matrix_graph`. If ``None`` it
+                 follows ``weights``.
 
     Returns
     -------
-    distances :  (len(sources), n_nodes) float32 array
-                 As ``geodesic_matrix_graph``: ``-1`` where unreachable.
+    distances :  (len(sources), n_nodes) array
+                 In the resolved dtype. As ``geodesic_matrix_graph``: ``-1`` where
+                 unreachable.
     predecessors : (len(sources), n_nodes) int32 array
                  For each node, the node before it on the shortest path back to that
                  row's source. ``-1`` for the source itself and for unreachable
                  nodes - so a single ``>= 0`` test both walks the path and
-                 terminates it.
+                 terminates it. Node ids, so int32 at either width.
 
     Notes
     -----
@@ -1315,14 +1452,16 @@ def geodesic_predecessors(
 
     """
     edges, n_nodes = _prep_edges(edges, n_nodes)
+    weights, float64 = _prep_weights(weights, edges, dtype)
     return _fastcore.geodesic_predecessors(
         edges,
         n_nodes,
-        _prep_weights(weights, edges),
+        weights,
         bool(directed),
         _prep_indices(sources, n_nodes, "sources"),
         _prep_limit(limit),
         None if threads is None else int(threads),
+        float64,
     )
 
 
@@ -1347,7 +1486,9 @@ def geodesic_path(edges, n_nodes, source, targets, weights=None, directed=False)
                  Target node indices.
     weights :    (E, ) array, optional
                  Length of each edge. If ``None`` all edges weigh 1. Zero weights
-                 are allowed.
+                 are allowed. A float64 array is accumulated at that width rather
+                 than being narrowed, which can change which route wins. There is no
+                 ``dtype`` argument because the paths are node ids.
     directed :   bool, optional
                  If ``True`` an edge ``(u, v)`` may only be traversed from ``u`` to
                  ``v``.
@@ -1390,7 +1531,9 @@ def geodesic_path(edges, n_nodes, source, targets, weights=None, directed=False)
         n_nodes,
         source,
         targets,
-        _prep_weights(weights, edges),
+        # No `dtype`: the output is node ids, so the width is invisible in it. The
+        # weights' own width is still honoured, because it decides which route wins.
+        _prep_weights(weights, edges)[0],
         bool(directed),
     )
 
@@ -1420,7 +1563,10 @@ def geodesic_clusters(edges, n_nodes, max_dist, weights=None, seeds=None):
                  non-negative.
     weights :    (E, ) array, optional
                  Length of each edge. If ``None`` all edges weigh 1, i.e.
-                 ``max_dist`` is a hop count.
+                 ``max_dist`` is a hop count. A float64 array is accumulated at that
+                 width rather than being narrowed, which can change which nodes fall
+                 inside a ball. There is no ``dtype`` argument because the labels
+                 carry no width of their own.
     seeds :      iterable, optional
                  Nodes to use as seeds, in order of preference. Any node left
                  unassigned afterwards becomes a seed in ascending index order. If
@@ -1469,7 +1615,9 @@ def geodesic_clusters(edges, n_nodes, max_dist, weights=None, seeds=None):
         edges,
         n_nodes,
         max_dist,
-        _prep_weights(weights, edges),
+        # As `geodesic_path`: the labels carry no width, but which nodes fall inside
+        # a ball is evaluated at the weights' own.
+        _prep_weights(weights, edges)[0],
         _prep_indices(seeds, n_nodes, "seeds"),
     )
 
@@ -1549,6 +1697,14 @@ class GeodesicGraph:
     that you have a graph, and would rather not re-pass ``edges``/``weights``/``directed``
     to every call.
 
+    **Width.** float32 only, and the one place the module's "your dtype in, your dtype
+    out" rule does not apply: float64 ``weights`` are accepted but narrowed, and every
+    distance this class returns is float32. That is deliberate rather than an omission.
+    The class exists for "large graph, many small queries", which is exactly the case
+    where float32 is the right width and where doubling the several node-sized arrays it
+    holds resident for a whole run would be felt. If you need float64, use the module-level
+    functions, which rebuild the index per call and take a ``dtype``.
+
     **Items.** Optionally each node carries zero or more *items* - points of a cloud
     attached to the graph, one entry of a resampled surface say. By default the
     distinction vanishes entirely.
@@ -1606,7 +1762,9 @@ class GeodesicGraph:
             _fastcore.GeodesicGraph(
                 edges,
                 n_nodes,
-                _prep_weights(weights, edges),
+                # `np.float32` spelled out: this class is float32 only (see the
+                # class docstring), and a defaulted argument would not say so.
+                _prep_weights(weights, edges, np.float32)[0],
                 bool(directed),
                 _prep_indices(item_nodes, n_nodes, "item_nodes"),
             )
@@ -1918,7 +2076,9 @@ class GeodesicGraph:
             # One value for all of them - the shape a caller zeroing a path writes. `repeat`
             # of a length-1 array is a no-op, so the K == 1 case needs no special casing.
             weights = np.repeat(weights, len(edges))
-        return self._graph.set_weights(edges, _prep_weights(weights, edges))
+        return self._graph.set_weights(
+            edges, _prep_weights(weights, edges, np.float32)[0]
+        )
 
     def clusters(self, max_dist, seeds=None):
         """Greedily partition *nodes* into connected clusters of bounded radius.

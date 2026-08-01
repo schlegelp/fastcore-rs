@@ -4,7 +4,13 @@
 \alias{parents_from_edges}
 \title{Orient a graph into a rooted spanning forest — one parent per node.}
 \usage{
-parents_from_edges(edges, n_nodes, weights = NULL, roots = NULL)
+parents_from_edges(
+  edges,
+  n_nodes,
+  weights = NULL,
+  roots = NULL,
+  precision = 32
+)
 }
 \arguments{
 \item{edges}{Integer or numeric \verb{(E, 2)} matrix of edges (0-based node indices).
@@ -22,6 +28,9 @@ that, run \code{minimum_spanning_tree} first and orient the edges it keeps.}
 component at its lowest node index. Components holding none of \code{roots} fall back
 to that, so the result is always a complete forest. Two roots in the \emph{same}
 component split it into two trees, each node going to whichever root is nearer.}
+
+\item{precision}{Integer; 32 or 64, the width the search accumulates at. Nothing
+here returns a distance, so this changes only which answer close ties resolve to.}
 }
 \value{
 List with \code{parents} (integer 0-based parent index per node, \code{-1} at a root)

@@ -91,7 +91,17 @@ fastcore.geodesic_matrix_graph(edges, 3, weights=weights)
 # array([[0., 1., 2.],
 #        [1., 0., 1.],
 #        [2., 1., 0.]], dtype=float32)
+
+# The distances follow the weights' dtype: float64 in, float64 out.
+fastcore.geodesic_matrix_graph(edges, 3, weights=weights.astype(np.float64))
+# array([[0., 1., 2.],
+#        [1., 0., 1.],
+#        [2., 1., 0.]])
 ```
+
+See [Float return dtypes](index.md#float-return-dtypes) for when the wider width is
+worth asking for, and for the `dtype` argument that overrides the default in either
+direction.
 
 ::: navis_fastcore.geodesic_matrix_graph
 

@@ -11,6 +11,7 @@ use fastcore::linkage::{
     condense, leaf_order, linkage as core_linkage, linkage_from_scores,
     observations_from_condensed, symmetrize, Method as LinkageMethod, Symmetry, Transform,
 };
+use fastcore::mesh::Weight;
 use fastcore::nblast::{load_smat, load_smat_alpha, Opts, Smat};
 use fastcore::nblast_knn::{KnnOpts, Symmetry as KnnSymmetry};
 
@@ -440,9 +441,31 @@ pub fn break_segments(parents: Vec<i32>) -> Robj {
 // object to answer it costs more than the answer does. Node references are 0-based
 // indices throughout, like the rest of the DAG family, and roots are `< 0`.
 
-/// Coerce optional R weights to the `f32` the core works in.
-fn to_weights(weights: Option<Vec<f64>>) -> Option<Array1<f32>> {
-    weights.map(|w| w.into_iter().map(|x| x as f32).collect())
+/// Coerce optional R weights to the width the search will run at.
+fn to_weights<W: Weight>(weights: Option<Vec<f64>>) -> Option<Array1<W>> {
+    weights.map(|w| w.into_iter().map(W::from_f64).collect())
+}
+
+/// Resolve a `precision` argument (32 or 64) to "run the search in double precision".
+///
+/// R has no float32 type, so — unlike Python, where the weights array carries its own
+/// width and the answer comes back in it — there is nothing here to read the choice
+/// off: weights arrive as doubles whatever the caller meant by them, and the result
+/// goes back as doubles either way. An explicit argument is what is left, and it
+/// mirrors `nblast(precision = )`, which asks the same question of the scoring
+/// pipeline.
+///
+/// 32 stays the default. Distances are accumulated one edge at a time, so 64 is worth
+/// asking for when the *paths* are long (tens of thousands of hops) or the weights
+/// span a wide dynamic range; for ordinary mesh and skeleton work a 24-bit mantissa
+/// resolves a 100 mm neuron to ~6 nm, and the distance matrix is by far the largest
+/// thing these functions allocate.
+fn wide(precision: i32) -> bool {
+    match precision {
+        32 => false,
+        64 => true,
+        _ => panic!("`precision` must be 32 or 64"),
+    }
 }
 
 /// Turn a list-of-paths result into an R list of integer vectors.
@@ -559,7 +582,7 @@ pub fn contract_nodes(parents: Vec<i32>, mapping: Vec<i32>) -> Robj {
 #[extendr]
 pub fn simplify_skeleton(parents: Vec<i32>, #[default = "NULL"] weights: Option<Vec<f64>>) -> Robj {
     let parents = Array1::from_vec(parents);
-    let weights = to_weights(weights);
+    let weights = to_weights::<f32>(weights);
 
     let (nodes, new_parents, new_weights) =
         fastcore::dag::simplify_skeleton(&parents.view(), &weights);
@@ -600,7 +623,7 @@ pub fn adjacency(
     transpose: bool,
 ) -> Robj {
     let parents = Array1::from_vec(parents);
-    let weights = to_weights(weights);
+    let weights = to_weights::<f32>(weights);
 
     let (indptr, indices, data) =
         fastcore::dag::adjacency(&parents.view(), &weights, directed, transpose);
@@ -623,7 +646,7 @@ pub fn adjacency(
 #[extendr]
 pub fn longest_path(parents: Vec<i32>, #[default = "NULL"] weights: Option<Vec<f64>>) -> Vec<i32> {
     let parents = Array1::from_vec(parents);
-    let weights = to_weights(weights);
+    let weights = to_weights::<f32>(weights);
     fastcore::dag::longest_path(&parents.view(), &weights)
 }
 
@@ -651,7 +674,7 @@ pub fn longest_paths(
     min_length: Option<f64>,
 ) -> Robj {
     let parents = Array1::from_vec(parents);
-    let weights = to_weights(weights);
+    let weights = to_weights::<f32>(weights);
     paths_to_list(fastcore::dag::longest_paths(
         &parents.view(),
         n.max(0) as usize,
@@ -1107,6 +1130,8 @@ where
 ///   every vertex.
 /// @param limit Optional numeric; ignore vertices further away than this.
 /// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @param precision Integer; 32 or 64, the width distances are accumulated at. The
+///   result is numeric either way — R has no float32 — so this buys accuracy.
 /// @return Numeric matrix of geodesic distances (sources in rows, targets in
 ///   columns). Unreachable pairs are `-1`.
 /// @export
@@ -1119,23 +1144,42 @@ pub fn geodesic_matrix_mesh(
     targets: Option<Vec<i32>>,
     limit: Option<f64>,
     threads: Option<i32>,
+    #[default = "32"]
+    precision: i32,
 ) -> Robj {
     let faces = robj_to_faces(&faces);
     let coords = robj_to_coords(vertices);
     let sources = to_u32(sources);
     let targets = to_u32(targets);
 
-    let dists = fastcore::mesh::geodesic_matrix_mesh(
-        faces.view(),
-        n_vertices as usize,
-        coords.as_ref().map(|c| c.view()),
-        sources.as_deref(),
-        targets.as_deref(),
-        limit.map(|l| l as f32),
-        threads.map(|t| t as usize),
-    );
+    fn run<W: Weight + Into<f64>>(
+        faces: ArrayView2<u32>,
+        n_vertices: i32,
+        coords: Option<ArrayView2<f64>>,
+        sources: Option<&[u32]>,
+        targets: Option<&[u32]>,
+        limit: Option<f64>,
+        threads: Option<i32>,
+    ) -> Robj {
+        let d = fastcore::mesh::geodesic_matrix_mesh::<W>(
+            faces,
+            n_vertices as usize,
+            coords,
+            sources,
+            targets,
+            limit.map(W::from_f64),
+            threads.map(|t| t as usize),
+        );
+        array2_to_r(&d, Into::into)
+    }
 
-    array2_to_r(&dists, f64::from)
+    let c = coords.as_ref().map(|c| c.view());
+    let (src, tgt) = (sources.as_deref(), targets.as_deref());
+    if wide(precision) {
+        run::<f64>(faces.view(), n_vertices, c, src, tgt, limit, threads)
+    } else {
+        run::<f32>(faces.view(), n_vertices, c, src, tgt, limit, threads)
+    }
 }
 
 /// Geodesic distances over an arbitrary graph given as an edge list.
@@ -1156,6 +1200,8 @@ pub fn geodesic_matrix_mesh(
 ///   node.
 /// @param limit Optional numeric; ignore nodes further away than this.
 /// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @param precision Integer; 32 or 64, the width distances are accumulated at. The
+///   result is numeric either way — R has no float32 — so this buys accuracy.
 /// @return Numeric matrix of geodesic distances (sources in rows, targets in
 ///   columns). Unreachable pairs are `-1`.
 /// @export
@@ -1169,25 +1215,43 @@ pub fn geodesic_matrix_graph(
     targets: Option<Vec<i32>>,
     limit: Option<f64>,
     threads: Option<i32>,
+    #[default = "32"]
+    precision: i32,
 ) -> Robj {
     let edges = robj_to_edges(&edges);
-    let weights: Option<Array1<f32>> =
-        weights.map(|w| Array1::from_vec(w.iter().map(|x| *x as f32).collect()));
     let sources = to_u32(sources);
     let targets = to_u32(targets);
 
-    let dists = fastcore::mesh::geodesic_matrix_graph(
-        edges.view(),
-        n_nodes as usize,
-        weights.as_ref().map(|w| w.view()).as_ref(),
-        directed,
-        sources.as_deref(),
-        targets.as_deref(),
-        limit.map(|l| l as f32),
-        threads.map(|t| t as usize),
-    );
+    fn run<W: Weight + Into<f64>>(
+        edges: ArrayView2<u32>,
+        n_nodes: i32,
+        weights: Option<Vec<f64>>,
+        directed: bool,
+        sources: Option<&[u32]>,
+        targets: Option<&[u32]>,
+        limit: Option<f64>,
+        threads: Option<i32>,
+    ) -> Robj {
+        let w = to_weights::<W>(weights);
+        let d = fastcore::mesh::geodesic_matrix_graph(
+            edges,
+            n_nodes as usize,
+            w.as_ref().map(|w| w.view()).as_ref(),
+            directed,
+            sources,
+            targets,
+            limit.map(W::from_f64),
+            threads.map(|t| t as usize),
+        );
+        array2_to_r(&d, Into::into)
+    }
 
-    array2_to_r(&dists, f64::from)
+    let (src, tgt) = (sources.as_deref(), targets.as_deref());
+    if wide(precision) {
+        run::<f64>(edges.view(), n_nodes, weights, directed, src, tgt, limit, threads)
+    } else {
+        run::<f32>(edges.view(), n_nodes, weights, directed, src, tgt, limit, threads)
+    }
 }
 
 /// Distance to the nearest target vertex, for each source vertex of a mesh.
@@ -1211,6 +1275,8 @@ pub fn geodesic_matrix_graph(
 ///   every vertex.
 /// @param limit Optional numeric; ignore targets further away than this.
 /// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @param precision Integer; 32 or 64, the width distances are accumulated at. The
+///   result is numeric either way — R has no float32 — so this buys accuracy.
 /// @return A list with `distances` and `nearest`.
 /// @export
 #[extendr]
@@ -1222,23 +1288,44 @@ pub fn geodesic_nearest_mesh(
     targets: Option<Vec<i32>>,
     limit: Option<f64>,
     threads: Option<i32>,
+    #[default = "32"]
+    precision: i32,
 ) -> Robj {
     let faces = robj_to_faces(&faces);
     let coords = robj_to_coords(vertices);
     let sources = to_u32(sources);
     let targets = to_u32(targets);
 
-    let (dists, nearest) = fastcore::mesh::geodesic_nearest_mesh(
-        faces.view(),
-        n_vertices as usize,
-        coords.as_ref().map(|c| c.view()),
-        sources.as_deref(),
-        targets.as_deref(),
-        limit.map(|l| l as f32),
-        threads.map(|t| t as usize),
-    );
+    fn run<W: Weight + Into<f64>>(
+        faces: ArrayView2<u32>,
+        n_vertices: i32,
+        coords: Option<ArrayView2<f64>>,
+        sources: Option<&[u32]>,
+        targets: Option<&[u32]>,
+        limit: Option<f64>,
+        threads: Option<i32>,
+    ) -> (Vec<f64>, Vec<i32>) {
+        let (d, i) = fastcore::mesh::geodesic_nearest_mesh::<W>(
+            faces,
+            n_vertices as usize,
+            coords,
+            sources,
+            targets,
+            limit.map(W::from_f64),
+            threads.map(|t| t as usize),
+        );
+        (d.iter().map(|&x| x.into()).collect(), i.to_vec())
+    }
 
-    list!(distances = dists.to_vec(), nearest = nearest.to_vec()).into()
+    let c = coords.as_ref().map(|c| c.view());
+    let (src, tgt) = (sources.as_deref(), targets.as_deref());
+    let (dists, nearest) = if wide(precision) {
+        run::<f64>(faces.view(), n_vertices, c, src, tgt, limit, threads)
+    } else {
+        run::<f32>(faces.view(), n_vertices, c, src, tgt, limit, threads)
+    };
+
+    list!(distances = dists, nearest = nearest).into()
 }
 
 /// Distance to the farthest target vertex, for each source vertex of a mesh.
@@ -1261,6 +1348,8 @@ pub fn geodesic_nearest_mesh(
 ///   every vertex.
 /// @param limit Optional numeric; ignore targets further away than this.
 /// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @param precision Integer; 32 or 64, the width distances are accumulated at. The
+///   result is numeric either way — R has no float32 — so this buys accuracy.
 /// @return A list with `distances` and `farthest`.
 /// @export
 #[extendr]
@@ -1272,23 +1361,44 @@ pub fn geodesic_farthest_mesh(
     targets: Option<Vec<i32>>,
     limit: Option<f64>,
     threads: Option<i32>,
+    #[default = "32"]
+    precision: i32,
 ) -> Robj {
     let faces = robj_to_faces(&faces);
     let coords = robj_to_coords(vertices);
     let sources = to_u32(sources);
     let targets = to_u32(targets);
 
-    let (dists, farthest) = fastcore::mesh::geodesic_farthest_mesh(
-        faces.view(),
-        n_vertices as usize,
-        coords.as_ref().map(|c| c.view()),
-        sources.as_deref(),
-        targets.as_deref(),
-        limit.map(|l| l as f32),
-        threads.map(|t| t as usize),
-    );
+    fn run<W: Weight + Into<f64>>(
+        faces: ArrayView2<u32>,
+        n_vertices: i32,
+        coords: Option<ArrayView2<f64>>,
+        sources: Option<&[u32]>,
+        targets: Option<&[u32]>,
+        limit: Option<f64>,
+        threads: Option<i32>,
+    ) -> (Vec<f64>, Vec<i32>) {
+        let (d, i) = fastcore::mesh::geodesic_farthest_mesh::<W>(
+            faces,
+            n_vertices as usize,
+            coords,
+            sources,
+            targets,
+            limit.map(W::from_f64),
+            threads.map(|t| t as usize),
+        );
+        (d.iter().map(|&x| x.into()).collect(), i.to_vec())
+    }
 
-    list!(distances = dists.to_vec(), farthest = farthest.to_vec()).into()
+    let c = coords.as_ref().map(|c| c.view());
+    let (src, tgt) = (sources.as_deref(), targets.as_deref());
+    let (dists, farthest) = if wide(precision) {
+        run::<f64>(faces.view(), n_vertices, c, src, tgt, limit, threads)
+    } else {
+        run::<f32>(faces.view(), n_vertices, c, src, tgt, limit, threads)
+    };
+
+    list!(distances = dists, farthest = farthest).into()
 }
 
 // ---------------------------------------------------------------------------
@@ -1429,6 +1539,8 @@ pub fn contract_vertices(edges: Robj, mapping: Vec<i32>, #[default = "NULL"] thr
 ///   that both loses precision and blows up on the zero weights that legitimately
 ///   occur.
 /// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @param precision Integer; 32 or 64, the width the search accumulates at. Nothing
+///   here returns a distance, so this changes only which answer close ties resolve to.
 /// @return Integer vector of 0-based **row indices into `edges`**, ordered by weight —
 ///   not the edges themselves, so you can index whatever per-edge data you hold with
 ///   the same vector. Remember to add 1 before using it to subset an R matrix.
@@ -1443,19 +1555,34 @@ pub fn minimum_spanning_tree(
     maximize: bool,
     #[default = "NULL"]
     threads: Option<i32>,
+    #[default = "32"]
+    precision: i32,
 ) -> Vec<i32> {
     let edges = robj_to_edges(&edges);
-    let w = to_weights(weights);
-    fastcore::mesh::minimum_spanning_tree(
-        edges.view(),
-        n_nodes as usize,
-        w.as_ref().map(|w| w.view()).as_ref(),
-        maximize,
-        to_threads(threads),
-    )
-    .iter()
-    .map(|&x| x as i32)
-    .collect()
+
+    fn run<W: Weight>(
+        edges: ArrayView2<u32>,
+        n_nodes: i32,
+        weights: Option<Vec<f64>>,
+        maximize: bool,
+        threads: Option<i32>,
+    ) -> Array1<i64> {
+        let w = to_weights::<W>(weights);
+        fastcore::mesh::minimum_spanning_tree(
+            edges,
+            n_nodes as usize,
+            w.as_ref().map(|w| w.view()).as_ref(),
+            maximize,
+            to_threads(threads),
+        )
+    }
+
+    let keep = if wide(precision) {
+        run::<f64>(edges.view(), n_nodes, weights, maximize, threads)
+    } else {
+        run::<f32>(edges.view(), n_nodes, weights, maximize, threads)
+    };
+    keep.iter().map(|&x| x as i32).collect()
 }
 
 /// Orient a graph into a rooted spanning forest — one parent per node.
@@ -1482,6 +1609,8 @@ pub fn minimum_spanning_tree(
 ///   component at its lowest node index. Components holding none of `roots` fall back
 ///   to that, so the result is always a complete forest. Two roots in the *same*
 ///   component split it into two trees, each node going to whichever root is nearer.
+/// @param precision Integer; 32 or 64, the width the search accumulates at. Nothing
+///   here returns a distance, so this changes only which answer close ties resolve to.
 /// @return List with `parents` (integer 0-based parent index per node, `-1` at a root)
 ///   and `order` (integer 0-based node indices in the order they settled — a node
 ///   always follows its parent, so relabelling by it guarantees parents get lower
@@ -1495,17 +1624,32 @@ pub fn parents_from_edges(
     weights: Option<Vec<f64>>,
     #[default = "NULL"]
     roots: Option<Vec<i32>>,
+    #[default = "32"]
+    precision: i32,
 ) -> Robj {
     let edges = robj_to_edges(&edges);
-    let w = to_weights(weights);
     let roots = to_u32(roots);
 
-    let (parents, order) = fastcore::mesh::parents_from_edges(
-        edges.view(),
-        n_nodes as usize,
-        w.as_ref().map(|w| w.view()).as_ref(),
-        roots.as_deref(),
-    );
+    fn run<W: Weight>(
+        edges: ArrayView2<u32>,
+        n_nodes: i32,
+        weights: Option<Vec<f64>>,
+        roots: Option<&[u32]>,
+    ) -> (Array1<i32>, Array1<u32>) {
+        let w = to_weights::<W>(weights);
+        fastcore::mesh::parents_from_edges(
+            edges,
+            n_nodes as usize,
+            w.as_ref().map(|w| w.view()).as_ref(),
+            roots,
+        )
+    }
+
+    let (parents, order) = if wide(precision) {
+        run::<f64>(edges.view(), n_nodes, weights, roots.as_deref())
+    } else {
+        run::<f32>(edges.view(), n_nodes, weights, roots.as_deref())
+    };
 
     list!(
         parents = parents.to_vec(),
@@ -1536,8 +1680,9 @@ pub fn bridges(edges: Robj, n_nodes: i32) -> Vec<bool> {
 }
 
 /// Package a geodesic MST result for R.
-fn mst_result(edges: Array2<i64>, weights: Array1<f32>) -> Robj {
-    list!(edges = array2_to_r(&edges, |x| x as i32), weights = weights.to_vec()).into()
+fn mst_result<W: Weight + Into<f64>>(edges: Array2<i64>, weights: Array1<W>) -> Robj {
+    let weights: Vec<f64> = weights.iter().map(|&x| x.into()).collect();
+    list!(edges = array2_to_r(&edges, |x| x as i32), weights = weights).into()
 }
 
 /// Minimum spanning tree over a subset of mesh vertices, by geodesic distance.
@@ -1568,6 +1713,8 @@ fn mst_result(edges: Array2<i64>, weights: Array1<f32>) -> Robj {
 ///   route's limit this also prunes the sweep, so it buys time rather than merely
 ///   discarding results.
 /// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @param precision Integer; 32 or 64, the width distances are accumulated at. The
+///   result is numeric either way — R has no float32 — so this buys accuracy.
 /// @return List with `edges` (integer `(M, 2)` matrix of **0-based positions in
 ///   `nodes`**, not vertex indices — so `nodes[edges + 1]` maps back — ascending by
 ///   weight) and `weights` (numeric geodesic distance across each). The returned
@@ -1585,20 +1732,38 @@ pub fn geodesic_mst_mesh(
     limit: Option<f64>,
     #[default = "NULL"]
     threads: Option<i32>,
+    #[default = "32"]
+    precision: i32,
 ) -> Robj {
     let faces = robj_to_faces(&faces);
     let coords = robj_to_coords(vertices);
     let nodes = as_u32(&nodes);
 
-    let (edges, weights) = fastcore::mesh::geodesic_mst_mesh(
-        faces.view(),
-        n_vertices as usize,
-        coords.as_ref().map(|c| c.view()),
-        &nodes,
-        limit.map(|l| l as f32),
-        to_threads(threads),
-    );
-    mst_result(edges, weights)
+    fn run<W: Weight + Into<f64>>(
+        faces: ArrayView2<u32>,
+        n_vertices: i32,
+        coords: Option<ArrayView2<f64>>,
+        nodes: &[u32],
+        limit: Option<f64>,
+        threads: Option<i32>,
+    ) -> Robj {
+        let (e, w) = fastcore::mesh::geodesic_mst_mesh::<W>(
+            faces,
+            n_vertices as usize,
+            coords,
+            nodes,
+            limit.map(W::from_f64),
+            to_threads(threads),
+        );
+        mst_result(e, w)
+    }
+
+    let c = coords.as_ref().map(|c| c.view());
+    if wide(precision) {
+        run::<f64>(faces.view(), n_vertices, c, &nodes, limit, threads)
+    } else {
+        run::<f32>(faces.view(), n_vertices, c, &nodes, limit, threads)
+    }
 }
 
 /// Minimum spanning tree over a subset of graph nodes, by geodesic distance.
@@ -1614,6 +1779,8 @@ pub fn geodesic_mst_mesh(
 /// @param weights Optional numeric vector, one length per edge; `NULL` counts edges.
 /// @param limit Optional numeric; do not join nodes further apart than this.
 /// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @param precision Integer; 32 or 64, the width distances are accumulated at. The
+///   result is numeric either way — R has no float32 — so this buys accuracy.
 /// @return List with `edges` (integer `(M, 2)` matrix of 0-based positions in `nodes`,
 ///   ascending by weight) and `weights` (numeric geodesic distance across each).
 /// @export
@@ -1628,20 +1795,37 @@ pub fn geodesic_mst_graph(
     limit: Option<f64>,
     #[default = "NULL"]
     threads: Option<i32>,
+    #[default = "32"]
+    precision: i32,
 ) -> Robj {
     let edges = robj_to_edges(&edges);
-    let w = to_weights(weights);
     let nodes = as_u32(&nodes);
 
-    let (mst, mst_w) = fastcore::mesh::geodesic_mst_graph(
-        edges.view(),
-        n_nodes as usize,
-        w.as_ref().map(|w| w.view()).as_ref(),
-        &nodes,
-        limit.map(|l| l as f32),
-        to_threads(threads),
-    );
-    mst_result(mst, mst_w)
+    fn run<W: Weight + Into<f64>>(
+        edges: ArrayView2<u32>,
+        n_nodes: i32,
+        weights: Option<Vec<f64>>,
+        nodes: &[u32],
+        limit: Option<f64>,
+        threads: Option<i32>,
+    ) -> Robj {
+        let w = to_weights::<W>(weights);
+        let (mst, mst_w) = fastcore::mesh::geodesic_mst_graph(
+            edges,
+            n_nodes as usize,
+            w.as_ref().map(|w| w.view()).as_ref(),
+            nodes,
+            limit.map(W::from_f64),
+            to_threads(threads),
+        );
+        mst_result(mst, mst_w)
+    }
+
+    if wide(precision) {
+        run::<f64>(edges.view(), n_nodes, weights, &nodes, limit, threads)
+    } else {
+        run::<f32>(edges.view(), n_nodes, weights, &nodes, limit, threads)
+    }
 }
 
 /// Shortest path trees over a graph — distances *and* the route to each node.
@@ -1666,6 +1850,8 @@ pub fn geodesic_mst_graph(
 ///   `NULL` uses every node.
 /// @param limit Optional numeric; ignore nodes further away than this.
 /// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @param precision Integer; 32 or 64, the width distances are accumulated at. The
+///   result is numeric either way — R has no float32 — so this buys accuracy.
 /// @return List with `distances` (numeric `(n_sources, n_nodes)` matrix, `-1` where
 ///   unreachable) and `predecessors` (integer matrix of the same shape giving, per
 ///   node, the node before it on the shortest path back to that row's source; `-1` for
@@ -1686,26 +1872,42 @@ pub fn geodesic_predecessors(
     limit: Option<f64>,
     #[default = "NULL"]
     threads: Option<i32>,
+    #[default = "32"]
+    precision: i32,
 ) -> Robj {
     let edges = robj_to_edges(&edges);
-    let w = to_weights(weights);
     let sources = to_u32(sources);
 
-    let (dists, preds) = fastcore::mesh::geodesic_predecessors_graph(
-        edges.view(),
-        n_nodes as usize,
-        w.as_ref().map(|w| w.view()).as_ref(),
-        directed,
-        sources.as_deref(),
-        limit.map(|l| l as f32),
-        to_threads(threads),
-    );
+    fn run<W: Weight + Into<f64>>(
+        edges: ArrayView2<u32>,
+        n_nodes: i32,
+        weights: Option<Vec<f64>>,
+        directed: bool,
+        sources: Option<&[u32]>,
+        limit: Option<f64>,
+        threads: Option<i32>,
+    ) -> (Robj, Array2<i32>) {
+        let w = to_weights::<W>(weights);
+        let (d, p) = fastcore::mesh::geodesic_predecessors_graph(
+            edges,
+            n_nodes as usize,
+            w.as_ref().map(|w| w.view()).as_ref(),
+            directed,
+            sources,
+            limit.map(W::from_f64),
+            to_threads(threads),
+        );
+        (array2_to_r(&d, Into::into), p)
+    }
 
-    list!(
-        distances = array2_to_r(&dists, f64::from),
-        predecessors = array2_to_r(&preds, |x| x)
-    )
-    .into()
+    let src = sources.as_deref();
+    let (dists, preds) = if wide(precision) {
+        run::<f64>(edges.view(), n_nodes, weights, directed, src, limit, threads)
+    } else {
+        run::<f32>(edges.view(), n_nodes, weights, directed, src, limit, threads)
+    };
+
+    list!(distances = dists, predecessors = array2_to_r(&preds, |x| x)).into()
 }
 
 /// The shortest route from one source to each target, as node sequences.
@@ -1717,6 +1919,8 @@ pub fn geodesic_predecessors(
 /// @param weights Optional numeric vector, one length per edge; `NULL` counts edges.
 /// @param directed Logical; if `TRUE` an edge `(u, v)` may only be traversed from `u`
 ///   to `v`.
+/// @param precision Integer; 32 or 64, the width the search accumulates at. Nothing
+///   here returns a distance, so this changes only which answer close ties resolve to.
 /// @return List of integer vectors, one per target in `targets` order, each running
 ///   source-first to target-last. An unreachable target gives an empty vector.
 /// @export
@@ -1730,19 +1934,36 @@ pub fn geodesic_path(
     weights: Option<Vec<f64>>,
     #[default = "FALSE"]
     directed: bool,
+    #[default = "32"]
+    precision: i32,
 ) -> Robj {
     let edges = robj_to_edges(&edges);
-    let w = to_weights(weights);
     let targets = as_u32(&targets);
 
-    let paths = fastcore::mesh::geodesic_path_graph(
-        edges.view(),
-        n_nodes as usize,
-        w.as_ref().map(|w| w.view()).as_ref(),
-        directed,
-        source as u32,
-        &targets,
-    );
+    fn run<W: Weight>(
+        edges: ArrayView2<u32>,
+        n_nodes: i32,
+        weights: Option<Vec<f64>>,
+        directed: bool,
+        source: i32,
+        targets: &[u32],
+    ) -> Vec<Vec<u32>> {
+        let w = to_weights::<W>(weights);
+        fastcore::mesh::geodesic_path_graph(
+            edges,
+            n_nodes as usize,
+            w.as_ref().map(|w| w.view()).as_ref(),
+            directed,
+            source as u32,
+            targets,
+        )
+    }
+
+    let paths = if wide(precision) {
+        run::<f64>(edges.view(), n_nodes, weights, directed, source, &targets)
+    } else {
+        run::<f32>(edges.view(), n_nodes, weights, directed, source, &targets)
+    };
 
     paths_to_list(
         paths
@@ -1774,6 +1995,8 @@ pub fn geodesic_path(
 /// @param seeds Optional integer vector of 0-based nodes to try as seeds, in order of
 ///   preference. Any node left unassigned afterwards becomes a seed in ascending index
 ///   order; `NULL` seeds in ascending index order throughout.
+/// @param precision Integer; 32 or 64, the width the search accumulates at. Nothing
+///   here returns a distance, so this changes only which answer close ties resolve to.
 /// @return List with `labels` (integer cluster index per node, contiguous in
 ///   `[0, n_clusters)` and numbered in the order the clusters were grown; every node is
 ///   labelled) and `n_clusters` (integer).
@@ -1787,18 +2010,35 @@ pub fn geodesic_clusters(
     weights: Option<Vec<f64>>,
     #[default = "NULL"]
     seeds: Option<Vec<i32>>,
+    #[default = "32"]
+    precision: i32,
 ) -> Robj {
     let edges = robj_to_edges(&edges);
-    let w = to_weights(weights);
     let seeds = to_u32(seeds);
 
-    let (labels, n) = fastcore::mesh::geodesic_clusters(
-        edges.view(),
-        n_nodes as usize,
-        max_dist as f32,
-        w.as_ref().map(|w| w.view()).as_ref(),
-        seeds.as_deref(),
-    );
+    fn run<W: Weight>(
+        edges: ArrayView2<u32>,
+        n_nodes: i32,
+        max_dist: f64,
+        weights: Option<Vec<f64>>,
+        seeds: Option<&[u32]>,
+    ) -> (Vec<i32>, usize) {
+        let w = to_weights::<W>(weights);
+        fastcore::mesh::geodesic_clusters(
+            edges,
+            n_nodes as usize,
+            W::from_f64(max_dist),
+            w.as_ref().map(|w| w.view()).as_ref(),
+            seeds,
+        )
+    }
+
+    let sd = seeds.as_deref();
+    let (labels, n) = if wide(precision) {
+        run::<f64>(edges.view(), n_nodes, max_dist, weights, sd)
+    } else {
+        run::<f32>(edges.view(), n_nodes, max_dist, weights, sd)
+    };
     list!(labels = labels, n_clusters = n as i32).into()
 }
 

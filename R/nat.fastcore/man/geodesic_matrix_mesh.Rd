@@ -11,7 +11,8 @@ geodesic_matrix_mesh(
   sources,
   targets,
   limit,
-  threads
+  threads,
+  precision = 32
 )
 }
 \arguments{
@@ -33,6 +34,9 @@ every vertex.}
 \item{limit}{Optional numeric; ignore vertices further away than this.}
 
 \item{threads}{Optional integer; number of threads. \code{NULL} uses all cores.}
+
+\item{precision}{Integer; 32 or 64, the width distances are accumulated at. The
+result is numeric either way — R has no float32 — so this buys accuracy.}
 }
 \value{
 Numeric matrix of geodesic distances (sources in rows, targets in

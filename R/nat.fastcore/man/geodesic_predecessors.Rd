@@ -11,7 +11,8 @@ geodesic_predecessors(
   directed = FALSE,
   sources = NULL,
   limit = NULL,
-  threads = NULL
+  threads = NULL,
+  precision = 32
 )
 }
 \arguments{
@@ -33,6 +34,9 @@ to \code{v}.}
 \item{limit}{Optional numeric; ignore nodes further away than this.}
 
 \item{threads}{Optional integer; number of threads. \code{NULL} uses all cores.}
+
+\item{precision}{Integer; 32 or 64, the width distances are accumulated at. The
+result is numeric either way — R has no float32 — so this buys accuracy.}
 }
 \value{
 List with \code{distances} (numeric \verb{(n_sources, n_nodes)} matrix, \code{-1} where

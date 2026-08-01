@@ -10,7 +10,8 @@ geodesic_mst_mesh(
   nodes,
   vertices = NULL,
   limit = NULL,
-  threads = NULL
+  threads = NULL,
+  precision = 32
 )
 }
 \arguments{
@@ -31,6 +32,9 @@ route's limit this also prunes the sweep, so it buys time rather than merely
 discarding results.}
 
 \item{threads}{Optional integer; number of threads. \code{NULL} uses all cores.}
+
+\item{precision}{Integer; 32 or 64, the width distances are accumulated at. The
+result is numeric either way — R has no float32 — so this buys accuracy.}
 }
 \value{
 List with \code{edges} (integer \verb{(M, 2)} matrix of \strong{0-based positions in

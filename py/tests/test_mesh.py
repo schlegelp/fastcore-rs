@@ -2490,3 +2490,202 @@ def test_set_weights_restarts_farthest_seed_rather_than_lying():
     assert g.farthest_seed(done) == fastcore.GeodesicGraph(
         edges, 9, weights=w2
     ).farthest_seed(done)
+
+
+# -----------------------------------------------------------------------------
+# Weight width (float32 / float64)
+# -----------------------------------------------------------------------------
+
+
+def test_dtype_follows_the_weights():
+    """"Your dtype in, your dtype out" - the rule `linkage` already follows."""
+    edges = np.array([[0, 1], [1, 2], [2, 0]], dtype=np.uint32)
+    w = np.array([1, 1, 5], dtype=np.float32)
+
+    assert fastcore.geodesic_matrix_graph(edges, 3, weights=w).dtype == np.float32
+    assert (
+        fastcore.geodesic_matrix_graph(edges, 3, weights=w.astype(np.float64)).dtype
+        == np.float64
+    )
+
+    # `dtype` overrides in both directions.
+    assert (
+        fastcore.geodesic_matrix_graph(edges, 3, weights=w, dtype=np.float64).dtype
+        == np.float64
+    )
+    assert (
+        fastcore.geodesic_matrix_graph(
+            edges, 3, weights=w.astype(np.float64), dtype=np.float32
+        ).dtype
+        == np.float32
+    )
+    # ... including for an unweighted search, where there is no array to read it off.
+    assert fastcore.geodesic_matrix_graph(edges, 3).dtype == np.float32
+    assert (
+        fastcore.geodesic_matrix_graph(edges, 3, dtype=np.float64).dtype == np.float64
+    )
+
+
+@pytest.mark.parametrize(
+    "weights",
+    [
+        pytest.param([1.0, 1.0, 5.0], id="list-of-python-floats"),
+        pytest.param(np.array([1, 1, 5], dtype=np.int64), id="int64-array"),
+        pytest.param(np.array([1, 1, 5], dtype=np.float16), id="float16-array"),
+    ],
+)
+def test_only_a_float64_array_asks_for_float64(weights):
+    """A list of Python floats is float64 by numpy's default, not by anyone's intent.
+
+    Honouring it would quietly double the output for every caller who passes one, so
+    only something carrying a float64 dtype counts as having asked.
+    """
+    edges = np.array([[0, 1], [1, 2], [2, 0]], dtype=np.uint32)
+    assert (
+        fastcore.geodesic_matrix_graph(edges, 3, weights=weights).dtype == np.float32
+    )
+
+
+def test_dtype_rejects_widths_a_search_cannot_use():
+    edges = np.array([[0, 1], [1, 2]], dtype=np.uint32)
+    with pytest.raises(ValueError, match="float32 or float64"):
+        fastcore.geodesic_matrix_graph(edges, 3, dtype=np.float16)
+    with pytest.raises(ValueError, match="float32 or float64"):
+        fastcore.geodesic_matrix_mesh(*grid_mesh(4), dtype=np.int32)
+
+
+def test_the_two_widths_agree_wherever_float32_is_exact():
+    """Small integer weights land exactly on both widths, so the answers must match.
+
+    Not to a tolerance - to the bit. Anything less would mean the two instantiations
+    are not running the same algorithm.
+    """
+    n = 80
+    edges = random_graph(n, 240, seed=7)
+    w32 = np.random.default_rng(70).integers(1, 17, size=len(edges)).astype(np.float32)
+    w64 = w32.astype(np.float64)
+
+    d32 = fastcore.geodesic_matrix_graph(edges, n, weights=w32)
+    d64 = fastcore.geodesic_matrix_graph(edges, n, weights=w64)
+    np.testing.assert_array_equal(d32.astype(np.float64), d64)
+
+    _, p32 = fastcore.geodesic_predecessors(edges, n, weights=w32)
+    _, p64 = fastcore.geodesic_predecessors(edges, n, weights=w64)
+    np.testing.assert_array_equal(p32, p64)
+
+    nodes = np.arange(0, n, 3, dtype=np.uint32)
+    e32, mw32 = fastcore.geodesic_mst_graph(edges, n, nodes, weights=w32)
+    e64, mw64 = fastcore.geodesic_mst_graph(edges, n, nodes, weights=w64)
+    np.testing.assert_array_equal(e32, e64)
+    np.testing.assert_array_equal(mw32.astype(np.float64), mw64)
+
+    np.testing.assert_array_equal(
+        fastcore.geodesic_clusters(edges, n, 5.0, weights=w32)[0],
+        fastcore.geodesic_clusters(edges, n, 5.0, weights=w64)[0],
+    )
+    np.testing.assert_array_equal(
+        fastcore.parents_from_edges(edges, n, weights=w32)[0],
+        fastcore.parents_from_edges(edges, n, weights=w64)[0],
+    )
+    np.testing.assert_array_equal(
+        fastcore.minimum_spanning_tree(edges, n, weights=w32),
+        fastcore.minimum_spanning_tree(edges, n, weights=w64),
+    )
+
+
+def test_unweighted_searches_are_width_independent():
+    """Hop counts are integers, exact at both widths at any depth a graph can reach."""
+    faces, _ = grid_mesh(9)
+    d32 = fastcore.geodesic_matrix_mesh(faces, n_vertices=81)
+    d64 = fastcore.geodesic_matrix_mesh(faces, n_vertices=81, dtype=np.float64)
+    np.testing.assert_array_equal(d32.astype(np.float64), d64)
+
+
+def test_float64_tracks_the_closed_form_where_float32_drifts():
+    """The point of the wider width, measured against an exact answer.
+
+    The grid has a closed-form metric, so "closer" here means closer to the truth
+    rather than merely different from the other width. Two roundings feed the float32
+    drift: the edge lengths, computed in float64 from the coordinates and narrowed on
+    the way in, and one addition per hop.
+    """
+    n, spacing = 48, 0.3
+    faces, verts = grid_mesh(n, spacing)
+
+    i, j = np.meshgrid(np.arange(n), np.arange(n), indexing="ij")
+    exact = spacing * (np.sqrt(2) * np.minimum(i, j) + np.abs(i - j))
+
+    d32 = fastcore.geodesic_matrix_mesh(faces, verts, sources=[0])[0].reshape(n, n)
+    d64 = fastcore.geodesic_matrix_mesh(
+        faces, verts, sources=[0], dtype=np.float64
+    )[0].reshape(n, n)
+
+    e32 = np.abs(d32.astype(np.float64) - exact).max()
+    e64 = np.abs(d64 - exact).max()
+
+    assert e64 < 1e-12, f"float64 should track the closed form: {e64}"
+    assert e32 > 1e-7, f"fixture assumption: float32 should visibly drift, got {e32}"
+    assert e64 < e32
+
+
+def test_float64_resolves_a_difference_float32_rounds_away():
+    """Two routes that tie at float32 and do not at float64.
+
+    An f32 ulp at 1.0 is ~1.2e-7, so at that width every number here *is* 1.0 - the
+    weights included, before the search even runs. At f64 the direct edge is genuinely
+    the shorter one.
+    """
+    edges = np.array([[0, 1], [1, 2], [0, 2]], dtype=np.uint32)
+    w = np.array([1.0, 1e-8, 1.0000000001], dtype=np.float64)
+
+    assert fastcore.geodesic_matrix_graph(
+        edges, 3, weights=w.astype(np.float32)
+    )[0, 2] == np.float32(1.0)
+    assert fastcore.geodesic_matrix_graph(edges, 3, weights=w)[0, 2] == 1.0000000001
+
+
+def test_float64_matches_scipy_which_has_no_float32_mode():
+    """scipy works in float64 unconditionally, so this is the width that can agree.
+
+    At float32 the same comparison needs a tolerance; here it holds to a double's own.
+    """
+    n = 70
+    edges = random_graph(n, 200, seed=11)
+    w = np.random.default_rng(110).random(len(edges)) + 0.1
+
+    ours = fastcore.geodesic_matrix_graph(edges, n, weights=w)
+    assert ours.dtype == np.float64
+
+    # `as_csr` builds the oracle the way fastcore reads the graph — symmetrised, with
+    # parallel edges collapsed to the shortest rather than summed as `csr_matrix` would.
+    ref = dijkstra(as_csr(edges, n, w), directed=False)
+    np.testing.assert_allclose(as_inf(ours), ref, rtol=1e-12)
+
+
+def test_float64_keeps_the_module_conventions():
+    """The `-1` sentinel, the inclusive `limit` boundary and empty shapes, at float64."""
+    edges = np.array([[0, 1], [2, 3]], dtype=np.uint32)
+    w = np.array([1.5, 2.5])
+
+    d = fastcore.geodesic_matrix_graph(edges, 4, weights=w)
+    assert d[0, 1] == 1.5
+    assert d[0, 2] == -1.0
+
+    at = fastcore.geodesic_matrix_graph(edges, 4, weights=w, limit=1.5)
+    assert at[0, 1] == 1.5
+    assert at[2, 3] == -1.0
+
+    empty = fastcore.geodesic_matrix_graph(edges, 4, weights=w, sources=[])
+    assert empty.shape == (0, 4)
+    assert empty.dtype == np.float64
+
+
+def test_geodesic_graph_stays_float32():
+    """The prepared-graph class is float32 only, and says so by returning float32.
+
+    It holds several node-sized arrays resident for the whole run, which is the calling
+    pattern it exists for and exactly where doubling them would be felt.
+    """
+    edges = np.array([[0, 1], [1, 2]], dtype=np.uint32)
+    g = fastcore.GeodesicGraph(edges, 3, weights=np.array([1.0, 1.0]))
+    assert g.distances(threads=1).dtype == np.float32

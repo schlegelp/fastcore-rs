@@ -132,6 +132,19 @@ healed = heal_skeleton(parents, s$d$X, s$d$Y, s$d$Z, method="ALL",
     Rust core and the rest of the DAG family — so add 1 before using a returned index
     to subset an R vector or matrix. Roots and "no such node" are `-1`.
 
+!!! note "`precision = 32` or `64`"
+
+    The geodesic functions take a `precision` argument choosing the width distances are
+    accumulated at, as `nblast()` does. R has no float32 type, so the result is a
+    numeric (double) vector or matrix either way — this buys accuracy, not a different
+    return type.
+
+    32 is the default and is right for ordinary mesh and skeleton work: a 24-bit
+    mantissa resolves a 100 mm neuron to ~6 nm. Dijkstra sums one weight per hop, so
+    `precision = 64` is worth asking for when paths run to tens of thousands of hops,
+    when the weights span a wide dynamic range, or when you need to match a reference
+    implementation that works in double precision throughout.
+
 **Neuron similarity (NBLAST / synNBLAST)** — see [Concepts › NBLAST](../concepts/nblast.md)
 
 - `nblast` / `nblast_allbyall`: forward NBLAST (query-vs-target / all-by-all)

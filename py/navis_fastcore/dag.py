@@ -1157,7 +1157,8 @@ def _sources_to_indices(node_ids, sources, what="sources"):
 def _prep_weights(weights, node_ids):
     """Coerce optional per-node weights to a contiguous float32 array of the right length.
 
-    Mirrors `mesh._prep_weights`. Extracted because this block had been copy-pasted to
+    Mirrors `mesh._prep_weights` minus the width resolution: the DAG kernels are
+    float32 only. Extracted because this block had been copy-pasted to
     fourteen call sites in this module, half of them raising `AssertionError` (which
     `python -O` removes) where the rest raise `ValueError`.
     """
