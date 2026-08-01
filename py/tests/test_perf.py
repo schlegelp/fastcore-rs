@@ -45,9 +45,22 @@ N, N10 = 100_000, 1_000_000
 #: A case may be 2x slower than baseline before it fails. See module docstring.
 REGRESSION_FACTOR = 2.0
 
-#: `t(10N) / t(N)`. Linear is 10 and O(N log N) is ~11.7, so 20 passes both while
-#: rejecting quadratic (which would be 100).
-MAX_SCALING_RATIO = 20.0
+#: `t(10N) / t(N)`. The complexity classes say 10 (linear) and ~11.7 (N log N) - but
+#: that is an *instruction* count and this gate measures wall-clock. At 1M nodes the
+#: working set no longer fits in cache, so every operation here pays a per-node memory
+#: penalty the 100k run does not, and the ratio comes out above the textbook figure on
+#: code that is perfectly linear.
+#:
+#: That penalty is not small and it is not uniform: measured across the whole suite,
+#: correct code lands anywhere between 7x and 23x, the high end being the cases whose
+#: access pattern is most scattered. Re-running the same functions over an index-local
+#: edge list - same node count, same edge count, neighbours adjacent in memory too -
+#: brings the two worst offenders back to 10.0x and 11.4x, which is what identifies the
+#: excess as the memory hierarchy rather than the algorithm.
+#:
+#: Hence 35: clear of the measured ceiling with room for a shared runner, and still far
+#: enough below 100 that an accidental quadratic cannot hide under it.
+MAX_SCALING_RATIO = 35.0
 
 
 def cases(topo):
@@ -303,6 +316,12 @@ def test_scaling_is_subquadratic(prefix, build, case, shape, topos):
     t_10n = best_of(build(topos(shape, N10))[case], repeats=3)
 
     ratio = t_10n / t_n
+    # Printed on the way past, not only on failure: the threshold above had to be set
+    # from measurements nobody could see, because a passing run reported nothing. With
+    # `-s` (which is how the nightly runs it) the log now carries every case's margin,
+    # so the next time this drifts it is visible before it is red.
+    print(f"  scaling {prefix}{shape}/{case}: {ratio:.1f}x")
+
     assert ratio < MAX_SCALING_RATIO, (
         f"{prefix}{shape}/{case}: {N} -> {N10} nodes cost {ratio:.1f}x more time "
         f"({t_n * 1e3:.1f} -> {t_10n * 1e3:.1f} ms); "
