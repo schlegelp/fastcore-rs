@@ -28,8 +28,11 @@ in the root [`Cargo.toml`](./Cargo.toml). The Rust crates inherit it via
 
 ```sh
 python scripts/sync-versions.py
+python scripts/bundle-r-core.py
 ```
 
-This propagates the version to `R/nat.fastcore/DESCRIPTION` (the only file that
-needs a literal copy). CI checks that it stays in sync via
-`python scripts/sync-versions.py --check`.
+Three files need a literal copy of the version, all of them under the R package,
+which builds outside the workspace: `R/nat.fastcore/DESCRIPTION` (written by the
+first script) and the `Cargo.toml` of both the R bindings crate and its bundled
+copy of `fastcore` (written by the second). CI checks all three stay in sync via
+the same scripts with `--check`.

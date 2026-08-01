@@ -9,10 +9,12 @@ exclude = ["R/nat.fastcore/src/rust"]
 resolver = "2"
 
 # Single source of truth for the version; member crates inherit it via
-# `version.workspace = true`. To bump: edit here, then run
-# `python scripts/sync-versions.py` (updates R/nat.fastcore/DESCRIPTION).
+# `version.workspace = true`. To bump: edit here, then run both
+# `python scripts/sync-versions.py` (updates R/nat.fastcore/DESCRIPTION) and
+# `python scripts/bundle-r-core.py` (updates the two literal versions in the
+# bundled R crate). CI checks both with `--check`.
 [workspace.package]
-version = "0.9.0"
+version = "0.10.0"
 
 [workspace.dependencies]
 fastcore = { path = "fastcore" }

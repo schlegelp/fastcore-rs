@@ -8,7 +8,7 @@ it is called out.
 Tags, source archives and the original announcements are on
 [GitHub](https://github.com/schlegelp/fastcore-rs/releases).
 
-## Unreleased
+## 0.10.0 (2026-08-01)
 
 **Six new tree primitives**, filling the gap between what `navis` asks igraph for
 internally and what `fastcore` could answer. Each looks like a general graph algorithm but
