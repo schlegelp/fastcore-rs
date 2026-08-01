@@ -60,6 +60,24 @@ scores = fastcore.nblast(query_dps, target_dps)
 scores = fastcore.nblast(query_dps, target_dps, symmetry="mean")
 ```
 
+## Selected pairs only
+
+When you already know which comparisons you want — a candidate list from a cheaper
+filter, the non-zero cells of a connectivity matrix, a set of putative matches to
+verify — `nblast_pairs` scores exactly those and hands back one value per pair
+instead of a matrix:
+
+```python
+pairs = np.array([(0, 5), (0, 7), (3, 5)])      # positions, not IDs
+scores = fastcore.nblast_pairs(query_dps, target_dps, pairs)
+```
+
+`k` pairs cost `k` comparisons rather than `n_query x n_target`. Each neuron is
+still indexed once and the pairs are grouped by target, so a target whose whole
+column you request reproduces that column of `nblast` exactly — this is the same
+primitive [Smart NBLAST](#smart-nblast) uses for its second pass. Pass
+`target=None` to compare a set against itself without preparing it twice.
+
 ## k nearest neighbours
 
 `nblast_knn` returns each neuron's `k` nearest neighbours **without ever building
@@ -228,6 +246,8 @@ Both `nblast_allbyall` and `nblast` accept the same options:
 
 ::: navis_fastcore.nblast_allbyall
 
+::: navis_fastcore.nblast_pairs
+
 ::: navis_fastcore.nblast_knn
 
 ::: navis_fastcore.nblast_smart
@@ -347,6 +367,27 @@ Notes:
 - The linkage itself is single-threaded and cannot be interrupted — `Ctrl-C` is honoured up
   to the end of the condensing pass only.
 
+`leaf_order` is SciPy's `leaves_list`, for callers who would rather not add scipy just to
+draw the thing:
+
+```python
+order = fastcore.leaf_order(Z)      # (n,) observation indices, left to right
+labels[order]                       # your labels, in drawing order
+```
+
+`symmetrize` is the standalone version of the combine `linkage` and
+`condensed_distances` fold into their own pass. You do not need it before either of them
+— reach for it when something *else* has to read the matrix, and note that it rewrites
+your array in place rather than handing back a copy:
+
+```python
+fastcore.symmetrize(scores, symmetry="mean")   # no n x n temporary
+```
+
 ::: navis_fastcore.linkage
 
 ::: navis_fastcore.condensed_distances
+
+::: navis_fastcore.leaf_order
+
+::: navis_fastcore.symmetrize

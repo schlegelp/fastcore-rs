@@ -255,6 +255,23 @@ def test_domain_is_the_world_box_not_the_lattice_extent(reg):
     assert np.isfinite(reg.xform(np.array([domain - 1e-6]))).all()
 
 
+def test_domain_property_is_that_same_box(reg):
+    """`.domain` must be the box the test above derives, or it is worse than useless.
+
+    It exists so callers can predict a `NaN` without reconstructing
+    `spacing * (dims - 3)` from the lattice themselves.
+    """
+    assert reg.domain.shape == (1, 3)
+    np.testing.assert_allclose(reg.domain[0], reg.spacing[0] * (reg.dims[0] - 3))
+
+    # Inside is finite, a hair outside is not - on every axis.
+    assert np.isfinite(reg.xform(np.array([reg.domain[0] - 1e-6]))).all()
+    for axis in range(3):
+        p = reg.domain[0].copy()
+        p[axis] += 1.0
+        assert np.isnan(reg.xform(np.array([p]))).all()
+
+
 def test_clamp_to_domain_off_recovers_out_of_domain_preimages(reg, golden):
     """The two points CMTK calls FAILED do have preimages - they just lie outside the
     image domain. `clamp_to_domain=False` finds them, at the price of disagreeing with

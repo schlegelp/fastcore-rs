@@ -2,8 +2,7 @@
 % Please edit documentation in R/extendr-wrappers.R
 \name{smat_auto_limit}
 \alias{smat_auto_limit}
-\title{Build an R numeric matrix from an \code{ndarray} \verb{Array2<f64>}.
-The \code{limit_dist="auto"} value for a scoring matrix.}
+\title{The \code{limit_dist="auto"} value for a scoring matrix.}
 \usage{
 smat_auto_limit(smat_values, dist_edges, dot_edges, use_alpha)
 }
@@ -22,6 +21,5 @@ alpha-weighted variant.}
 Numeric \code{limit_dist} value implied by the scoring matrix.
 }
 \description{
-Build an R numeric matrix from an \code{ndarray} \verb{Array2<f64>}.
 The \code{limit_dist="auto"} value for a scoring matrix.
 }

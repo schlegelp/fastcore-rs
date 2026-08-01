@@ -4,7 +4,7 @@ import numpy as np
 
 from . import _fastcore
 
-__all__ = ["linkage", "condensed_distances"]
+__all__ = ["linkage", "condensed_distances", "leaf_order", "symmetrize"]
 
 #: Widths the kernels cluster natively. As in `matches`, a score matrix is *never*
 #: cast: at 100k a side that would quietly materialise tens of GB. float16 is absent
@@ -102,6 +102,111 @@ def condensed_distances(
     return _fastcore.condensed_distances(
         scores, symmetry=symmetry, transform=transform, n_cores=n_cores
     )
+
+
+def symmetrize(scores, symmetry="mean", n_cores=None):
+    """Symmetrise a square score matrix against its own transpose, **in place**.
+
+    This is the case numpy cannot do cheaply. ``(M + M.T) / 2`` builds two full
+    ``n x n`` temporaries, and even ``np.add(M, M.T, out=M)`` still builds one,
+    because numpy sees the output overlapping ``M.T`` and defensively copies the
+    input first. The kernel here writes both triangles as it walks the upper one,
+    so it allocates nothing — at 100k neurons that is 80 GB of peak that stops
+    existing.
+
+    You do not need this before :func:`~navis_fastcore.linkage` or
+    :func:`~navis_fastcore.condensed_distances`: both take a ``symmetry`` argument
+    and fold the same combine into their own pass. Use it when something *else* is
+    going to read the matrix — plotting it, writing it out, or feeding it to a
+    library that assumes symmetry.
+
+    Parameters
+    ----------
+    scores :    (n, n) float32 or float64 array
+                Score matrix, modified in place. Must be C- or F-contiguous and
+                writeable; it is borrowed, never copied or cast.
+    symmetry :  "mean" | "min" | "max" | "none"
+                How to combine ``M[i, j]`` with ``M[j, i]``. ``"none"`` mirrors the
+                upper triangle onto the lower instead of combining.
+    n_cores :   int, optional
+                Thread cap. ``None`` uses all available cores.
+
+    Returns
+    -------
+    scores :    the same array, for convenience. It was modified in place, so the
+                original name refers to the symmetrised matrix either way.
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> scores = np.array([[1.0, 0.8],
+    ...                    [0.4, 1.0]], dtype=np.float32)
+    >>> fastcore.symmetrize(scores)
+    array([[1. , 0.6],
+           [0.6, 1. ]], dtype=float32)
+
+    """
+    scores = _check_scores(scores)
+    if not scores.flags.writeable:
+        raise ValueError(
+            "`scores` is read-only, and this symmetrises in place. Either make it "
+            "writeable or symmetrise a copy."
+        )
+
+    _fastcore.symmetrize(scores, symmetry=symmetry, n_cores=n_cores)
+    return scores
+
+
+def leaf_order(Z):
+    """The order to place the leaves in so a dendrogram draws without crossings.
+
+    The equivalent of ``scipy.cluster.hierarchy.leaves_list``, for callers who have
+    no scipy: a depth-first walk of the merge tree from the root, emitting each
+    observation as it is reached. Iterative, so a 200k-observation chain does not
+    need 200k stack frames.
+
+    Parameters
+    ----------
+    Z :         (n - 1, 4) array
+                A linkage matrix, from :func:`~navis_fastcore.linkage` or from
+                SciPy. Only the first two columns are read.
+
+    Returns
+    -------
+    order :     (n, ) int64 array
+                Observation indices, left to right. A permutation of ``0..n``, so it
+                indexes the observations you clustered: ``labels[order]`` puts your
+                labels in drawing order.
+
+    Notes
+    -----
+    Any consumer that draws the tree must use the *same* child order as the linkage
+    matrix it came from, which is why this reads `Z` rather than a pre-built tree.
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> scores = np.array([[1.00, 0.90, 0.20, 0.10],
+    ...                    [0.70, 1.00, 0.30, 0.15],
+    ...                    [0.25, 0.35, 1.00, 0.80],
+    ...                    [0.05, 0.10, 0.60, 1.00]], dtype=np.float32)
+    >>> Z = fastcore.linkage(scores, method="average")
+    >>> fastcore.leaf_order(Z)
+    array([0, 1, 2, 3])
+
+    """
+    Z = getattr(Z, "values", Z)
+    Z = np.asarray(Z)
+    if Z.ndim != 2:
+        raise ValueError(
+            f"`Z` must be a (n - 1, 4) linkage matrix, got a {Z.ndim}D array"
+        )
+
+    # Unlike a score matrix, a linkage matrix is (n - 1) x 4 - small enough that
+    # coercing it is cheaper than making the caller do it.
+    return _fastcore.leaf_order(np.ascontiguousarray(Z, dtype=np.float64))
 
 
 def linkage(

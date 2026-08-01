@@ -87,3 +87,20 @@ longest one starts at whichever node is farthest from its own root.
 ::: navis_fastcore.longest_path
 
 ::: navis_fastcore.longest_paths
+
+## Validity
+
+Everything on this page assumes the parent vector describes a rooted forest:
+follow parents from any node and you arrive at a root.
+[`has_cycles`](#navis_fastcore.has_cycles) is that assumption, checked in a
+linear pass — worth doing once on data of unknown provenance, since a cycle is
+malformed input rather than an unusual shape. The functions here are written so
+that a cycle cannot hang them, but on one they return a truncated walk, not an
+answer.
+
+```python
+if fastcore.has_cycles(node_ids, parent_ids):
+    raise ValueError("not a skeleton")
+```
+
+::: navis_fastcore.has_cycles

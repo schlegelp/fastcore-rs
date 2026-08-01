@@ -266,6 +266,17 @@ class CmtkRegistration:
         return self._reg.spacing
 
     @property
+    def domain(self):
+        """Domain box of each spline warp, as a (k, 3) array.
+
+        The region CMTK fitted the warp over. A point outside ``[0, domain]`` has no
+        spline value: `streamxform` prints ``FAILED`` for it and
+        :meth:`xform` returns ``NaN``, unless ``allow_extrapolation=True`` clamps it
+        to the boundary. ``None`` when no registration in the chain has a spline.
+        """
+        return self._reg.domain
+
+    @property
     def version(self):
         """CMTK TypedStream version of each registration in the chain."""
         return self._reg.version

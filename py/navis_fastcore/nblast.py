@@ -7,6 +7,7 @@ from . import _fastcore
 __all__ = [
     "nblast_allbyall",
     "nblast",
+    "nblast_pairs",
     "nblast_knn",
     "nblast_smart",
     "synblast",
@@ -729,6 +730,131 @@ def _nblast_pairs(
     )
     if user_bits == 16:
         scores = scores.astype(np.float16)
+    return scores
+
+
+def _check_pair_range(idx, n, what):
+    """Pair indices index the caller's lists; an out-of-range one is a panic in Rust."""
+    if idx.size and (idx.min() < 0 or idx.max() >= n):
+        bad = idx[(idx < 0) | (idx >= n)][0]
+        raise ValueError(
+            f"`pairs` names {what} {bad}, which is out of range for {n} {what}s"
+        )
+
+
+def nblast_pairs(
+    query,
+    target,
+    pairs,
+    smat=None,
+    normalize=True,
+    symmetry=None,
+    use_alpha=False,
+    limit_dist=None,
+    n_cores=None,
+    precision=32,
+    progress=False,
+):
+    """NBLAST only the given ``(query, target)`` pairs.
+
+    The sparse counterpart to :func:`~navis_fastcore.nblast`: scoring `k` pairs
+    costs `k` comparisons rather than the full ``n_query x n_target`` grid, and the
+    result is a `k`-vector rather than a matrix. Use it when you already know which
+    comparisons you want — a candidate list from a cheaper filter, the non-zero
+    cells of a connectivity matrix, or a set of putative matches to verify.
+
+    Each neuron is still indexed once and pairs are grouped by target, so a target
+    whose whole query column is requested reproduces that column of
+    :func:`~navis_fastcore.nblast` exactly.
+
+    A long run can be interrupted with Ctrl-C / the Jupyter interrupt button; it
+    stops promptly and raises ``KeyboardInterrupt``.
+
+    Parameters
+    ----------
+    query, target : iterable of dotprop-likes
+                    Each must expose `points` (N, 3) and unit tangent `vect`
+                    (N, 3); also `alpha` (N,) when ``use_alpha`` is set. Pass
+                    ``target=None`` to compare `query` against itself without
+                    preparing it twice.
+    pairs :         (k, 2) int array
+                    One ``(query index, target index)`` per row — **positions** in
+                    `query` and `target`, not IDs. Duplicates are allowed and each
+                    is scored once per row.
+    smat :          None | navis Lookup2d | (values, dist_edges, dot_edges)
+                    Scoring matrix. ``None`` uses the embedded FCWB matrix.
+    normalize :     bool
+                    Divide each score by the query's self-hit.
+    symmetry :      None | 'forward' | 'mean' | 'min' | 'max'
+                    ``None`` / ``'forward'`` returns the raw forward score. The
+                    others combine it with the reverse score of the *same* pair
+                    (target as query), which costs a second pass.
+    use_alpha :     bool
+                    Weight each dot product by ``sqrt(alpha_query * alpha_target)``.
+    limit_dist :    None | float | 'auto'
+                    Distance upper bound (see ``nblast_allbyall``).
+    n_cores :       int | None
+                    Cap the number of worker threads. ``None`` uses all cores.
+    precision :     16 | 32 | 64
+                    Dtype of the returned scores. Math is always float64.
+    progress :      bool
+                    Show progress bars over index building and scoring.
+
+    Returns
+    -------
+    scores :        (k, ) array
+                    One score per row of `pairs`, in the order given.
+
+    Examples
+    --------
+    >>> pairs = np.array([(0, 5), (0, 7), (3, 5)])                # doctest: +SKIP
+    >>> scores = nblast_pairs(queries, library, pairs)            # doctest: +SKIP
+
+    Score selected pairs within one set, without preparing it twice:
+
+    >>> scores = nblast_pairs(neurons, None, pairs)               # doctest: +SKIP
+
+    """
+    # Materialise both sides before sniffing, so a generator is not consumed twice.
+    query = list(query)
+    aba = target is None
+    target = query if aba else list(target)
+
+    pairs = np.asarray(pairs)
+    if pairs.ndim != 2 or pairs.shape[1] != 2:
+        raise ValueError(f"`pairs` must be of shape (k, 2), got {pairs.shape}")
+    pairs = np.ascontiguousarray(pairs, dtype=np.int64)
+    qi, tj = pairs[:, 0], pairs[:, 1]
+    _check_pair_range(qi, len(query), "query")
+    _check_pair_range(tj, len(target), "target")
+
+    dtype = _coord_dtype(query, None if aba else target)
+    q_points, q_vects, q_alphas = _as_clouds(query, want_alpha=use_alpha, dtype=dtype)
+    if aba:
+        t_points, t_vects, t_alphas = q_points, q_vects, q_alphas
+    else:
+        t_points, t_vects, t_alphas = _as_clouds(
+            target, want_alpha=use_alpha, dtype=dtype
+        )
+
+    scores = _nblast_pairs(
+        q_points, q_vects, q_alphas, t_points, t_vects, t_alphas, qi, tj,
+        smat=smat, normalize=normalize, use_alpha=use_alpha,
+        limit_dist=limit_dist, n_cores=n_cores, precision=precision,
+        progress=progress,
+    )
+
+    if symmetry is not None and symmetry != "forward":
+        # The same cells, scored the other way round: query and target swap, and so
+        # do the two index columns.
+        rev = _nblast_pairs(
+            t_points, t_vects, t_alphas, q_points, q_vects, q_alphas, tj, qi,
+            smat=smat, normalize=normalize, use_alpha=use_alpha,
+            limit_dist=limit_dist, n_cores=n_cores, precision=precision,
+            progress=progress,
+        )
+        scores = _combine(scores, rev, symmetry)
+
     return scores
 
 

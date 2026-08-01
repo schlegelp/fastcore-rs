@@ -185,3 +185,91 @@ def test_stitch_fragments_accepts_use_radius():
         ia, ib = id2ix[int(a)], id2ix[int(b)]
         d3 = np.linalg.norm(coords[ia] - coords[ib])
         assert d + 1e-4 >= d3
+
+
+# --- reroot_rewire ----------------------------------------------------------
+#
+# Step 2 of healing on its own: an edited edge set, oriented back into a forest.
+
+
+def test_reroot_rewire_reproduces_healing():
+    """Fed the bridges `heal_skeleton` picks, it must produce what healing produced."""
+    node_ids, parent_ids, coords = _load_swc()
+    frag = _fragment(parent_ids)
+
+    edges, _ = fastcore.stitch_fragments(node_ids, frag, coords)
+    # Healing prefers the existing first root, and so must we to compare.
+    root = node_ids[frag < 0][0]
+
+    np.testing.assert_array_equal(
+        fastcore.reroot_rewire(node_ids, frag, edges, root=root),
+        fastcore.heal_skeleton(node_ids, frag, coords),
+    )
+
+
+def test_reroot_rewire_with_no_edges_is_a_re_orientation():
+    """No new edges: same undirected edges, same components, still a forest."""
+    node_ids, parent_ids, _ = _load_swc()
+
+    out = fastcore.reroot_rewire(node_ids, parent_ids, [])
+
+    def edges(parents):
+        return sorted(
+            tuple(sorted((int(n), int(p))))
+            for n, p in zip(node_ids, parents)
+            if p >= 0
+        )
+
+    assert edges(out) == edges(parent_ids)
+    assert _n_components(node_ids, out) == _n_components(node_ids, parent_ids)
+    assert not fastcore.has_cycles(node_ids, out)
+
+
+def test_reroot_rewire_roots_where_asked():
+    node_ids = np.array([10, 20, 30, 40])
+    parent_ids = np.array([-1, 10, -1, 30])
+
+    out = fastcore.reroot_rewire(node_ids, parent_ids, [(20, 30)], root=40)
+
+    assert out.tolist() == [20, 30, 40, -1]
+    assert not fastcore.has_cycles(node_ids, out)
+
+
+def test_reroot_rewire_auto_picks_a_root_per_component():
+    """Unreached components are not left orphaned - each keeps a root of its own."""
+    node_ids = np.array([10, 20, 30, 40])
+    parent_ids = np.array([-1, 10, -1, 30])
+
+    out = fastcore.reroot_rewire(node_ids, parent_ids, [])
+
+    assert (out < 0).sum() == 2
+    assert not fastcore.has_cycles(node_ids, out)
+
+
+def test_reroot_rewire_ignores_an_edge_that_would_close_a_cycle():
+    """A redundant edge is a back-edge to the orienting walk, not a cycle."""
+    node_ids = np.array([1, 2, 3])
+    parent_ids = np.array([-1, 1, 2])
+
+    out = fastcore.reroot_rewire(node_ids, parent_ids, [(3, 1)])
+
+    assert not fastcore.has_cycles(node_ids, out)
+    assert (out < 0).sum() == 1
+
+
+def test_reroot_rewire_rejects_unknown_ids():
+    node_ids = np.array([1, 2, 3])
+    parent_ids = np.array([-1, 1, 2])
+
+    with pytest.raises(ValueError, match="not found"):
+        fastcore.reroot_rewire(node_ids, parent_ids, [(1, 999)])
+    with pytest.raises(ValueError, match="not found"):
+        fastcore.reroot_rewire(node_ids, parent_ids, [], root=999)
+
+
+def test_reroot_rewire_rejects_a_bad_edge_shape():
+    node_ids = np.array([1, 2, 3])
+    parent_ids = np.array([-1, 1, 2])
+
+    with pytest.raises(ValueError, match=r"\(M, 2\)"):
+        fastcore.reroot_rewire(node_ids, parent_ids, [1, 2, 3])

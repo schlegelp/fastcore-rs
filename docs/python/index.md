@@ -97,11 +97,13 @@ Operations on [rooted trees](../concepts/trees.md):
 - [`longest_path`](topology.md#navis_fastcore.longest_path) / [`longest_paths`](topology.md#navis_fastcore.longest_paths): the longest path from a node to its root, and the `n` longest taken in turn
 - [`betweenness`](morphology.md#navis_fastcore.betweenness): betweenness centrality, in O(N) rather than Brandes' O(V*E)
 - [`descendant_counts`](morphology.md#navis_fastcore.descendant_counts): how many nodes (or how many of a given set) lie below each node
+- [`has_cycles`](topology.md#navis_fastcore.has_cycles): whether the parent structure is a rooted forest at all — the assumption everything above makes
 
 Repairing fragmented skeletons:
 
 - [`heal_skeleton`](healing.md#navis_fastcore.heal_skeleton): reconnect the fragments of a broken skeleton
 - [`stitch_fragments`](healing.md#navis_fastcore.stitch_fragments): find the minimal-length edges that reconnect fragments
+- [`reroot_rewire`](healing.md#navis_fastcore.reroot_rewire): turn an edited edge set back into a rooted forest
 
 Meshes:
 
@@ -120,6 +122,7 @@ Meshes:
 
 - [`dotprops`](nblast.md#navis_fastcore.dotprops) / [`Dotprop.from_points`](nblast.md#navis_fastcore.dotprops): tangent vectors and alpha from a bare point cloud
 - [`nblast`](nblast.md#navis_fastcore.nblast.nblast) / [`nblast_allbyall`](nblast.md#navis_fastcore.nblast_allbyall): NBLAST (query-vs-target / all-by-all)
+- [`nblast_pairs`](nblast.md#navis_fastcore.nblast_pairs): NBLAST of an explicit list of query-target pairs, one score per pair
 - [`nblast_smart`](nblast.md#navis_fastcore.nblast_smart): two-pass approximate NBLAST for large comparisons
 - [`synblast`](nblast.md#navis_fastcore.synblast): synapse-based NBLAST
 

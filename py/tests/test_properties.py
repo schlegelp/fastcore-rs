@@ -563,6 +563,34 @@ def test_descendant_counts_accepts_no_targets():
     assert counts.tolist() == [0, 0, 0]
 
 
+# ------------------------------------------------------------------- has_cycles
+
+
+@given(forests())
+def test_has_cycles_is_false_for_a_forest(forest):
+    """The generator cannot produce a cycle, so this is the false-positive half."""
+    node_ids, parent_ids, _ = forest
+
+    assert not fastcore.has_cycles(node_ids, parent_ids)
+
+
+@given(forest_and_node(), st.data())
+def test_has_cycles_detects_an_edge_closing_a_loop(forest_node, data):
+    """Point a node at something below it and the walk up can no longer terminate.
+
+    Every cycle reachable from a valid forest is exactly this edit - including the
+    degenerate one where a node becomes its own parent, since `descendants`
+    includes its source.
+    """
+    (node_ids, parent_ids, _), node = forest_node
+    below = fastcore.descendants(node_ids, parent_ids, [node])[0]
+
+    cyclic = parent_ids.copy()
+    cyclic[node_ids == node] = data.draw(st.sampled_from(below.tolist()))
+
+    assert fastcore.has_cycles(node_ids, cyclic)
+
+
 @pytest.mark.parametrize("func", [fastcore.geodesic_nearest, fastcore.geodesic_farthest])
 def test_geodesic_nearest_farthest_sentinel_survives_uint64_ids(func):
     """A source with no reachable target must report -1, not 2**64 - 1.

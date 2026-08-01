@@ -1,11 +1,12 @@
 import numpy as np
 
 from . import _fastcore
-from .dag import _ids_to_indices, _indices_to_ids_sentinel
+from .dag import _ids_to_indices, _indices_to_ids_sentinel, _sources_to_indices
 
 __all__ = [
     "stitch_fragments",
     "heal_skeleton",
+    "reroot_rewire",
 ]
 
 
@@ -259,4 +260,87 @@ def heal_skeleton(
     new_parent_ix = _fastcore.reroot_rewire(parent_ix, edges_ix, preferred_root)
 
     # 3. Map parent indices back to IDs (-1 stays -1 for roots).
+    return _indices_to_ids_sentinel(node_ids, new_parent_ix)
+
+
+def reroot_rewire(node_ids, parent_ids, new_edges, root=None):
+    """Regenerate the parent array after adding a set of undirected edges.
+
+    Takes an *edited edge set* — the skeleton's own child→parent edges plus
+    `new_edges` — and orients all of it away from a root, which is what turns a bag
+    of edges back into a rooted forest. This is step 2 of
+    :func:`heal_skeleton`, exposed on its own for callers who choose their own
+    edges rather than taking the minimal bridges from
+    :func:`stitch_fragments`.
+
+    Parameters
+    ----------
+    node_ids :   (N, ) array
+                 Array of node IDs.
+    parent_ids : (N, ) array
+                 Array of parent IDs for each node. Root nodes' parents
+                 must be -1.
+    new_edges :  (M, 2) array
+                 Undirected edges to add, as pairs of node IDs. May be empty, in
+                 which case this is a pure re-orientation.
+    root :       node ID, optional
+                 Preferred root. Its component is rooted here; every other
+                 component is rooted at its lowest-index node. ``None`` auto-picks
+                 for all of them.
+
+    Returns
+    -------
+    new_parent_ids : (N, ) array
+                 New parent IDs, aligned with `node_ids`, roots as -1. Always a
+                 valid forest: `new_edges` that would close a cycle are back-edges
+                 to the orienting walk and are dropped, and a component the added
+                 edges did not reach simply keeps its own root.
+
+    Notes
+    -----
+    Not the same as [`navis_fastcore.reroot`][], which re-roots an *unchanged*
+    forest by reversing only the edges between each new root and the old one, and
+    leaves components nobody named byte-identical. This one re-orients everything,
+    because after an edge set changes there is no "unchanged" to preserve. Use
+    `reroot` to move a root; use this when the edges themselves moved.
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> node_ids = np.arange(4)
+    >>> parent_ids = np.array([-1, 0, -1, 2])       # two fragments
+    >>> fastcore.reroot_rewire(node_ids, parent_ids, [(1, 2)])
+    array([-1,  0,  1,  2])
+
+    Rooting the joined skeleton at node 3 instead:
+
+    >>> fastcore.reroot_rewire(node_ids, parent_ids, [(1, 2)], root=3)
+    array([ 1,  2,  3, -1])
+
+    """
+    node_ids = np.asarray(node_ids)
+    parent_ix = _ids_to_indices(node_ids, parent_ids)
+
+    new_edges = np.asarray(new_edges)
+    if new_edges.size == 0:
+        edges_ix = np.empty((0, 2), dtype=np.int32)
+    else:
+        if new_edges.ndim != 2 or new_edges.shape[1] != 2:
+            raise ValueError(
+                f"`new_edges` must be of shape (M, 2), got {new_edges.shape}"
+            )
+        # Flat, so an unknown ID is reported once for the whole array rather than
+        # per column.
+        edges_ix = _sources_to_indices(
+            node_ids, new_edges.ravel(), what="`new_edges` endpoints"
+        ).reshape(-1, 2).astype(np.int32, copy=False)
+
+    if root is None:
+        root_ix = -1
+    else:
+        root_ix = int(_sources_to_indices(node_ids, [root], what="`root`")[0])
+
+    new_parent_ix = _fastcore.reroot_rewire(parent_ix, edges_ix, root_ix)
+
     return _indices_to_ids_sentinel(node_ids, new_parent_ix)

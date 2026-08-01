@@ -8,8 +8,8 @@ use std::sync::atomic::AtomicBool;
 
 use crate::nblast::run_interruptible;
 use fastcore::linkage::{
-    check_finite, condense, linkage, linkage_from_scores, observations_from_condensed, symmetrize,
-    Dissim, LinkageError, Method, Symmetry, Transform,
+    check_finite, condense, leaf_order, linkage, linkage_from_scores, observations_from_condensed,
+    symmetrize, Dissim, LinkageError, Method, Symmetry, Transform,
 };
 
 /// The score matrix, at whatever width it already is.
@@ -273,4 +273,55 @@ pub fn linkage_condensed_py<'py>(
         }
     };
     Ok(z.map_err(to_py_err)?.into_pyarray(py))
+}
+
+// ---------------------------------------------------------------------------
+// leaf_order
+// ---------------------------------------------------------------------------
+
+/// The order to place the leaves in so a dendrogram draws without crossings.
+///
+/// SciPy's `leaves_list`, for callers who have no scipy.
+///
+/// @param z SciPy-compatible (n-1, 4) float64 linkage matrix.
+/// @return (n,) int64 array of observation indices, left to right.
+#[pyfunction]
+#[pyo3(name = "leaf_order")]
+pub fn leaf_order_py<'py>(
+    py: Python<'py>,
+    z: PyReadonlyArray2<'py, f64>,
+) -> PyResult<Bound<'py, PyArray1<i64>>> {
+    let view = z.as_array();
+    if view.ncols() != 4 {
+        return Err(PyValueError::new_err(format!(
+            "`z` must be a (n - 1, 4) linkage matrix; got {} columns",
+            view.ncols()
+        )));
+    }
+    let n = view.nrows() + 1;
+
+    // The walk descends into whatever cluster a row names, so an id naming a cluster
+    // formed at or after that row would either index off the end of `z` or loop
+    // forever. SciPy's labelling rules that out; check it rather than trust it, since
+    // the matrix reaching us need not be one we produced.
+    for (step, row) in view.rows().into_iter().enumerate() {
+        for &c in [row[0], row[1]].iter() {
+            if !(c >= 0.0 && c < (n + step) as f64) {
+                return Err(PyValueError::new_err(format!(
+                    "row {step} of `z` merges cluster {c}, which is neither an \
+                     observation (0..{n}) nor a cluster formed before it"
+                )));
+            }
+        }
+    }
+
+    // `to_owned` copies (n-1) x 4 f64 - 3 MB at 100k observations, against the tens of
+    // seconds the linkage that produced it took. Not worth widening the core signature
+    // to a view, which the R bindings also call.
+    let order: Vec<i64> = leaf_order(&view.to_owned(), n)
+        .into_iter()
+        .map(|i| i as i64)
+        .collect();
+
+    Ok(order.into_pyarray(py))
 }

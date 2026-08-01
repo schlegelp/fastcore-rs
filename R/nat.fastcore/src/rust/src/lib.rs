@@ -1,6 +1,6 @@
 use extendr_api::prelude::*;
 use extendr_api::{AsTypedSlice, ToVectorValue};
-use ndarray::{Array1, Array2, ArrayView1, ArrayView2, ShapeBuilder};
+use ndarray::{Array1, Array2, ArrayView1, ArrayView2, ArrayViewMut2, ShapeBuilder};
 use std::collections::HashMap;
 
 use fastcore::cmtk::{self, Chain, Fallback, InverseOpts, Mode, XformOpts};
@@ -9,7 +9,7 @@ use fastcore::tps::TpsTransform;
 use fastcore::elastix::{self, OutOfBounds};
 use fastcore::linkage::{
     condense, leaf_order, linkage as core_linkage, linkage_from_scores,
-    observations_from_condensed, Method as LinkageMethod, Symmetry, Transform,
+    observations_from_condensed, symmetrize, Method as LinkageMethod, Symmetry, Transform,
 };
 use fastcore::nblast::{load_smat, load_smat_alpha, Opts, Smat};
 use fastcore::nblast_knn::{KnnOpts, Symmetry as KnnSymmetry};
@@ -1918,7 +1918,6 @@ fn flat_to_rmatrix(flat: &[f64], nrows: usize, ncols: usize) -> Robj {
     RArray::new_matrix(nrows, ncols, |r, c| flat[r * ncols + c]).into()
 }
 
-/// Build an R numeric matrix from an `ndarray` `Array2<f64>`.
 /// The `limit_dist="auto"` value for a scoring matrix.
 ///
 /// @param smat_values Numeric scoring matrix, or `NULL` for the built-in FCWB
@@ -3235,6 +3234,54 @@ fn fast_hclust_raw(d: Robj, method: &str, labels: Robj) -> Robj {
     hclust_from_z(&z, n, method, labels)
 }
 
+// Symmetrise a square score matrix. Documented R-side in R/clustering.R.
+//
+// R's value semantics forbid writing through to the caller's matrix, so unlike the
+// Python binding — which symmetrises in place and allocates nothing — this copies
+// once and symmetrises the copy. That is still one `n x n` against the two or three
+// `(m + t(m)) / 2` builds on the way to the same answer.
+#[extendr]
+fn symmetrize_raw(scores: RMatrix<f64>, symmetry: &str, n_cores: Option<i32>) -> Robj {
+    let (nr, nc) = (scores.nrows(), scores.ncols());
+    let mut data: Vec<f64> = scores.data().to_vec();
+
+    {
+        // `.f()`: R matrices are column-major. Viewing them as row-major would
+        // transpose, which the combining modes would survive and `"none"` — mirror
+        // the upper triangle — would not.
+        let view = ArrayViewMut2::from_shape((nr, nc).f(), &mut data)
+            .unwrap_or_else(|e| panic!("could not view `scores` as a matrix: {e}"));
+        symmetrize(view, linkage_symmetry(symmetry), to_threads(n_cores), None)
+            .unwrap_or_else(|e| panic!("{e}"));
+    }
+
+    RArray::new_matrix(nr, nc, |r, c| data[c * nr + r]).into()
+}
+
+// Dendrogram leaf order for an `hclust`-style merge matrix. Documented R-side in
+// R/clustering.R, which validates the matrix first: an entry naming a merge that has
+// not happened yet would send the walk into a loop rather than out to the leaves.
+#[extendr]
+fn leaf_order_raw(merge: RMatrix<i32>) -> Vec<i32> {
+    let k = merge.nrows();
+    let n = k + 1;
+    let d = merge.data();
+
+    // R writes `-j` for observation `j` (1-based) and `+i` for the cluster formed at
+    // step `i` (1-based); the core reads SciPy's labelling, where observations are
+    // `0..n` and step `i` yields `n + i`. `hclust_from_z` is this map in reverse.
+    let z = Array2::from_shape_fn((k, 2), |(r, c)| {
+        let v = d[c * k + r];
+        if v < 0 {
+            (-v - 1) as f64
+        } else {
+            (n as i32 + v - 1) as f64
+        }
+    });
+
+    leaf_order(&z, n).into_iter().map(|i| i as i32 + 1).collect()
+}
+
 // Macro to generate exports.
 // This ensures exported functions are registered with R.
 // See corresponding C code in `entrypoint.c`.
@@ -3302,4 +3349,6 @@ extendr_module! {
     fn nblast_hclust_raw;
     fn nblast_dist_raw;
     fn fast_hclust_raw;
+    fn symmetrize_raw;
+    fn leaf_order_raw;
 }

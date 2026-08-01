@@ -459,6 +459,69 @@ def test_nblast_pairs_matches_dense(dotprops):
     assert np.allclose(s, dense[qi, tj], atol=1e-6)
 
 
+def test_nblast_pairs_public_matches_dense(dotprops):
+    """The public wrapper: same cells, same numbers, one score per row of `pairs`."""
+    dense = np.asarray(fastcore.nblast(dotprops, dotprops, precision=64))
+    pairs = np.array([(0, 0), (0, 1), (1, 0), (1, 1), (0, 1)])  # duplicates allowed
+
+    scores = fastcore.nblast_pairs(dotprops, dotprops, pairs, precision=64)
+
+    assert scores.shape == (len(pairs),)
+    assert np.allclose(scores, dense[pairs[:, 0], pairs[:, 1]], atol=1e-6)
+
+
+def test_nblast_pairs_target_none_is_self(dotprops):
+    """`target=None` compares the set against itself without preparing it twice."""
+    pairs = np.array([(0, 1), (1, 0)])
+
+    both = fastcore.nblast_pairs(dotprops, dotprops, pairs, precision=64)
+    once = fastcore.nblast_pairs(dotprops, None, pairs, precision=64)
+
+    np.testing.assert_array_equal(both, once)
+
+
+@pytest.mark.parametrize("symmetry", ["mean", "min", "max"])
+def test_nblast_pairs_symmetry_combines_the_reversed_pair(dotprops, symmetry):
+    dense = np.asarray(fastcore.nblast(dotprops, dotprops, precision=64))
+    pairs = np.array([(0, 1), (1, 0), (0, 0)])
+    combine = {"mean": lambda a, b: (a + b) / 2, "min": np.minimum, "max": np.maximum}
+
+    scores = fastcore.nblast_pairs(
+        dotprops, dotprops, pairs, symmetry=symmetry, precision=64
+    )
+
+    fwd = dense[pairs[:, 0], pairs[:, 1]]
+    rev = dense[pairs[:, 1], pairs[:, 0]]
+    assert np.allclose(scores, combine[symmetry](fwd, rev), atol=1e-6)
+
+
+def test_nblast_pairs_precision(dotprops):
+    pairs = np.array([(0, 1)])
+    for precision, dtype in [(16, np.float16), (32, np.float32), (64, np.float64)]:
+        got = fastcore.nblast_pairs(dotprops, dotprops, pairs, precision=precision)
+        assert got.dtype == dtype
+
+
+def test_nblast_pairs_rejects_an_out_of_range_index(dotprops):
+    """Out of range used to reach Rust as a `usize` cast and panic on an index."""
+    with pytest.raises(ValueError, match="out of range"):
+        fastcore.nblast_pairs(dotprops, dotprops, np.array([[0, 7]]))
+    with pytest.raises(ValueError, match="out of range"):
+        fastcore.nblast_pairs(dotprops, dotprops, np.array([[-1, 0]]))
+
+
+@pytest.mark.parametrize("pairs", [np.zeros((3, 3), dtype=int), np.zeros(4, dtype=int)])
+def test_nblast_pairs_rejects_a_bad_shape(dotprops, pairs):
+    with pytest.raises(ValueError, match=r"\(k, 2\)"):
+        fastcore.nblast_pairs(dotprops, dotprops, pairs)
+
+
+def test_nblast_pairs_empty(dotprops):
+    """Asking for nothing is a legitimate request - a filter can select no candidates."""
+    got = fastcore.nblast_pairs(dotprops, dotprops, np.empty((0, 2), dtype=int))
+    assert got.shape == (0,)
+
+
 def test_smart_all_selected_matches_full(dotprops):
     # t=0 percentile selects every cell, so smart == the full all-by-all.
     dense = np.asarray(fastcore.nblast_allbyall(dotprops, precision=64))

@@ -164,6 +164,8 @@ than `-1` / `-Inf`.
 - `nblast_hclust`: cluster a score matrix, returning an `hclust`
 - `nblast_dist`: condensed distances from a score matrix, as a `dist`
 - `fast_hclust`: cluster an existing `dist`, without the 65536 limit
+- `symmetrize`: combine a score matrix with its transpose, on its own
+- `leaf_order`: the drawing order for a merge matrix, i.e. what `hclust$order` holds
 
 ```r
 scores <- nblast_allbyall(points, vects, ...)   # (n, n) score matrix
@@ -189,6 +191,18 @@ Two things this buys you over the idiomatic spelling:
 Method names follow SciPy, so `"ward"` is R's `"ward.D2"` and `"weighted"` is
 R's `"mcquitty"`. Note `"centroid"` and `"median"` take **plain** distances here,
 whereas `stats::hclust` expects squared ones for those two.
+
+The two steps are also available on their own. `symmetrize(scores)` does the
+combine without the rest of the pipeline — for when something *other* than
+clustering has to read the matrix — and returns a copy, since R's value semantics
+forbid writing to yours. `leaf_order(h)` recomputes the drawing order from a merge
+matrix; you do not need it for an untouched `hclust`, which already carries the
+same ordering, but you do for one you built or rearranged yourself:
+
+```r
+h$merge[nrow(h$merge), ] <- rev(h$merge[nrow(h$merge), ])   # flip the root
+h$order <- leaf_order(h)                                    # or it draws crossed
+```
 
 **CMTK transforms** — see [CMTK transforms](../python/cmtk.md) for the full story
 
@@ -278,7 +292,8 @@ From R, the usual `?geodesic_distances` works too.
 
     `prune_twigs` has no `mask` argument in R (extendr cannot take a `Vec<bool>`).
     Conversely, R exposes several functions that Python keeps internal or folds
-    into keyword arguments — `node_indices`, `child_to_parent_dists`,
-    `all_dists_to_root`, `dist_to_root`, `has_cycles`, `reroot_rewire`,
-    `nblast_pairs`, `synblast_allbyall` and `smat_auto_limit`. See the
+    into keyword arguments — `node_indices` (Python maps IDs to indices for you),
+    `all_dists_to_root` and `dist_to_root` (one `dist_to_root(sources=)` there),
+    `synblast_allbyall` (`synblast(target=None)`) and `smat_auto_limit`
+    (`limit_dist="auto"`). See the
     [capability matrix](../index.md#whats-available-where).

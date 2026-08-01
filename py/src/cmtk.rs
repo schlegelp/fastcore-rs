@@ -251,6 +251,21 @@ impl PyCmtkRegistration {
         })
     }
 
+    /// The domain box of each spline warp, `(k, 3)`. Points outside `[0, domain]` cannot
+    /// be transformed: CMTK reports them as FAILED and we return `NaN`.
+    #[getter]
+    fn domain<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        let rows: Vec<[f64; 3]> = self
+            .inner
+            .regs
+            .iter()
+            .filter_map(|r| r.spline.as_ref().map(|s| s.domain))
+            .collect();
+        (!rows.is_empty()).then(|| {
+            Array2::from_shape_fn((rows.len(), 3), |(i, j)| rows[i][j]).into_pyarray(py)
+        })
+    }
+
     /// The 4x4 affine matrix of the first registration in the chain.
     #[getter]
     fn affine<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {

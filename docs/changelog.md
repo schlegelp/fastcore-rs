@@ -94,8 +94,8 @@ tree primitives above serve navis, these serve mesh skeletonization — see the
 
 **The R bindings caught up.** 22 new functions in `nat.fastcore` — every tree and graph
 primitive above, plus the ones that had accumulated unbound before it — taking R from 39
-of the 69 documented capabilities to 58. The signatures are the ones the Python side
-settled on, translated to R conventions: 0-based node indices throughout (as the rest of
+documented capabilities to 58, and to 66 of 77 with the clustering pair below. The
+signatures are the ones the Python side settled on, translated to R conventions: 0-based node indices throughout (as the rest of
 the DAG family already used), roots and "no such node" as `-1`, and multi-value results
 as a named list rather than a tuple.
 
@@ -133,6 +133,55 @@ expensive once the API is frozen.
   own `__all__`, so a new function is exported by listing it in one place. `parent_dist`
   is exported for the first time along with it: it was public and documented but in no
   `__all__`, so `fastcore.parent_dist` did not resolve.
+- **`has_cycles` is callable from Python.** The core has had it all along and R binds it,
+  but on the Python side it lived in the extension module only, used internally by the
+  scipy interop shim — so the one function that tells you whether the input to everything
+  else is well-formed was the one you could not call. It is now
+  `fastcore.has_cycles(node_ids, parent_ids)`, in ID space like the rest of the tree
+  family, with a parent ID that is not a node treated as a root rather than as a cycle.
+- **Four more that the Rust had and Python did not.** An audit of the crate against the
+  bindings, prompted by the one above; what it turned up is now bound, tested and
+  documented. Only the first needed new Rust — the rest were already compiled in and
+  merely private.
+    - `leaf_order` — SciPy's `leaves_list`: the order to place the leaves in so a
+      dendrogram draws without crossing branches. It was the one core function with no
+      pyo3 wrapper at all, which meant the one step of the clustering story that still
+      required scipy was drawing it. Iterative, so a 200k-observation chain does not need
+      200k stack frames, and it rejects a linkage matrix naming a cluster that does not
+      exist yet rather than walking off the end of it.
+    - `nblast_pairs` — NBLAST of an explicit `(query, target)` list, one score per pair
+      rather than a matrix. `k` pairs cost `k` comparisons instead of
+      `n_query x n_target`, which is the point when a cheaper filter has already told you
+      which cells you care about. Smart NBLAST has used this internally for its
+      full-resolution pass since it shipped; it is the same primitive, so a target whose
+      whole column you request reproduces that column of `nblast` exactly.
+    - `reroot_rewire` — turn an edited edge set back into a rooted forest. Step 2 of
+      `heal_skeleton`, for callers who choose their own edges rather than taking the
+      minimal bridges from `stitch_fragments`. Distinct from `reroot`, which re-orients an
+      *unchanged* forest and leaves untouched components byte-identical: once the edge set
+      moves there is no unchanged to preserve.
+    - `symmetrize` — the in-place symmetrise, on its own. `linkage` and
+      `condensed_distances` already fold it into their fused pass, so this is for when
+      something *else* has to read the matrix. It is the case numpy cannot do cheaply:
+      `(M + M.T) / 2` builds two full `n x n` temporaries and even
+      `np.add(M, M.T, out=M)` still builds one, where this allocates nothing.
+- **`CmtkRegistration.domain`**, the spline warp's domain box, which R has had as
+  `cmtk_domain`. Points outside `[0, domain]` have no spline value — CMTK prints `FAILED`
+  and `xform` returns `NaN` — so this is how you predict a `NaN` instead of reconstructing
+  the box from `.spacing` and `.dims` yourself.
+- **The same two, back the other way, in R.** `symmetrize` and `leaf_order` are now
+  exported from `nat.fastcore` as well, so the clustering family reads the same on both
+  surfaces. Two differences are forced by R rather than chosen: `symmetrize` returns a
+  copy, because R's value semantics forbid writing to the caller's matrix (it is still
+  one `n x n` against `(m + t(m)) / 2`'s two), and `leaf_order` takes an `hclust` or its
+  merge matrix rather than a SciPy linkage matrix, returning a 1-based ordering in the
+  same form as `hclust$order`. It agrees with `stats::hclust`'s own `order` element on
+  the trees that package builds, which is what "same child order" has to mean.
+- **The capability tables gained a Clustering section.** `linkage`,
+  `condensed_distances`, `symmetrize` and `leaf_order` and their R counterparts had
+  never appeared in them, so the one family where all three surfaces differ in the
+  *object* they hand back — linkage matrix, `dist`, `hclust` — was the one you could not
+  look up. Every public Python name now appears in some row.
 - `GeodesicGraph.subset` validated its `nodes` argument in three places — the Python
   wrapper, the binding layer and the core. The binding-layer copy is gone; the wrapper now
   uses the same `unique=True` check every other node subset in the package goes through.

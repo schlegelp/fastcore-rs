@@ -18,6 +18,7 @@ __all__ = [
     "dist_to_root",
     "parent_dist",
     "classify_nodes",
+    "has_cycles",
     "descendants",
     "paths_to_root",
     "reroot",
@@ -1084,6 +1085,56 @@ def classify_nodes(node_ids, parent_ids):
     parent_ix = _ids_to_indices(node_ids, parent_ids)
 
     return _fastcore.classify_nodes(parent_ix)
+
+
+def has_cycles(node_ids, parent_ids):
+    """Check whether the parent structure contains a cycle.
+
+    A well-formed skeleton is a rooted forest: walking parents from any node has
+    to arrive at a root. Every other function in this module assumes that without
+    checking it; this is the check, in a single linear pass.
+
+    Parameters
+    ----------
+    node_ids :   (N, ) array
+                 Array of node IDs.
+    parent_ids : (N, ) array
+                 Array of parent IDs for each node. Root nodes' parents
+                 must be -1.
+
+    Returns
+    -------
+    bool
+                 Whether any node is its own ancestor.
+
+    Notes
+    -----
+    A parent ID that does not appear in `node_ids` is treated as -1, i.e. as a
+    root - the same convention as everywhere else here - so a dangling parent is
+    not a cycle.
+
+    Cyclic input is malformed, not merely unusual. The other functions are
+    written so that it cannot hang them, but what they hand back is a truncated
+    walk rather than an answer. Use this if you need to know rather than survive.
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> node_ids = np.array([1, 2, 3, 4])
+    >>> fastcore.has_cycles(node_ids, np.array([-1, 1, 2, 3]))
+    False
+
+    Every node an ancestor of itself, with no root anywhere:
+
+    >>> fastcore.has_cycles(node_ids, np.array([4, 1, 2, 3]))
+    True
+
+    """
+    # Convert parent IDs into indices
+    parent_ix = _ids_to_indices(node_ids, parent_ids)
+
+    return _fastcore.has_cycles(parent_ix)
 
 
 def _sources_to_indices(node_ids, sources, what="sources"):

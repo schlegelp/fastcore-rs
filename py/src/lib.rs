@@ -103,6 +103,9 @@ mod fastcore {
     use super::linkage_condensed_py;
 
     #[pymodule_export]
+    use super::leaf_order_py;
+
+    #[pymodule_export]
     use super::synblast_allbyall_py;
 
     #[pymodule_export]

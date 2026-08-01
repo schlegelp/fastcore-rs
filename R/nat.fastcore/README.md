@@ -107,3 +107,11 @@ Neuron similarity (NBLAST / synNBLAST):
 - `nblast_pairs`: forward NBLAST for a set of `(query, target)` index pairs
 - `synblast` / `synblast_allbyall`: synapse-based NBLAST
 - `smat_auto_limit`: the `limit_dist="auto"` value for a scoring matrix
+
+Clustering:
+
+- `nblast_hclust`: cluster a score matrix, returning an `hclust`
+- `nblast_dist`: condensed distances from a score matrix, as a `dist`
+- `fast_hclust`: cluster an existing `dist`, without `stats::hclust`'s 65536 limit
+- `symmetrize`: combine a score matrix with its transpose
+- `leaf_order`: dendrogram leaf order for a merge matrix

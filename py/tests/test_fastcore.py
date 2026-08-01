@@ -186,6 +186,28 @@ def test_has_cycles():
     assert _fastcore.has_cycles(np.array([-1, 0, 1, 4, 3], dtype=np.int32))
 
 
+def test_has_cycles_ids():
+    """The public wrapper works in ID space, where a row index is not a node."""
+    # IDs that are neither sorted, contiguous nor zero-based, so anything reading a
+    # parent ID as a row index would see a different graph than the one described.
+    node_ids = np.array([70, 10, 40, 20], dtype=np.int64)
+
+    assert not fastcore.has_cycles(node_ids, np.array([-1, 70, 10, 40]))
+    assert fastcore.has_cycles(node_ids, np.array([20, 70, 10, 40]))
+
+    # A parent that is not a node maps to -1, i.e. to a root: dangling, not cyclic.
+    assert not fastcore.has_cycles(node_ids, np.array([999, 70, 10, 40]))
+
+    # navis' usual dtype pairing: unsigned IDs alongside a signed parent column.
+    assert not fastcore.has_cycles(
+        node_ids.astype(np.uint64), np.array([-1, 70, 10, 40], dtype=np.int64)
+    )
+
+    assert not fastcore.has_cycles(
+        np.array([], dtype=np.int64), np.array([], dtype=np.int64)
+    )
+
+
 @pytest.mark.parametrize("swc", [swc32(), swc64()])
 def test_break_segments(swc):
     nodes, parents, _ = swc

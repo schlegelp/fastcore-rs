@@ -6,9 +6,12 @@ back into a single rooted tree.
 
 [`heal_skeleton`](#navis_fastcore.heal_skeleton) does the whole job: it finds the
 minimal-length bridges between connected components and regenerates the parent
-vector. [`stitch_fragments`](#navis_fastcore.stitch_fragments) is the lower-level
-half, returning just the bridging edges if you want to inspect or filter them
-before rewiring.
+vector. The two halves are also available on their own —
+[`stitch_fragments`](#navis_fastcore.stitch_fragments) returns just the bridging
+edges, so you can inspect or filter them, and
+[`reroot_rewire`](#navis_fastcore.reroot_rewire) turns any edited edge set back
+into a rooted forest, whether the edges came from `stitch_fragments` or from
+somewhere else entirely.
 
 ```python
 import navis_fastcore as fastcore
@@ -31,3 +34,5 @@ Two options are worth knowing about:
 ::: navis_fastcore.heal_skeleton
 
 ::: navis_fastcore.stitch_fragments
+
+::: navis_fastcore.reroot_rewire

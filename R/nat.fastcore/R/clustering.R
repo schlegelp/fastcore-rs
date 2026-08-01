@@ -268,3 +268,105 @@ fast_hclust <- function(d,
   if (!is.null(labels)) labels <- .check_labels(labels, n)
   fast_hclust_raw(d, method, labels)
 }
+
+#' Symmetrise a score matrix
+#'
+#' Combines cell `(i, j)` with `(j, i)`, since NBLAST is not symmetric. The
+#' idiomatic `(m + t(m)) / 2` builds two further `n x n` matrices on the way to the
+#' answer; this builds one, the result.
+#'
+#' You do not need this before [nblast_hclust()] or [nblast_dist()] -- both take a
+#' `symmetry` argument and fold the same combine into their own fused pass. Reach
+#' for it when something *else* has to read the matrix: plotting it, writing it out,
+#' or handing it to a function that assumes symmetry.
+#'
+#' @param scores Square `(n, n)` numeric score matrix. The diagonal is not read, so
+#'   self-scores may be left on it.
+#' @param symmetry How to combine `(i, j)` with `(j, i)`: `"mean"` (the default),
+#'   `"min"`, `"max"`, or `"none"` to mirror the upper triangle onto the lower
+#'   instead of combining.
+#' @param n_cores Optional integer thread count; `NULL` uses all cores.
+#'
+#' @return A symmetric `(n, n)` matrix, with `dimnames` carried over. `scores`
+#'   itself is unchanged -- R's value semantics forbid writing to it, which is the
+#'   one thing this cannot do that the Python version can.
+#'
+#' @seealso [nblast_dist()] and [nblast_hclust()], which symmetrise as part of a
+#'   single pass over the matrix.
+#'
+#' @examples
+#' m <- matrix(c(1, 0.4, 0.8, 1), 2, 2)
+#' symmetrize(m)
+#'
+#' @export
+symmetrize <- function(scores,
+                       symmetry = c("mean", "min", "max", "none"),
+                       n_cores = NULL) {
+  symmetry <- .match_arg(symmetry, .SYMMETRIES, "symmetry")
+  scores <- .check_score_matrix(scores)
+
+  out <- symmetrize_raw(scores, symmetry, .check_n_cores(n_cores))
+  dimnames(out) <- dimnames(scores)
+  out
+}
+
+#' Dendrogram leaf order
+#'
+#' The order to place the leaves in so a dendrogram draws without crossing
+#' branches -- what [stats::hclust()] returns in its `order` element, computed from
+#' a merge matrix alone.
+#'
+#' You do not need this for an untouched `hclust`: it already carries the same
+#' ordering. It is for a merge matrix you built or edited yourself, where `order`
+#' is missing or no longer matches -- a dendrogram drawn with an ordering from a
+#' *different* child order is the crossing-branches mess this exists to avoid.
+#'
+#' The walk is iterative, so a 200k-observation chain does not need 200k nested
+#' calls.
+#'
+#' @param x An [stats::hclust()] object, or its `(n - 1, 2)` merge matrix: negative
+#'   entries are observations (`-j` is observation `j`), positive entries are the
+#'   cluster formed at that earlier step.
+#'
+#' @return An integer vector of length `n` holding each observation's position in
+#'   the drawing order, left to right -- a permutation of `1:n`, in the same form
+#'   as `hclust$order`.
+#'
+#' @examples
+#' set.seed(1)
+#' h <- fast_hclust(dist(matrix(rnorm(20), 10, 2)), method = "average")
+#' identical(leaf_order(h), h$order)
+#'
+#' @export
+leaf_order <- function(x) {
+  merge <- if (inherits(x, "hclust")) x$merge else x
+  if (!is.matrix(merge) || ncol(merge) != 2L) {
+    stop("`x` must be an `hclust` object or an (n - 1, 2) merge matrix",
+      call. = FALSE
+    )
+  }
+  if (!is.numeric(merge)) stop("the merge matrix must be numeric", call. = FALSE)
+  if (anyNA(merge)) stop("the merge matrix must not contain NA", call. = FALSE)
+  if (any(merge != round(merge))) {
+    stop("the merge matrix must hold whole numbers", call. = FALSE)
+  }
+  storage.mode(merge) <- "integer"
+
+  # Validated here rather than in Rust: an entry naming a merge that has not
+  # happened yet sends the walk into a loop, and extendr cannot carry a panic's
+  # message across to R anyway.
+  n <- nrow(merge) + 1L
+  ok <- ifelse(merge < 0L, -merge <= n, merge >= 1L & merge < row(merge))
+  if (!all(ok)) {
+    bad <- which(!ok, arr.ind = TRUE)[1L, ]
+    stop(sprintf(
+      paste0(
+        "row %d of the merge matrix refers to %d, which is neither an ",
+        "observation (-1 to -%d) nor a merge before it"
+      ),
+      bad[["row"]], merge[bad[["row"]], bad[["col"]]], n
+    ), call. = FALSE)
+  }
+
+  leaf_order_raw(merge)
+}

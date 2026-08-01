@@ -199,3 +199,116 @@ test_that("partial matching works, as with match.arg", {
   m <- matrix(c(1, 0.75, 0.25, 1), 2, 2)
   expect_equal(nblast_hclust(m, method = "aver")$method, "average")
 })
+
+# --- symmetrize -------------------------------------------------------------
+
+test_that("symmetrize matches the R expression it replaces", {
+  set.seed(11)
+  m <- matrix(runif(20 * 20), 20, 20)
+
+  expect_equal(symmetrize(m), (m + t(m)) / 2)
+  expect_equal(symmetrize(m, "min"), pmin(m, t(m)))
+  expect_equal(symmetrize(m, "max"), pmax(m, t(m)))
+
+  # "none" copies the upper triangle down rather than combining.
+  none <- symmetrize(m, "none")
+  expect_equal(none[upper.tri(none)], m[upper.tri(m)])
+  expect_equal(none, t(none))
+})
+
+test_that("symmetrize leaves the caller's matrix alone", {
+  # The one thing the R version cannot do that Python's can - so pin that it does
+  # not try, because a binding that wrote through would corrupt shared bindings.
+  set.seed(12)
+  m <- matrix(runif(9), 3, 3)
+  before <- m
+
+  symmetrize(m)
+
+  expect_identical(m, before)
+})
+
+test_that("symmetrize keeps dimnames and the diagonal", {
+  m <- matrix(c(1, 0.4, 0.8, 1), 2, 2, dimnames = list(c("a", "b"), c("x", "y")))
+
+  out <- symmetrize(m)
+
+  expect_identical(dimnames(out), dimnames(m))
+  expect_equal(diag(out), diag(m))
+})
+
+test_that("symmetrizing first agrees with the fused symmetry argument", {
+  set.seed(13)
+  m <- matrix(runif(30 * 30), 30, 30)
+
+  for (sym in c("mean", "min", "max")) {
+    expect_equal(
+      nblast_dist(m, symmetry = sym),
+      nblast_dist(symmetrize(m, sym), symmetry = "none"),
+      info = sym
+    )
+  }
+})
+
+test_that("symmetrize validates like the rest of the family", {
+  expect_error(symmetrize(matrix(1:12, 3, 4)), "square")
+  expect_error(symmetrize("not a matrix"), "must be a matrix")
+  expect_error(symmetrize(matrix(runif(4), 2, 2), symmetry = "nonesuch"), "symmetry")
+})
+
+# --- leaf_order -------------------------------------------------------------
+
+test_that("leaf_order reproduces the order slot it is meant to reconstruct", {
+  set.seed(14)
+  d <- dist(matrix(rnorm(40 * 3), 40, 3))
+
+  for (m in c("single", "complete", "average", "ward")) {
+    ours <- fast_hclust(d, method = m)
+    expect_identical(leaf_order(ours), ours$order, info = m)
+    # And on an hclust we did not build: stats::hclust orders from the same merge
+    # matrix, so agreeing with it is what "same child order" means.
+    theirs <- stats::hclust(d, method = if (m == "ward") "ward.D2" else m)
+    expect_identical(leaf_order(theirs), theirs$order, info = m)
+  }
+})
+
+test_that("leaf_order takes a bare merge matrix", {
+  set.seed(15)
+  h <- fast_hclust(dist(matrix(rnorm(20), 10, 2)), method = "average")
+
+  expect_identical(leaf_order(h$merge), h$order)
+  expect_identical(leaf_order(unname(h$merge)), h$order)
+})
+
+test_that("leaf_order follows an edited merge matrix", {
+  # The reason this exists: an `hclust` whose merge rows were rearranged carries an
+  # `order` that no longer matches, and drawing it that way crosses branches.
+  set.seed(16)
+  h <- fast_hclust(dist(matrix(rnorm(16), 8, 2)), method = "average")
+
+  swapped <- h$merge
+  last <- nrow(swapped)
+  swapped[last, ] <- swapped[last, c(2L, 1L)]
+
+  got <- leaf_order(swapped)
+
+  expect_setequal(got, seq_len(8))
+  expect_false(identical(got, h$order))
+  # Swapping the root's children swaps the two blocks it separates, whole. `cutree`
+  # numbers clusters by observation, not by position, so take the size of the block
+  # the leftmost leaf sits in rather than assuming cluster 1 is on the left.
+  groups <- cutree(h, 2)
+  k <- sum(groups == groups[h$order[1]])
+  expect_identical(got, c(h$order[(k + 1):8], h$order[1:k]))
+})
+
+test_that("leaf_order rejects a malformed merge matrix", {
+  expect_error(leaf_order(1:4), "merge matrix")
+  expect_error(leaf_order(matrix(1:9, 3, 3)), "merge matrix")
+  expect_error(leaf_order(matrix(c(-1, NA), 1, 2)), "NA")
+  expect_error(leaf_order(matrix(c(-1.5, -2), 1, 2)), "whole numbers")
+  # Row 1 may only merge observations; cluster 1 is what it forms itself.
+  expect_error(leaf_order(matrix(c(-1, 1), 1, 2)), "neither an observation")
+  # An observation that does not exist: only -1 and -2 do for a single merge.
+  expect_error(leaf_order(matrix(c(-1, -3), 1, 2)), "neither an observation")
+})

@@ -815,7 +815,6 @@ geodesic_path <- function(edges, n_nodes, source, targets, weights = NULL, direc
 #' @export
 geodesic_clusters <- function(edges, n_nodes, max_dist, weights = NULL, seeds = NULL) .Call(wrap__geodesic_clusters, edges, n_nodes, max_dist, weights, seeds)
 
-#' Build an R numeric matrix from an `ndarray` `Array2<f64>`.
 #' The `limit_dist="auto"` value for a scoring matrix.
 #'
 #' @param smat_values Numeric scoring matrix, or `NULL` for the built-in FCWB
@@ -989,6 +988,10 @@ nblast_hclust_raw <- function(scores, method, symmetry, transform, labels, n_cor
 nblast_dist_raw <- function(scores, symmetry, transform, labels, n_cores) .Call(wrap__nblast_dist_raw, scores, symmetry, transform, labels, n_cores)
 
 fast_hclust_raw <- function(d, method, labels) .Call(wrap__fast_hclust_raw, d, method, labels)
+
+symmetrize_raw <- function(scores, symmetry, n_cores) .Call(wrap__symmetrize_raw, scores, symmetry, n_cores)
+
+leaf_order_raw <- function(merge) .Call(wrap__leaf_order_raw, merge)
 
 CmtkRegistration <- new.env(parent = emptyenv())
 

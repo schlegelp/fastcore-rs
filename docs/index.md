@@ -82,7 +82,7 @@ surface and how they spell it. `—` means that surface doesn't expose it direct
 | Betweenness centrality | `dag::betweenness` | `betweenness` | `betweenness` |
 | Descendant counts | `dag::descendant_counts` | `descendant_counts` | `descendant_counts` |
 | Synapse flow centrality | `dag::synapse_flow_centrality` | `synapse_flow_centrality` | `synapse_flow_centrality` |
-| Cycle detection | `dag::has_cycles` | — | `has_cycles` |
+| Cycle detection | `dag::has_cycles` | `has_cycles` | `has_cycles` |
 | Node ID → index mapping | — | — (done internally) | `node_indices` |
 | Child → parent distances | — | `parent_dist` | `child_to_parent_dists` |
 
@@ -94,7 +94,7 @@ surface and how they spell it. `—` means that surface doesn't expose it direct
 |---|---|---|---|
 | Reconnect a broken skeleton | (composed in the bindings) | `heal_skeleton` | `heal_skeleton` |
 | Minimal reconnecting edges | `topo::stitch_fragments` | `stitch_fragments` | `stitch_fragments` |
-| Regenerate the parent vector | `topo::reroot_rewire` | — (used by `heal_skeleton`) | `reroot_rewire` |
+| Regenerate the parent vector | `topo::reroot_rewire` | `reroot_rewire` | `reroot_rewire` |
 
 ### Meshes
 
@@ -128,10 +128,10 @@ surface and how they spell it. `—` means that surface doesn't expose it direct
 | Tangent vectors + alpha from a point cloud | `points::dotprops` | `dotprops`, `Dotprop.from_points` | — |
 | NBLAST, query vs target | `nblast::nblast_query_target` | `nblast` | `nblast` |
 | NBLAST, all-by-all | `nblast::nblast_allbyall` | `nblast_allbyall` | `nblast_allbyall` |
-| NBLAST for explicit index pairs | `nblast::nblast_pairs` | — | `nblast_pairs` |
+| NBLAST for explicit index pairs | `nblast::nblast_pairs` | `nblast_pairs` | `nblast_pairs` |
 | k nearest neighbours, no score matrix | `nblast_knn::nblast_knn`, `nblast_knn::nblast_knn_query_target` | `nblast_knn` | `nblast_knn` |
 | Two-pass approximate NBLAST | — | `nblast_smart` | — |
-| synNBLAST (synapse-based) | `synblast::synblast_query_target`, `synblast::synblast_allbyall` | `synblast` | `synblast`, `synblast_allbyall` |
+| synNBLAST (synapse-based) | `synblast::synblast_query_target`, `synblast::synblast_allbyall` | `synblast`, `Synapses` | `synblast`, `synblast_allbyall` |
 | `limit_dist` heuristic for a scoring matrix | `nblast::Smat` | — (via `limit_dist="auto"`) | `smat_auto_limit` |
 
 ### Match extraction
@@ -142,13 +142,35 @@ surface and how they spell it. `—` means that surface doesn't expose it direct
 | Matches above a threshold / percentage band | `matches::matches_above` | `matches_above` | — |
 | Count matches without allocating them | `matches::count_matches` | `count_matches` | — |
 
+### Clustering
+
+The other thing you do with a score matrix. All three surfaces produce the *same*
+merge tree; what differs is the object it arrives in — a SciPy-compatible `(n-1, 4)`
+linkage matrix in Rust and Python, an `hclust` in R.
+
+| Capability | Rust (`fastcore`) | Python (`navis-fastcore`) | R (`nat.fastcore`) |
+|---|---|---|---|
+| Hierarchical clustering, from a score matrix or condensed distances | `linkage::linkage_from_scores`, `linkage::linkage` | `linkage` | `nblast_hclust`, `fast_hclust` |
+| Condensed distances from a score matrix (fused symmetrise + transform + condense) | `linkage::condense` | `condensed_distances` | `nblast_dist` |
+| Symmetrise a score matrix against its transpose | `linkage::symmetrize` | `symmetrize` | `symmetrize`[^2] |
+| Dendrogram leaf order (SciPy's `leaves_list`) | `linkage::leaf_order` | `leaf_order` | `leaf_order`[^3] |
+
+[^2]: Rust and Python symmetrise **in place** and allocate nothing. R's value
+semantics forbid writing to the caller's matrix, so `nat.fastcore` copies once and
+returns the copy.
+
+[^3]: R's takes an `hclust` (or its merge matrix) and returns a 1-based ordering;
+Rust and Python take the linkage matrix and return 0-based indices. An untouched
+`hclust` already carries the same ordering in `$order` — the R function is for a
+merge matrix you built or edited yourself.
+
 ### Spatial transforms
 
 | Capability | Rust (`fastcore`) | Python (`navis-fastcore`) | R (`nat.fastcore`) |
 |---|---|---|---|
 | Read a CMTK `*.list` registration | `cmtk::Registration::from_path`, `cmtk::Chain` | `CmtkRegistration`, `load_cmtk_registration` | `cmtk_read` |
 | Apply it to points (forward / inverse) | `cmtk::transform_points`, `cmtk::inverse_transform_points` | `CmtkRegistration.xform`, `.xform_inv` | `cmtk_xform`, `cmtk_xform_inv` |
-| CMTK registration properties | fields on `Registration` / `SplineWarp` | `.affine`, `.dims`, `.spacing` | `cmtk_affine`, `cmtk_domain`, `cmtk_dims`, `cmtk_spacing` |
+| CMTK registration properties | fields on `Registration` / `SplineWarp` | `.affine`, `.domain`, `.dims`, `.spacing` | `cmtk_affine`, `cmtk_domain`, `cmtk_dims`, `cmtk_spacing` |
 | Read an Elastix `TransformParameters` file | `elastix::ElastixTransform::from_path`, `elastix::Chain` | `ElastixTransform`, `load_elastix_transform` | `elastix_read` |
 | Apply it to points (forward / inverse) | `elastix::transform_points`, `elastix::inverse_transform_points` | `ElastixTransform.xform`, `.xform_inv` | `elastix_xform`, `elastix_xform_inv` |
 | Elastix transform properties | fields on `Linear` / `BSpline` | `.affine`, `.kinds`, `.grid_size`, `.grid_spacing`, `.grid_origin` | `elastix_affine`, `elastix_kinds`, `elastix_grid_size`, `elastix_grid_spacing`, `elastix_grid_origin` |
