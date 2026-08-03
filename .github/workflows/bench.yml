@@ -30,7 +30,7 @@ jobs:
           python-version: "3.12"
       - run: |
           pip install -U pip wheel
-          pip install pandas numpy scipy pytest maturin igraph
+          pip install pandas numpy scipy pytest maturin igraph hypothesis
         name: Install dependencies
       - run: |
           mkdir -p $TGT_DIR
