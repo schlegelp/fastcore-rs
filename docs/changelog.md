@@ -8,6 +8,23 @@ it is called out.
 Tags, source archives and the original announcements are on
 [GitHub](https://github.com/schlegelp/fastcore-rs/releases).
 
+## 0.10.1 (2026-08-03)
+
+**`heal_skeleton` is reproducible again.** Healing the same fragmented neuron twice
+could return two different skeletons. The bridge search runs in parallel and prunes
+with a per-fragment bound shared across threads; when two nodes tied for their
+fragment's shortest bridge, which one got to report it came down to which thread read
+that bound first. Ties are routine here, because skeleton coordinates come off a
+lattice. The healed skeleton was never *wrong* — the total added cable was identical
+every time, since the bound cannot drop below a fragment's true minimum — but which of
+several equally short bridges it used varied from run to run.
+
+Each query now searches just past the shared bound, so every node achieving its
+fragment's minimum reports it however the threads interleave, and equal-length
+candidates are settled on their endpoints. Same bridges, same total length, same
+answer every run. Affects `heal_skeleton` and `stitch_fragments` on all three
+surfaces.
+
 ## 0.10.0 (2026-08-01)
 
 **Six new tree primitives**, filling the gap between what `navis` asks igraph for
