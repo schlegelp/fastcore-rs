@@ -110,6 +110,28 @@ def _fragment(parent_ids, n_cuts=100, seed=0):
     return frag
 
 
+@pytest.mark.parametrize("method", ["ALL", "LEAFS"])
+def test_heal_is_deterministic_across_runs(method):
+    """Consecutive runs on the same neuron must heal it exactly the same way.
+
+    The bridge search is parallel, and the per-fragment bound it prunes with is
+    shared across threads. Nodes that tie for their fragment's shortest bridge --
+    routine, since coordinates come off a lattice -- used to have that race decide
+    which of the equally short bridges was kept, so the healed skeleton differed
+    from run to run while always having the same total added cable.
+    """
+    node_ids, parent_ids, coords = _load_swc()
+    frag = _fragment(parent_ids, n_cuts=400)
+
+    first = fastcore.heal_skeleton(node_ids, frag, coords, method=method)
+    for run in range(1, 25):
+        np.testing.assert_array_equal(
+            fastcore.heal_skeleton(node_ids, frag, coords, method=method),
+            first,
+            err_msg=f"run {run} healed the same neuron differently",
+        )
+
+
 def test_use_radius_off_by_default():
     """`use_radius` falsy must be identical to not passing radius at all."""
     node_ids, parent_ids, coords = _load_swc()

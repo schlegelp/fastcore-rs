@@ -52,6 +52,19 @@ fn atomic_min_f64(cell: &AtomicU64, val: f64) {
     }
 }
 
+/// The next representable `f64` above `x` (`x` itself if it is not finite).
+///
+/// Only ever applied to squared distances, so `x` is non-negative and the bit
+/// pattern increments monotonically.
+#[inline]
+fn next_up(x: f64) -> f64 {
+    if x.is_finite() {
+        f64::from_bits(x.to_bits() + 1)
+    } else {
+        x
+    }
+}
+
 /// Marker for "the points below this subtree are not all in one component".
 const MIXED: u32 = u32::MAX;
 
@@ -110,6 +123,15 @@ impl<const D: usize> KdTree<D> {
     /// set to the winning point's *tree-order slot*. If nothing beats `best` the
     /// two are left untouched — so passing the component's current best-known
     /// bridge as `best` abandons nodes that cannot improve on it.
+    ///
+    /// The winner does not depend on how tight the incoming bound was, which is
+    /// what lets the parallel sweep below hand in a racily-shared bound and still
+    /// be reproducible. For any bound strictly above the true nearest-foreign
+    /// distance `d`, the same point wins: a subtree the *bound* prunes is at least
+    /// `bound > d` away and so cannot hold a point at `d` at all, while a subtree
+    /// `best` prunes needs `best == d`, which only happens once a point at `d` has
+    /// already been found. So the winner is always the first point at distance `d`
+    /// in this traversal's fixed order, whatever the bound was.
     #[allow(clippy::too_many_arguments)]
     fn nearest_foreign(
         &self,
@@ -220,8 +242,8 @@ type Candidate = (u32, f64, u32, u32);
 enum Learned {
     /// Its exact nearest foreign neighbour: `(squared_distance, tree slot)`.
     Exact(f64, u32),
-    /// Its query was abandoned; the nearest foreign neighbour is at least this
-    /// far (squared) away.
+    /// Its query was abandoned; the nearest foreign neighbour is *strictly*
+    /// further than this (squared) away — the search ran to just above it.
     AtLeast(f64),
     /// Nothing new — a memo or floor already settled it.
     Nothing,
@@ -243,7 +265,11 @@ fn reduce_and_union(
     for (root, d2, a, b) in found {
         best.entry(root)
             .and_modify(|e| {
-                if d2 < e.0 {
+                // Equal-length candidates are settled on their endpoints rather
+                // than on arrival order: `found` always contains every node that
+                // achieved the component's minimum, but the order the parallel
+                // sweep produced them in is not something to depend on.
+                if (d2, a, b) < (e.0, e.1, e.2) {
                     *e = (d2, a, b);
                 }
             })
@@ -360,8 +386,7 @@ fn stitch_impl<const D: usize>(
     // `max_dist` is inclusive, but the search below prunes anything not *strictly*
     // better than its bound, so start one ULP above the cap.
     let cap = if max_dist.is_finite() {
-        let sq = max_dist * max_dist;
-        f64::from_bits(sq.to_bits() + 1)
+        next_up(max_dist * max_dist)
     } else {
         f64::INFINITY
     };
@@ -377,10 +402,22 @@ fn stitch_impl<const D: usize>(
     //    ways. Subtree labels skip a node's own fragment wholesale (see [`KdTree`]).
     //    On top of that, a per-super-component bound — the shortest cross-edge any
     //    of its nodes has found so far this round — abandons any query that can no
-    //    longer beat it: such a node cannot supply the component's minimum. The
-    //    bound is a minimum over *real* cross-edges, so it never drops below the
-    //    component's true minimum, and the node holding that minimum is therefore
-    //    never pruned before reaching it. The result stays exact.
+    //    longer *match or* beat it: such a node cannot supply the component's
+    //    minimum. The bound is a minimum over *real* cross-edges, so it never drops
+    //    below the component's true minimum, and no node holding that minimum is
+    //    therefore ever pruned before reaching it. The result stays exact.
+    //
+    //    "Match or beat", not "beat", is what makes a round *reproducible*, and it
+    //    is why each query searches to one ULP above the bound rather than to the
+    //    bound itself. The bound is shared across threads, so the value a query
+    //    starts from depends on which thread got there first. Abandoning on a tie
+    //    would put that race in the output: of two nodes with equally short
+    //    bridges, only whichever read the bound first would report, and the round
+    //    would keep that one's bridge. Searching just past the bound instead means
+    //    *every* node achieving the minimum reports it, so `reduce_and_union`
+    //    always picks from the same set and settles the tie on the endpoints.
+    //    Nodes strictly above the minimum still drop out non-deterministically,
+    //    which costs nothing — the reduction never looks at them.
     //
     //    Two memos then carry work across rounds. Super-components only ever grow,
     //    so the foreign set only ever shrinks and a node's nearest-foreign distance
@@ -389,10 +426,11 @@ fn stitch_impl<const D: usize>(
     //    * `memo[s]` — node `s`'s exact nearest foreign neighbour. If that
     //      neighbour has not since been absorbed into `s`'s own super-component it
     //      is still the nearest one, so the round needs no query for `s` at all.
-    //    * `floor[s]` — a lower bound on `s`'s nearest-foreign distance, recorded
-    //      whenever a query is abandoned. A lower bound on a quantity that only
-    //      grows stays valid for good, so once it reaches the component's bound `s`
-    //      can be skipped without touching the tree.
+    //    * `floor[s]` — a *strict* lower bound on `s`'s nearest-foreign distance,
+    //      recorded whenever a query is abandoned. A lower bound on a quantity that
+    //      only grows stays valid for good, so once it reaches the component's
+    //      bound `s` is known to sit above the minimum and can be skipped without
+    //      touching the tree.
     let mut uf = UnionFind::new(n_comps);
     let mut bridges: Vec<(i32, i32, f32)> = Vec::with_capacity(n_comps - 1);
 
@@ -447,7 +485,11 @@ fn stitch_impl<const D: usize>(
                     return Learned::Nothing;
                 }
 
-                let mut best = limit;
+                // One ULP above the bound, so a node that merely *ties* with it
+                // still finds its bridge and reports. Searching to `limit` exactly
+                // would let whichever thread reached the bound first decide which
+                // of two equally short bridges the round keeps.
+                let mut best = next_up(limit);
                 let mut hit = MIXED;
                 let q = tree.pts[s];
                 tree.nearest_foreign(0, &q, my_root, &slot_root, &labels, &mut best, &mut hit);
@@ -844,6 +886,48 @@ mod tests {
             assert!(
                 (got - want).abs() < 1e-3 * want.max(1.0),
                 "trial {trial}: total bridge length {got} != true MST {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_runs_return_identical_bridges() {
+        // The Boruvka sweep is parallel and shares a per-component bound across
+        // threads, so which node gets to report the component's minimum outgoing
+        // edge is a race. That only reaches the output when two nodes tie for that
+        // minimum -- but on real skeletons they tie constantly, because
+        // coordinates come off a lattice (whole nm, or voxels), so build the
+        // fixture the same way. Every run must return the very same bridges, not
+        // merely bridges of the same total length.
+        let n_frags = 60usize;
+        let per_frag = 40usize;
+        let mut rows: Vec<[f64; 3]> = Vec::new();
+        let mut comps: Vec<i32> = Vec::new();
+        let mut state = 0x51ed_5eed_1234_9999u64;
+        for c in 0..n_frags {
+            // Each fragment in its own cell of a grid, coordinates snapped to
+            // whole units so that equal distances are exactly equal.
+            let base = [
+                (c % 4) as f64 * 20.0,
+                ((c / 4) % 4) as f64 * 20.0,
+                (c / 16) as f64 * 20.0,
+            ];
+            for _ in 0..per_frag {
+                rows.push(std::array::from_fn(|k| {
+                    base[k] + (rng(&mut state) * 10.0).floor()
+                }));
+                comps.push(c as i32);
+            }
+        }
+        let coords = Array2::from(rows);
+
+        let first = stitch(&coords, &comps, None, f64::INFINITY);
+        assert_eq!(first.len(), n_frags - 1, "every fragment must be connected");
+        for run in 1..40 {
+            assert_eq!(
+                stitch(&coords, &comps, None, f64::INFINITY),
+                first,
+                "run {run} returned a different set of bridges"
             );
         }
     }
