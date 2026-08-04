@@ -528,3 +528,83 @@ Distances change, so the incremental field behind `farthest_seed` is discarded o
 — interleaving the two costs a cold start per edit. Component labels survive.
 
 ::: navis_fastcore.GeodesicGraph
+
+## Simplification
+
+Every mesh simplifier gives you a smaller mesh. The problem is what happens to the data
+you had attached to the *old* vertices — synapses, radii, compartment labels. Decimating
+a neuron mesh with `pyfqmr` or `meshopt` orphans all of it, and re-attaching by nearest
+neighbour afterwards is both slower and wrong: an edge collapse moves its survivor to the
+quadric-optimal point, which is frequently nearer some *other* vertex than the one that
+actually merged into it.
+
+[`simplify_mesh`](#navis_fastcore.simplify_mesh) returns that correspondence as a third
+array. `vertex_map[i]` is the simplified vertex that original vertex `i` ended up in, or
+`-1` if it did not survive:
+
+```python
+verts, faces, vmap = fastcore.simplify_mesh(faces, vertices, ratio=0.1)
+
+# Push a per-vertex quantity onto the simplified mesh. `bincount` over the map is the
+# whole operation -- no spatial query, no tolerance to pick.
+live = vmap >= 0
+counts = np.bincount(vmap[live], weights=synapses[live], minlength=len(verts))
+```
+
+The map is the *forward* direction — indexed by original vertex, valued in simplified
+vertices — because that is the direction aggregation needs. It is `int32` rather than
+`uint32` for the `-1`.
+
+### Pinning vertices
+
+Positions move under decimation, so a vertex that carried a synapse is no longer exactly
+where the synapse was. Where that matters, `lock` freezes it:
+
+```python
+lock = np.zeros(len(vertices), dtype=bool)
+lock[synapse_vertices] = True
+
+verts, faces, vmap = fastcore.simplify_mesh(faces, vertices, ratio=0.1, lock=lock)
+assert np.array_equal(verts[vmap[synapse_vertices]], vertices[synapse_vertices])
+```
+
+A locked vertex is never merged into another and never moved — the equality above is
+bitwise, not approximate. It may still *absorb* its neighbours, which is what keeps the
+face target reachable when the pinned set is large; freezing a vertex's whole one-ring
+instead would stall the sweep as soon as you pinned a few thousand synapses. The floor is
+that every locked vertex survives, so a target below the locked count cannot be met.
+
+### Lossless
+
+[`simplify_mesh_lossless`](#navis_fastcore.simplify_mesh_lossless) collapses only edges
+whose quadric error is under `epsilon` and runs to a fixed point. It has no face budget:
+it is for shedding over-tessellation — coplanar fans, duplicate vertices, degenerate
+faces — rather than hitting a target.
+
+"Lossless" is a claim about the *surface*, not the *outline*. A quadric measures distance
+to the planes of the incident faces, and the plane of a flat patch says nothing about
+where that patch ends, so on an open mesh a planar region will collapse its own boundary
+inwards at zero measured cost. Pass `preserve_border=True` there.
+
+### Notes
+
+**Non-manifold input is fine.** Nothing here checks for manifoldness, and each collapse
+guard skips what it cannot handle rather than failing. This is the reason the algorithm is
+implemented here rather than wrapped from a crate: everything built on a halfedge or
+corner table either refuses a mesh with an edge shared by three faces or silently drops
+the offending faces, and meshes out of EM segmentation are full of them.
+
+**It is the same algorithm `pyfqmr` runs** — a port of Sven Forstmann's `Simplify.h` — so
+expect comparable speed rather than a speed-up. On a clean mesh the two agree to the face
+array, which is what the test suite checks. What is new is the vertex map, the pinning,
+and that no C++ toolchain is involved, which is what lets the same code build for
+pyodide and for the R source tarball.
+
+**Determinism.** Same input, same output, every run and every machine — the sweep is
+single-threaded and index-ordered. The result does depend on the order of `faces`, since
+triangles are visited in input order; that is normal for this family of algorithm and not
+a determinism failure.
+
+::: navis_fastcore.simplify_mesh
+
+::: navis_fastcore.simplify_mesh_lossless

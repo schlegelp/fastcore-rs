@@ -160,8 +160,12 @@ impl Weight for f64 {
 
 /// Path-halving find: iterative, no stack allocation.
 /// Makes every other node on the path point to its grandparent.
+///
+/// `pub(crate)` for `simplify`, which resolves its collapse forest with the same
+/// walk. The `union` below is deliberately *not* shared: it roots a component at
+/// its smallest index, whereas a collapse has its survivor dictated by the geometry.
 #[inline]
-fn find(parent: &mut [u32], mut x: u32) -> u32 {
+pub(crate) fn find(parent: &mut [u32], mut x: u32) -> u32 {
     loop {
         let p = parent[x as usize];
         if p == x {
@@ -3582,6 +3586,11 @@ impl GeodesicGraph {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+pub(crate) mod tests_support {
+    pub(crate) use super::tests::grid;
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use ndarray::{array, Array2};
@@ -3602,7 +3611,7 @@ mod tests {
     ///   - hop distance     = max(i, j)
     ///   - weighted distance = s * (sqrt(2) * min(i, j) + |i - j|)   at grid spacing `s`
     /// (sqrt(2) < 2, so it is always worth taking the diagonal while both coords still differ.)
-    fn grid(n: usize, s: f64) -> (Array2<u32>, Array2<f64>) {
+    pub(crate) fn grid(n: usize, s: f64) -> (Array2<u32>, Array2<f64>) {
         let id = |i: usize, j: usize| (i * n + j) as u32;
         let mut faces: Vec<u32> = Vec::new();
         for i in 0..n - 1 {

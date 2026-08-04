@@ -20,6 +20,8 @@ __all__ = [
     "geodesic_predecessors",
     "geodesic_path",
     "geodesic_clusters",
+    "simplify_mesh",
+    "simplify_mesh_lossless",
     "GeodesicGraph",
 ]
 
@@ -1619,6 +1621,280 @@ def geodesic_clusters(edges, n_nodes, max_dist, weights=None, seeds=None):
         # a ball is evaluated at the weights' own.
         _prep_weights(weights, edges)[0],
         _prep_indices(seeds, n_nodes, "seeds"),
+    )
+
+
+def _prep_simplify(faces, vertices, lock):
+    """Validate the arguments the two simplification entry points share."""
+    faces, vertices, n_vertices = _prep_mesh(faces, vertices, None)
+    if not np.isfinite(vertices).all():
+        # A non-finite coordinate would reach the collapse guards, and every
+        # comparison against NaN is false, so it would be silently accepted.
+        raise ValueError("`vertices` must be finite")
+    return faces, vertices, _prep_mask(lock, n_vertices, "lock")
+
+
+def _prep_target(ratio, n_faces):
+    """Check exactly one face budget was named, and that it is in range.
+
+    What a ratio *means* — the rounding, the floor of one face — lives in the core
+    so it is defined once rather than once per binding. What is left here is the
+    same job every other ``_prep_*`` does: turn a caller's mistake into a
+    ``ValueError`` rather than letting it reach the core and panic.
+    """
+    if (ratio is None) == (n_faces is None):
+        raise ValueError("Provide exactly one of `ratio` or `n_faces`.")
+    if n_faces is not None:
+        n_faces = int(n_faces)
+        if n_faces < 0:
+            raise ValueError(f"`n_faces` must be non-negative, got {n_faces}")
+        return None, n_faces
+    ratio = float(ratio)
+    if not np.isfinite(ratio) or not 0 < ratio <= 1:
+        raise ValueError(f"`ratio` must be in (0, 1], got {ratio}")
+    return ratio, None
+
+
+def simplify_mesh(
+    faces,
+    vertices,
+    ratio=None,
+    n_faces=None,
+    aggressiveness=7.0,
+    preserve_border=False,
+    lock=None,
+):
+    """Simplify a triangle mesh, tracking where every vertex went.
+
+    Iteratively contracts the edge whose collapse costs least, where the cost is the
+    Garland-Heckbert quadric error: the summed squared distance from the merged
+    vertex to the planes of every face that met at the two it replaces. This is the
+    algorithm ``pyfqmr`` runs — a port of the same MIT-licensed original — with the
+    one thing no implementation in this space returns, ``vertex_map``.
+
+    Non-manifold input is fine. Meshes out of EM segmentation routinely have edges
+    shared by three faces, bowtie vertices and zero-area triangles; nothing here
+    checks for manifoldness, and each collapse guard skips what it cannot handle
+    rather than failing.
+
+    Parameters
+    ----------
+    faces :           (F, 3) array
+                      Triangular faces given as rows of three vertex indices.
+                      Must be convertible to ``uint32``.
+    vertices :        (V, 3) array
+                      Vertex positions. Must be finite.
+    ratio :           float, optional
+                      Fraction of the faces to keep, in ``(0, 1]``.
+    n_faces :         int, optional
+                      Absolute number of faces to keep. Give exactly one of
+                      ``ratio`` or ``n_faces``.
+    aggressiveness :  float
+                      Exponent of the error-threshold sweep. Higher reaches the
+                      target in fewer, coarser passes; 5-8 are sensible and 7 is
+                      the default everywhere this algorithm appears.
+    preserve_border : bool
+                      Freeze every vertex the one-ring heuristic calls a boundary.
+                      If ``False`` (the default, as in ``pyfqmr``) boundary vertices
+                      still collapse among themselves, just never into the interior.
+    lock :            (V, ) bool array, optional
+                      Vertices that must survive at exactly their input position.
+                      A locked vertex may absorb its neighbours but is never itself
+                      absorbed or moved. This is how you pin synapse-bearing vertices.
+
+    Returns
+    -------
+    vertices :   (V', 3) float64 array
+                 Positions of the surviving vertices.
+    faces :      (F', 3) uint32 array
+                 Faces, indexing the returned ``vertices``.
+    vertex_map : (V, ) int32 array
+                 For each **input** vertex, the index of the **output** vertex it
+                 ended up in; ``-1`` where it did not survive. Indexed by input
+                 vertex, valued in output vertices — invert it with ``bincount``
+                 (see Examples).
+
+    Notes
+    -----
+    **When a vertex maps to ``-1``.** Being merged is *not* one of those cases —
+    that is what the map is for, and a collapsed vertex points at whatever it
+    merged into. Decimating a clean closed mesh to 5% of its faces yields no ``-1``
+    at all. The rule is that ``vertex_map[i]`` is ``-1`` exactly when the vertex
+    ``i`` ended up in is referenced by no surviving face, which happens in four
+    situations:
+
+    1. ``i`` is in no face to begin with, so it never takes part in a collapse.
+    2. ``i`` appears only in zero-area faces. A face naming the same vertex twice
+       carries no plane and no normal, so it is dropped on the way in, which
+       reduces this to case 1.
+    3. The whole piece ``i`` belonged to was decimated away. A collapse deletes
+       exactly the faces holding *both* its endpoints, so a survivor normally keeps
+       faces — but the budget is global, with nothing reserved per component, so a
+       small disconnected fragment is consumed entirely once the target is tight
+       enough. Simplify per component if that matters.
+    4. The input is wholly degenerate, so the output mesh is empty.
+
+    Mask with ``vertex_map >= 0`` before aggregating (see Examples).
+
+    **Positions move.** ``vertices_out[vertex_map[i]]`` is **not**
+    ``vertices_in[i]``: a collapse moves its survivor to the quadric-optimal point,
+    so any vertex that took part in one has shifted. Use ``lock`` where the exact
+    position matters.
+
+    **What ``lock`` guarantees** is that a locked vertex is never merged into
+    another and never moved. It is not an absolute guarantee against ``-1``: it
+    cannot conjure up a vertex that no surviving face references, so cases 1, 2 and
+    4 above still apply, and a locked vertex can in principle lose every face it sat
+    on if each of them happened to hold both endpoints of some other collapse.
+    Locking does set a floor on how far the mesh can shrink — every locked vertex
+    survives — so a target below the locked count is not reachable.
+
+    **Determinism.** The result depends on the order of ``faces``, since the sweep
+    visits them in input order, but is otherwise deterministic: same input, same
+    output, every run. There is no ``threads`` argument because each collapse
+    invalidates its own neighbourhood, so the sweep cannot be parallelised without
+    changing the answer. The GIL is released for the duration, so simplifying
+    several meshes from a thread pool does scale.
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> # A unit square as two triangles, subdivided once.
+    >>> faces = np.array([[0, 1, 2], [1, 3, 2]], dtype=np.uint32)
+    >>> vertices = np.array([[0., 0., 0.], [1., 0., 0.],
+    ...                      [0., 1., 0.], [1., 1., 0.]])
+    >>> v, f, vmap = fastcore.simplify_mesh(faces, vertices, n_faces=2)
+    >>> len(f)
+    2
+    >>> vmap
+    array([0, 1, 2, 3], dtype=int32)
+
+    Push a per-vertex quantity — synapse counts, say — onto the simplified mesh:
+
+    >>> syn = np.array([3, 0, 1, 2])
+    >>> live = vmap >= 0
+    >>> np.bincount(vmap[live], weights=syn[live], minlength=len(v))
+    array([3., 0., 1., 2.])
+
+    Pin the vertices that carry synapses so they keep their exact positions:
+
+    >>> lock = np.zeros(len(vertices), dtype=bool)
+    >>> lock[[0, 3]] = True
+    >>> v, f, vmap = fastcore.simplify_mesh(faces, vertices, ratio=0.5, lock=lock)
+    >>> np.array_equal(v[vmap[[0, 3]]], vertices[[0, 3]])
+    True
+
+    """
+    faces, vertices, lock = _prep_simplify(faces, vertices, lock)
+    ratio, n_faces = _prep_target(ratio, n_faces)
+    return _fastcore.simplify_mesh(
+        faces,
+        vertices,
+        ratio,
+        n_faces,
+        float(aggressiveness),
+        bool(preserve_border),
+        lock,
+    )
+
+
+def simplify_mesh_lossless(
+    faces,
+    vertices,
+    epsilon=1e-3,
+    max_iterations=9999,
+    preserve_border=False,
+    lock=None,
+):
+    """Simplify a triangle mesh without changing its shape.
+
+    Collapses only edges whose quadric error is below ``epsilon`` and repeats until
+    a whole pass changes nothing. There is no face budget: this is for shedding
+    over-tessellation — coplanar fans, duplicated vertices, degenerate faces —
+    rather than for hitting a target. Use :func:`simplify_mesh` for that.
+
+    Parameters
+    ----------
+    faces :           (F, 3) array
+                      Triangular faces given as rows of three vertex indices.
+    vertices :        (V, 3) array
+                      Vertex positions. Must be finite.
+    epsilon :         float
+                      Quadric error below which an edge may collapse. This is an
+                      **absolute** error with units of squared distance, so it
+                      scales with your coordinates: 1e-3 means something quite
+                      different in microns than in nanometres.
+    max_iterations :  int
+                      Cap on the number of passes.
+    preserve_border : bool
+                      As :func:`simplify_mesh`.
+    lock :            (V, ) bool array, optional
+                      As :func:`simplify_mesh`.
+
+    Returns
+    -------
+    vertices :   (V', 3) float64 array
+    faces :      (F', 3) uint32 array
+    vertex_map : (V, ) int32 array
+                 As :func:`simplify_mesh` — for each input vertex, the output vertex
+                 it ended up in, or ``-1``.
+
+    Notes
+    -----
+    "Lossless" is a claim about the *surface*, not the *outline*. A quadric measures
+    distance to the planes of the incident faces, and the plane of a flat patch says
+    nothing about where that patch ends — so with ``preserve_border=False`` a planar
+    region will happily collapse its own boundary inwards at zero measured cost. Pass
+    ``preserve_border=True`` on open meshes.
+
+    The circumstances under which a vertex maps to ``-1`` rather than to the vertex
+    it merged into, and what ``lock`` does and does not guarantee, are as
+    :func:`simplify_mesh`. Case 3 there — a whole piece consumed — arrives by a
+    different route here: there is no face budget, but ``epsilon`` is an *absolute*
+    error, so a component small enough that all of its edges fall under it collapses
+    away entirely. A lone triangle does this at any size; a tetrahedron 0.001 across
+    does it at the default ``epsilon``, whether or not a larger mesh surrounds it.
+
+    Examples
+    --------
+    A flat 4x4 grid of vertices. The four interior ones are exactly coplanar with
+    their neighbours, so removing them costs nothing; the rim is held in place.
+
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> vertices = np.array([[i, j, 0] for i in range(4) for j in range(4)],
+    ...                     dtype=float)
+    >>> faces = np.array(
+    ...     [t for i in range(3) for j in range(3)
+    ...        for t in ([i * 4 + j, (i + 1) * 4 + j, (i + 1) * 4 + j + 1],
+    ...                  [i * 4 + j, (i + 1) * 4 + j + 1, i * 4 + j + 1])],
+    ...     dtype=np.uint32,
+    ... )
+    >>> v, f, vmap = fastcore.simplify_mesh_lossless(faces, vertices,
+    ...                                              preserve_border=True)
+    >>> len(faces), len(f)
+    (18, 12)
+    >>> bool(np.abs(v[:, 2]).max() < 1e-9)  # still flat
+    True
+
+    The four interior vertices — 5, 6, 9 and 10 — merged into a single one:
+
+    >>> vmap[[5, 6, 9, 10]]
+    array([7, 7, 7, 7], dtype=int32)
+
+    """
+    faces, vertices, lock = _prep_simplify(faces, vertices, lock)
+    epsilon = float(epsilon)
+    if not np.isfinite(epsilon) or epsilon < 0:
+        raise ValueError(f"`epsilon` must be finite and non-negative, got {epsilon}")
+    return _fastcore.simplify_mesh_lossless(
+        faces,
+        vertices,
+        epsilon,
+        int(max_iterations),
+        bool(preserve_border),
+        lock,
     )
 
 

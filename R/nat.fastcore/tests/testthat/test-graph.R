@@ -304,3 +304,95 @@ test_that("precision picks the width the search accumulates at", {
   # Anything but 32 or 64 is a mistake, not a silent fallback.
   expect_error(mg(precision = 16L))
 })
+
+# Mesh simplification.
+#
+# The numerical behaviour is pinned on the Rust and Python sides (the latter against
+# `pyfqmr`, which runs the same algorithm). What is checked here is the R surface:
+# that the list comes back with the right shapes and 0-based indices, that the vertex
+# map means what the docs say, and that the argument guards fire.
+
+.grid_mesh <- function(n = 6L) {
+  # A flat n x n grid, each cell split along its (0,0)-(1,1) diagonal. 0-based.
+  idx <- function(i, j) i * n + j
+  faces <- do.call(rbind, unlist(
+    lapply(0:(n - 2), function(i) lapply(0:(n - 2), function(j) rbind(
+      c(idx(i, j), idx(i + 1, j), idx(i + 1, j + 1)),
+      c(idx(i, j), idx(i + 1, j + 1), idx(i, j + 1))
+    ))),
+    recursive = FALSE
+  ))
+  verts <- as.matrix(expand.grid(j = 0:(n - 1), i = 0:(n - 1))[, c("i", "j")])
+  verts <- cbind(verts, 0)
+  dimnames(verts) <- NULL
+  list(faces = faces, verts = verts)
+}
+
+test_that("simplify_mesh returns a mesh and a usable vertex map", {
+  m <- .grid_mesh()
+  out <- simplify_mesh(m$faces, m$verts, ratio = 0.5)
+
+  expect_named(out, c("vertices", "faces", "vertex_map"))
+  expect_equal(ncol(out$vertices), 3L)
+  expect_equal(ncol(out$faces), 3L)
+  expect_length(out$vertex_map, nrow(m$verts))
+
+  # Fewer faces than we started with, and the target was respected.
+  expect_lte(nrow(out$faces), round(0.5 * nrow(m$faces)))
+
+  # Faces are 0-based indices into the returned vertices.
+  expect_gte(min(out$faces), 0L)
+  expect_lt(max(out$faces), nrow(out$vertices))
+
+  # The map is 0-based into the returned vertices, with -1 for "did not survive",
+  # and every surviving vertex has at least one original mapping onto it.
+  expect_gte(min(out$vertex_map), -1L)
+  expect_lt(max(out$vertex_map), nrow(out$vertices))
+  live <- out$vertex_map[out$vertex_map >= 0]
+  expect_setequal(unique(live), seq_len(nrow(out$vertices)) - 1L)
+})
+
+test_that("simplify_mesh keeps a target of every face", {
+  m <- .grid_mesh()
+  out <- simplify_mesh(m$faces, m$verts, ratio = 1)
+
+  expect_equal(nrow(out$faces), nrow(m$faces))
+  expect_equal(out$vertex_map, seq_len(nrow(m$verts)) - 1L)
+})
+
+test_that("locked vertices survive at exactly their input position", {
+  m <- .grid_mesh()
+  lock <- rep(FALSE, nrow(m$verts))
+  lock[c(1L, 8L, 20L)] <- TRUE
+
+  out <- simplify_mesh(m$faces, m$verts, ratio = 0.4, lock = lock)
+
+  kept <- out$vertex_map[lock]
+  expect_true(all(kept >= 0))
+  # `kept` is 0-based, so +1 to index the R matrix.
+  expect_identical(out$vertices[kept + 1L, , drop = FALSE], m$verts[lock, , drop = FALSE])
+})
+
+test_that("simplify_mesh_lossless flattens a coplanar interior", {
+  m <- .grid_mesh(6L)
+  out <- simplify_mesh_lossless(m$faces, m$verts, preserve_border = TRUE)
+
+  expect_lt(nrow(out$faces), nrow(m$faces))
+  # Lossless: still flat, and with the border frozen the footprint is unchanged.
+  expect_equal(max(abs(out$vertices[, 3])), 0)
+  expect_equal(range(out$vertices[, 1]), c(0, 5))
+})
+
+test_that("simplify_mesh guards its arguments", {
+  m <- .grid_mesh()
+
+  # Bare `expect_error`, as elsewhere in this file: extendr reports a Rust panic to R
+  # as "User function panicked: <name>" and drops the message, so there is nothing
+  # specific to match on. The messages themselves are pinned on the Python side.
+  expect_error(simplify_mesh(m$faces, m$verts))
+  expect_error(simplify_mesh(m$faces, m$verts, ratio = 0.5, n_faces = 10L))
+  expect_error(simplify_mesh(m$faces, m$verts, ratio = 0))
+  expect_error(simplify_mesh(m$faces, m$verts, ratio = 2))
+  expect_error(simplify_mesh(m$faces, m$verts, ratio = 0.5, lock = c(TRUE, FALSE)))
+  expect_error(simplify_mesh_lossless(m$faces, m$verts, epsilon = -1))
+})

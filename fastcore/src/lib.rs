@@ -18,6 +18,10 @@
 //!   mesh algorithms need ([`mesh::level_set_components`], [`mesh::contract_vertices`],
 //!   [`mesh::minimum_spanning_tree`], [`mesh::geodesic_clusters`]) without building a
 //!   graph object first.
+//! - [`simplify`] — decimating a triangle mesh by quadric-error edge collapse, and —
+//!   the reason it is here rather than in a dependency — reporting which vertex of the
+//!   simplified mesh every vertex of the original ended up in, so per-vertex data
+//!   (synapses, radii, labels) survives the simplification.
 //! - [`points`] — raw 3D point clouds: [`points::dotprops`] derives the unit tangent
 //!   vector and `alpha` of every point's local neighbourhood, which is what [`nblast`]
 //!   consumes and what callers previously had to produce with scipy.
@@ -68,6 +72,8 @@ pub mod mls;
 pub mod dag;
 
 pub mod mesh;
+
+pub mod simplify;
 
 pub mod points;
 

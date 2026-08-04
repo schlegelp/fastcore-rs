@@ -68,6 +68,15 @@ fn as_flags<'a>(a: &'a PyReadonlyArray1<bool>, what: &str, n_items: usize) -> Py
     Ok(s)
 }
 
+/// The optional form of [`as_flags`], as [`as_opt_slice`] is to [`as_slice`].
+pub(crate) fn as_opt_flags<'a>(
+    a: &'a Option<PyReadonlyArray1<bool>>,
+    what: &str,
+    n_items: usize,
+) -> PyResult<Option<&'a [bool]>> {
+    a.as_ref().map(|a| as_flags(a, what, n_items)).transpose()
+}
+
 /// Find connected components of a triangle mesh.
 ///
 /// Arguments

@@ -46,7 +46,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: |
           pip install -U pip wheel
-          pip install pandas numpy scipy pytest maturin igraph hypothesis
+          pip install pandas numpy scipy pytest maturin igraph hypothesis pyfqmr
         name: Install dependencies
       - run: |
           mkdir -p $TGT_DIR
@@ -74,7 +74,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: |
           pip install -U pip wheel
-          pip install pandas numpy scipy pytest maturin igraph hypothesis
+          pip install pandas numpy scipy pytest maturin igraph hypothesis pyfqmr
         name: Install dependencies
       - run: |
           mkdir -p $TGT_DIR
@@ -99,7 +99,7 @@ jobs:
           python-version: "3.11"
       - run: |
           pip install -U pip wheel
-          pip install pandas numpy scipy pytest maturin igraph hypothesis
+          pip install pandas numpy scipy pytest maturin igraph hypothesis pyfqmr
         name: Install dependencies
       - run: |
           mkdir -p dist
@@ -111,6 +111,11 @@ jobs:
   # igraph backs the parity suite (`tests/test_igraph_parity.py`) as a correctness
   # oracle. It must never become a runtime dependency, so this job runs the suite
   # without it and asserts the parity tests skip rather than error.
+  #
+  # This job installs neither igraph nor pyfqmr (which plays the same oracle role for
+  # `tests/test_simplify.py`), so it also covers the other half of that contract for
+  # free: the invariant tests in that file must still run with pyfqmr absent, rather
+  # than the module skipping wholesale.
   no-igraph:
     runs-on: ubuntu-latest
     steps:

@@ -11,32 +11,12 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components, dijkstra
 
 import navis_fastcore as fastcore
+from meshes import grid_mesh
 
 
 # -----------------------------------------------------------------------------
 # Fixtures
 # -----------------------------------------------------------------------------
-
-
-def grid_mesh(n=12, spacing=1.0):
-    """An `n x n` grid triangulated along the (0,0)->(1,1) diagonal of each cell.
-
-    Has a closed-form metric (see `test_matches_grid_closed_form`), so it doubles as an
-    oracle that does not depend on scipy.
-    """
-    idx = lambda i, j: i * n + j  # noqa: E731
-
-    faces = []
-    for i in range(n - 1):
-        for j in range(n - 1):
-            faces.append([idx(i, j), idx(i + 1, j), idx(i + 1, j + 1)])
-            faces.append([idx(i, j), idx(i + 1, j + 1), idx(i, j + 1)])
-
-    verts = np.array(
-        [[i * spacing, j * spacing, 0.0] for i in range(n) for j in range(n)],
-        dtype=np.float64,
-    )
-    return np.array(faces, dtype=np.uint32), verts
 
 
 def scipy_oracle(faces, vertices, n_vertices, sources=None, targets=None,

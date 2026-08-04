@@ -79,6 +79,12 @@ _MST_NODES = np.array([0, 2], dtype=np.uint32)
 _MST_EDGES, _ = fastcore.geodesic_mst_graph(EDGES, 4, nodes=_MST_NODES)
 _GRAPH = fastcore.GeodesicGraph(EDGES, 4)
 
+# `ratio=1.0` is a no-op, which keeps this about the dtypes rather than about what
+# the sweep decides to collapse on a four-vertex mesh.
+_TETRA = np.eye(4, 3, dtype=np.float64)
+_, _SIMP_F, _SIMP_MAP = fastcore.simplify_mesh(FACES, _TETRA, ratio=1.0)
+_, _LOSSLESS_F, _LOSSLESS_MAP = fastcore.simplify_mesh_lossless(FACES, _TETRA)
+
 # A node id — an index into the graph.
 NODE_IDS = {
     "mesh_connected_components": fastcore.mesh_connected_components(FACES, 4),
@@ -89,6 +95,8 @@ NODE_IDS = {
     "geodesic_path": fastcore.geodesic_path(EDGES, 4, 0, [3])[0],
     "GeodesicGraph.components": _GRAPH.components(),
     "GeodesicGraph.parent_nodes": _GRAPH.subset([0, 1]).parent_nodes,
+    "simplify_mesh[faces]": _SIMP_F,
+    "simplify_mesh_lossless[faces]": _LOSSLESS_F,
 }
 
 # A node id that needs a `-1` sentinel for "none".
@@ -98,6 +106,9 @@ SENTINELLED = {
     "geodesic_nearest_mesh": fastcore.geodesic_nearest_mesh(
         FACES, n_vertices=4, targets=[3]
     )[1],
+    # An id into the mesh the function itself returns, with -1 for "did not survive".
+    "simplify_mesh[vertex_map]": _SIMP_MAP,
+    "simplify_mesh_lossless[vertex_map]": _LOSSLESS_MAP,
 }
 
 # A dense label — a cluster or level-set id, not a node id.

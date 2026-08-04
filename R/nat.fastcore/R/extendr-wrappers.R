@@ -837,6 +837,72 @@ geodesic_path <- function(edges, n_nodes, source, targets, weights = NULL, direc
 #' @export
 geodesic_clusters <- function(edges, n_nodes, max_dist, weights = NULL, seeds = NULL, precision = 32) .Call(wrap__geodesic_clusters, edges, n_nodes, max_dist, weights, seeds, precision)
 
+#' Simplify a triangle mesh, tracking where every vertex went.
+#'
+#' Iteratively contracts the edge whose collapse costs least under the
+#' Garland-Heckbert quadric error. Unlike other implementations of this algorithm it
+#' also reports, for every vertex of the original mesh, which vertex of the
+#' simplified mesh it ended up in - so per-vertex data survives the simplification.
+#'
+#' Non-manifold input is fine: no manifoldness is assumed or checked, and each
+#' collapse guard skips what it cannot handle rather than failing.
+#'
+#' @param faces Integer or numeric `(F, 3)` matrix of triangle vertex indices
+#'   (0-based).
+#' @param vertices Numeric `(V, 3)` matrix of vertex coordinates. Must be finite.
+#' @param ratio Numeric fraction of the faces to keep, in `(0, 1]`.
+#' @param n_faces Integer number of faces to keep. Give exactly one of `ratio` or
+#'   `n_faces`.
+#' @param aggressiveness Numeric exponent of the error-threshold sweep. Higher
+#'   reaches the target in fewer, coarser passes. Default 7.
+#' @param preserve_border Logical; freeze every vertex on a mesh boundary.
+#' @param lock Optional logical vector, one entry per vertex. A locked vertex is
+#'   never merged into another and never moved, so it keeps its exact coordinates.
+#' @return List with `vertices` (numeric `(V', 3)` matrix), `faces` (integer
+#'   `(F', 3)` matrix, 0-based) and `vertex_map` (integer, one entry per *original*
+#'   vertex giving its 0-based index in `vertices`, or `-1` if it did not survive).
+#'
+#'   Being *merged* is not a `-1`: a collapsed vertex carries the index of whatever
+#'   it merged into, which is the point of the map. An entry is `-1` exactly when
+#'   the vertex it ended up in is referenced by no surviving face, which takes one
+#'   of four forms: it was in no face to begin with; it was only ever in zero-area
+#'   faces, which are dropped on the way in and so reduce to the first case; the
+#'   whole piece it belonged to was consumed, since nothing is reserved per
+#'   connected component and a small fragment goes once the target is tight enough;
+#'   or the input was degenerate throughout and the output mesh is empty. Mask with
+#'   `vertex_map >= 0` before aggregating.
+#' @export
+simplify_mesh <- function(faces, vertices, ratio = NULL, n_faces = NULL, aggressiveness = 7.0, preserve_border = FALSE, lock = NULL) .Call(wrap__simplify_mesh, faces, vertices, ratio, n_faces, aggressiveness, preserve_border, lock)
+
+#' Simplify a triangle mesh without changing its shape.
+#'
+#' Collapses only edges whose quadric error is below `epsilon` and repeats until a
+#' whole pass changes nothing. There is no face budget: this sheds over-tessellation
+#' - coplanar fans, duplicate vertices, degenerate faces - rather than hitting a
+#' target. Use [simplify_mesh()] for that.
+#'
+#' Note that "lossless" is a claim about the surface, not the outline: a quadric
+#' measures distance to the planes of the incident faces, and the plane of a flat
+#' patch says nothing about where that patch ends. Pass `preserve_border = TRUE` on
+#' open meshes.
+#'
+#' @param faces Integer or numeric `(F, 3)` matrix of triangle vertex indices
+#'   (0-based).
+#' @param vertices Numeric `(V, 3)` matrix of vertex coordinates. Must be finite.
+#' @param epsilon Numeric quadric error below which an edge may collapse. An
+#'   *absolute* error with units of squared distance, so it scales with your
+#'   coordinates. Default 1e-3.
+#' @param max_iterations Integer cap on the number of passes. Default 9999.
+#' @param preserve_border Logical; freeze every vertex on a mesh boundary.
+#' @param lock Optional logical vector, one entry per vertex; as [simplify_mesh()].
+#' @return List with `vertices`, `faces` and `vertex_map`, as [simplify_mesh()],
+#'   including when an entry of `vertex_map` is `-1`. The "whole piece consumed"
+#'   case arrives by a different route here: there is no face budget, but `epsilon`
+#'   is an *absolute* error, so a component small enough that all of its edges fall
+#'   under it collapses away entirely.
+#' @export
+simplify_mesh_lossless <- function(faces, vertices, epsilon = 1e-3, max_iterations = 9999, preserve_border = FALSE, lock = NULL) .Call(wrap__simplify_mesh_lossless, faces, vertices, epsilon, max_iterations, preserve_border, lock)
+
 #' The `limit_dist="auto"` value for a scoring matrix.
 #'
 #' @param smat_values Numeric scoring matrix, or `NULL` for the built-in FCWB

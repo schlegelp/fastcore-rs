@@ -2043,6 +2043,168 @@ pub fn geodesic_clusters(
 }
 
 // ---------------------------------------------------------------------------
+// Mesh simplification
+// ---------------------------------------------------------------------------
+//
+// The one thing here that no other simplifier returns is `vertex_map`, so both
+// entry points hand it back unconditionally. Indices stay 0-based, as everywhere
+// else in these bindings, and `-1` (not `NA`) marks a vertex that did not survive —
+// keeping the sentinel the same value the Rust and Python sides use.
+
+/// Select which of the two ways of naming a face budget the caller used.
+///
+/// What a ratio *means* — the rounding, the floor of one face — lives in the core,
+/// so this only picks the variant and the rule stays defined once for all surfaces.
+fn to_target(ratio: Option<f64>, n_faces: Option<i32>) -> fastcore::simplify::Target {
+    match (ratio, n_faces) {
+        (Some(r), None) => fastcore::simplify::Target::Ratio(r),
+        (None, Some(n)) => {
+            assert!(n >= 0, "`n_faces` must be non-negative, got {n}");
+            fastcore::simplify::Target::Faces(n as usize)
+        }
+        _ => panic!("provide exactly one of `ratio` or `n_faces`"),
+    }
+}
+
+/// Shared argument handling for the two simplification entry points.
+fn simplify_inputs(
+    faces: &Robj,
+    vertices: &Robj,
+    lock: &Robj,
+) -> (Array2<u32>, Array2<f64>, Option<Array1<bool>>) {
+    let faces = robj_to_faces(faces);
+    let coords = robj_to_coords(Some(vertices.clone()))
+        .expect("`vertices` must be a numeric (V, 3) matrix");
+    let mask = robj_to_mask(lock, coords.nrows());
+    (faces, coords, mask)
+}
+
+/// Pack a simplified mesh into the list R sees.
+fn simplified_to_r(out: fastcore::simplify::Simplified) -> Robj {
+    list!(
+        vertices = array2_to_r(&out.vertices, |x| x),
+        faces = array2_to_r(&out.faces, |x| x as i32),
+        // As a slice, not `to_vec()`: the map is already contiguous, so a copy into
+        // an intermediate `Vec` before extendr's own copy into the INTSXP is free
+        // to skip.
+        vertex_map = out.vertex_map.as_slice().expect("vertex_map is contiguous")
+    )
+    .into()
+}
+
+/// Simplify a triangle mesh, tracking where every vertex went.
+///
+/// Iteratively contracts the edge whose collapse costs least under the
+/// Garland-Heckbert quadric error. Unlike other implementations of this algorithm it
+/// also reports, for every vertex of the original mesh, which vertex of the
+/// simplified mesh it ended up in - so per-vertex data survives the simplification.
+///
+/// Non-manifold input is fine: no manifoldness is assumed or checked, and each
+/// collapse guard skips what it cannot handle rather than failing.
+///
+/// @param faces Integer or numeric `(F, 3)` matrix of triangle vertex indices
+///   (0-based).
+/// @param vertices Numeric `(V, 3)` matrix of vertex coordinates. Must be finite.
+/// @param ratio Numeric fraction of the faces to keep, in `(0, 1]`.
+/// @param n_faces Integer number of faces to keep. Give exactly one of `ratio` or
+///   `n_faces`.
+/// @param aggressiveness Numeric exponent of the error-threshold sweep. Higher
+///   reaches the target in fewer, coarser passes. Default 7.
+/// @param preserve_border Logical; freeze every vertex on a mesh boundary.
+/// @param lock Optional logical vector, one entry per vertex. A locked vertex is
+///   never merged into another and never moved, so it keeps its exact coordinates.
+/// @return List with `vertices` (numeric `(V', 3)` matrix), `faces` (integer
+///   `(F', 3)` matrix, 0-based) and `vertex_map` (integer, one entry per *original*
+///   vertex giving its 0-based index in `vertices`, or `-1` if it did not survive).
+///
+///   Being *merged* is not a `-1`: a collapsed vertex carries the index of whatever
+///   it merged into, which is the point of the map. An entry is `-1` exactly when
+///   the vertex it ended up in is referenced by no surviving face, which takes one
+///   of four forms: it was in no face to begin with; it was only ever in zero-area
+///   faces, which are dropped on the way in and so reduce to the first case; the
+///   whole piece it belonged to was consumed, since nothing is reserved per
+///   connected component and a small fragment goes once the target is tight enough;
+///   or the input was degenerate throughout and the output mesh is empty. Mask with
+///   `vertex_map >= 0` before aggregating.
+/// @export
+#[extendr]
+pub fn simplify_mesh(
+    faces: Robj,
+    vertices: Robj,
+    #[default = "NULL"] ratio: Option<f64>,
+    #[default = "NULL"] n_faces: Option<i32>,
+    #[default = "7.0"] aggressiveness: f64,
+    #[default = "FALSE"] preserve_border: bool,
+    #[default = "NULL"] lock: Robj,
+) -> Robj {
+    let (faces, coords, mask) = simplify_inputs(&faces, &vertices, &lock);
+
+    let out = fastcore::simplify::simplify_mesh(
+        faces.view(),
+        coords.view(),
+        to_target(ratio, n_faces),
+        aggressiveness,
+        preserve_border,
+        mask.as_ref().map(|m| m.as_slice().expect("mask is contiguous")),
+    );
+    simplified_to_r(out)
+}
+
+/// Simplify a triangle mesh without changing its shape.
+///
+/// Collapses only edges whose quadric error is below `epsilon` and repeats until a
+/// whole pass changes nothing. There is no face budget: this sheds over-tessellation
+/// - coplanar fans, duplicate vertices, degenerate faces - rather than hitting a
+/// target. Use [simplify_mesh()] for that.
+///
+/// Note that "lossless" is a claim about the surface, not the outline: a quadric
+/// measures distance to the planes of the incident faces, and the plane of a flat
+/// patch says nothing about where that patch ends. Pass `preserve_border = TRUE` on
+/// open meshes.
+///
+/// @param faces Integer or numeric `(F, 3)` matrix of triangle vertex indices
+///   (0-based).
+/// @param vertices Numeric `(V, 3)` matrix of vertex coordinates. Must be finite.
+/// @param epsilon Numeric quadric error below which an edge may collapse. An
+///   *absolute* error with units of squared distance, so it scales with your
+///   coordinates. Default 1e-3.
+/// @param max_iterations Integer cap on the number of passes. Default 9999.
+/// @param preserve_border Logical; freeze every vertex on a mesh boundary.
+/// @param lock Optional logical vector, one entry per vertex; as [simplify_mesh()].
+/// @return List with `vertices`, `faces` and `vertex_map`, as [simplify_mesh()],
+///   including when an entry of `vertex_map` is `-1`. The "whole piece consumed"
+///   case arrives by a different route here: there is no face budget, but `epsilon`
+///   is an *absolute* error, so a component small enough that all of its edges fall
+///   under it collapses away entirely.
+/// @export
+#[extendr]
+pub fn simplify_mesh_lossless(
+    faces: Robj,
+    vertices: Robj,
+    #[default = "1e-3"] epsilon: f64,
+    #[default = "9999"] max_iterations: i32,
+    #[default = "FALSE"] preserve_border: bool,
+    #[default = "NULL"] lock: Robj,
+) -> Robj {
+    let (faces, coords, mask) = simplify_inputs(&faces, &vertices, &lock);
+    // `epsilon` is checked by the core, which is where it means something.
+    assert!(
+        max_iterations >= 0,
+        "`max_iterations` must be non-negative, got {max_iterations}"
+    );
+
+    let out = fastcore::simplify::simplify_mesh_lossless(
+        faces.view(),
+        coords.view(),
+        epsilon,
+        max_iterations as usize,
+        preserve_border,
+        mask.as_ref().map(|m| m.as_slice().expect("mask is contiguous")),
+    );
+    simplified_to_r(out)
+}
+
+// ---------------------------------------------------------------------------
 // NBLAST / synBLAST
 // ---------------------------------------------------------------------------
 //
@@ -3579,6 +3741,8 @@ extendr_module! {
     fn geodesic_predecessors;
     fn geodesic_path;
     fn geodesic_clusters;
+    fn simplify_mesh;
+    fn simplify_mesh_lossless;
     fn smat_auto_limit;
     fn nblast_allbyall;
     fn nblast;

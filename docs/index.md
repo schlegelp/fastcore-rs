@@ -114,6 +114,7 @@ surface and how they spell it. `—` means that surface doesn't expose it direct
 | Spanning tree over a *subset*, by geodesic distance, without the `k x k` matrix | `mesh::geodesic_mst_mesh`, `mesh::geodesic_mst_graph` | `geodesic_mst_mesh`, `geodesic_mst_graph` | `geodesic_mst_mesh`, `geodesic_mst_graph` |
 | Shortest paths with the route, not just the length | `mesh::geodesic_predecessors_graph`, `mesh::geodesic_path_graph` | `geodesic_predecessors`, `geodesic_path` | `geodesic_predecessors`, `geodesic_path` |
 | Greedy clustering by geodesic radius | `mesh::geodesic_clusters` | `geodesic_clusters` | `geodesic_clusters` |
+| Simplify a mesh, reporting where every original vertex went | `simplify::simplify_mesh`, `simplify::simplify_mesh_lossless` | `simplify_mesh`, `simplify_mesh_lossless` | `simplify_mesh`, `simplify_mesh_lossless` |
 | A graph prepared once for many geodesic queries (all of the above as methods, minus the per-call index build) | `mesh::GeodesicGraph` | `GeodesicGraph` | — |
 | Induced subgraph, carved from a prepared graph | `mesh::GeodesicGraph::subset` | `GeodesicGraph.subset` | — |
 | Grow a connected region of a fixed *number* of nodes/points, with each one's distance to the seed | `mesh::GeodesicGraph::grow` | `GeodesicGraph.grow` | — |

@@ -46,7 +46,7 @@ the dtype tells you which:
 | dtype | What it holds | Examples |
 |---|---|---|
 | `uint32` | A **node id** — an index into the graph. | `connected_components_graph`, `mesh_connected_components`, `unique_edges`'s `edges`, `contract_vertices`, `parents_from_edges`'s `order`, `geodesic_path`, `GeodesicGraph.components` / `.parent_nodes` |
-| `int32` | A node id that needs a **`-1` sentinel** for "none". | `parents_from_edges`'s `parents`, `geodesic_predecessors`, `geodesic_nearest_mesh` |
+| `int32` | An id that needs a **`-1` sentinel** for "none" — into the graph you passed in, or into a mesh the function itself returns. | `parents_from_edges`'s `parents`, `geodesic_predecessors`, `geodesic_nearest_mesh`, `simplify_mesh`'s `vertex_map` |
 | `int32` | A dense **label** — a cluster or level-set id, not a node id. Contiguous from 0, negative where a node is excluded. | `geodesic_clusters`, `level_set_components`, `GeodesicGraph.clusters` |
 | `int64` | A **position in an array you passed in** — not a node id. | `minimum_spanning_tree` (rows of `edges`), `geodesic_mst_*` (positions in `nodes`), `unique_edges`'s `index` / `inverse` |
 
@@ -156,6 +156,7 @@ Meshes:
 - [`geodesic_path`](mesh.md#navis_fastcore.geodesic_path) / [`geodesic_predecessors`](mesh.md#navis_fastcore.geodesic_predecessors): the shortest *route*, not just its length
 - [`geodesic_clusters`](mesh.md#navis_fastcore.geodesic_clusters): greedily partition a graph into clusters of bounded geodesic radius
 - [`GeodesicGraph`](mesh.md#navis_fastcore.GeodesicGraph): a graph prepared once for many small geodesic queries — grow fixed-*size* connected regions, and place evenly-spread seeds by farthest-point sampling
+- [`simplify_mesh`](mesh.md#navis_fastcore.simplify_mesh) / [`simplify_mesh_lossless`](mesh.md#navis_fastcore.simplify_mesh_lossless): quadric-error decimation that tells you which simplified vertex each original one became, so per-vertex data survives
 
 [Neuron similarity](../concepts/nblast.md):
 

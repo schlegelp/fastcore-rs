@@ -22,6 +22,7 @@ hypothesis = pytest.importorskip("hypothesis")  # noqa: F841 - test-only depende
 from hypothesis import given, strategies as st  # noqa: E402
 
 import navis_fastcore as fastcore  # noqa: E402
+from meshes import check_simplify_invariants  # noqa: E402
 from topologies import ancestors, parent_map  # noqa: E402
 
 # Settings profiles ("fastcore" by default, "thorough" for the nightly job) are
@@ -646,3 +647,93 @@ def test_contract_nodes_onto_a_descendant_raises():
 
     with pytest.raises(ValueError, match="cycle"):
         fastcore.contract_nodes(node_ids, parent_ids, mapping)
+
+
+# ---------------------------------------------------------------- mesh simplification
+#
+# The one place a hand-transcribed port of 500 lines of C++ index arithmetic is most
+# likely to be subtly wrong, and the one place a fixed fixture set will not find it.
+# Deliberately generated as *triangle soup* rather than as a valid surface: that is the
+# input class this function actually meets.
+
+
+@st.composite
+def triangle_soups(draw, max_vertices=25, max_faces=40):
+    """An arbitrary triangle soup — emphatically not a manifold.
+
+    Coordinates come off a coarse integer lattice so duplicate vertices, collinear
+    triples and zero-area faces all arise naturally, and faces are drawn independently
+    so non-manifold edges and bowtie vertices do too. Meshes out of marching cubes look
+    like this, which is why every halfedge-based simplifier was ruled out.
+    """
+    n_verts = draw(st.integers(min_value=0, max_value=max_vertices))
+    coord = st.integers(min_value=-3, max_value=3).map(float)
+    vertices = np.array(
+        [
+            [draw(coord), draw(coord), draw(coord)]
+            for _ in range(n_verts)
+        ],
+        dtype=np.float64,
+    ).reshape(n_verts, 3)
+
+    n_faces = draw(st.integers(min_value=0, max_value=max_faces)) if n_verts else 0
+    vertex = st.integers(min_value=0, max_value=max(n_verts - 1, 0))
+    faces = np.array(
+        [[draw(vertex), draw(vertex), draw(vertex)] for _ in range(n_faces)],
+        dtype=np.uint32,
+    ).reshape(n_faces, 3)
+
+    return faces, vertices
+
+
+@given(triangle_soups(), st.floats(min_value=0.01, max_value=1.0))
+def test_simplify_invariants_hold_on_arbitrary_soup(mesh, ratio):
+    faces, vertices = mesh
+    out = fastcore.simplify_mesh(faces, vertices, ratio=ratio)
+    check_simplify_invariants(out, faces, vertices)
+
+
+@given(triangle_soups())
+def test_lossless_invariants_hold_on_arbitrary_soup(mesh):
+    faces, vertices = mesh
+    out = fastcore.simplify_mesh_lossless(faces, vertices)
+    check_simplify_invariants(out, faces, vertices)
+
+
+@given(triangle_soups(), st.floats(min_value=0.01, max_value=1.0))
+def test_simplify_is_deterministic(mesh, ratio):
+    faces, vertices = mesh
+    a = fastcore.simplify_mesh(faces, vertices, ratio=ratio)
+    b = fastcore.simplify_mesh(faces, vertices, ratio=ratio)
+    for x, y in zip(a, b):
+        np.testing.assert_array_equal(x, y)
+
+
+@given(triangle_soups(), st.floats(min_value=0.01, max_value=1.0), st.integers(0, 2**32 - 1))
+def test_locked_vertices_are_never_moved(mesh, ratio, seed):
+    """The guarantee pinning exists for, over arbitrary input and arbitrary masks.
+
+    Stated as "never merged into anything, never moved" rather than "always
+    survives", because the two come apart on degenerate input: a locked vertex is
+    dropped by the final compaction if *every* face touching it was deleted, which a
+    mesh of zero-area faces manages. That is the `-1` case and it is honest — there
+    is no surface left for the vertex to sit on. What must never happen is a locked
+    vertex coming back at a position that is not the one it went in at.
+    """
+    faces, vertices = mesh
+    rng = np.random.default_rng(seed)
+    lock = rng.random(len(vertices)) < 0.3
+
+    v, f, vmap = fastcore.simplify_mesh(faces, vertices, ratio=ratio, lock=lock)
+    check_simplify_invariants((v, f, vmap), faces, vertices)
+
+    for i in np.flatnonzero(lock):
+        if vmap[i] < 0:
+            continue
+        # Bitwise: a locked position is never recomputed.
+        np.testing.assert_array_equal(v[vmap[i]], vertices[i])
+
+    # And no two locked vertices are ever merged into one another: each that
+    # survives owns its output slot outright.
+    survivors = vmap[lock & (vmap >= 0)]
+    assert len(set(survivors.tolist())) == len(survivors)

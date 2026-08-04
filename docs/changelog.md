@@ -8,6 +8,60 @@ it is called out.
 Tags, source archives and the original announcements are on
 [GitHub](https://github.com/schlegelp/fastcore-rs/releases).
 
+## Unreleased
+
+**Mesh simplification that remembers where every vertex went.** `simplify_mesh`
+decimates a triangle mesh by quadric-error edge collapse and returns, alongside the
+smaller mesh, a `vertex_map`: for each vertex of the original, the index of the vertex
+of the simplified mesh it ended up in, or `-1` if it did not survive.
+
+That map is the point. Every other simplifier hands back a mesh and nothing else, so
+per-vertex data — synapses, radii, compartment labels — is orphaned by the operation,
+and the usual workaround of re-attaching by nearest neighbour afterwards is both slower
+and wrong: a collapse moves its survivor to the quadric-optimal point, which is often
+nearer some *other* vertex than the one that actually merged into it. `bincount` over
+the map replaces the spatial query entirely.
+
+`lock` pins a set of vertices: a locked vertex is never merged into another and never
+moved, so it comes back at bitwise the same coordinates. It may still absorb its
+neighbours, which is what keeps a face target reachable when the pinned set is large.
+`simplify_mesh_lossless` is the other mode — collapse only what costs nothing, run to a
+fixed point — for shedding over-tessellation rather than hitting a budget.
+
+This is a port of Sven Forstmann's `Simplify.h` (MIT), the algorithm `pyfqmr` wraps,
+rather than a wrapper around an existing crate. Wrapping was the preferred route and
+none of the candidates survived two constraints. `meshopt` has exactly the right
+semantics but vendors C++ and builds it through `cc`, which would cost the pyodide wheel
+and the R source tarball — the same reason `flate2` and `kodama` are pinned to pure-Rust
+backends. `alum` and `baby_shark` are pure Rust but built on a halfedge and a corner
+table respectively, so they need manifold input: the first returns `Err(ComplexVertex)`,
+the second silently drops the offending faces and returns an empty mesh on any build
+error. Meshes out of EM segmentation have edges shared by three faces as a matter of
+course. And none of the three expose a collapse map, so each would have needed a fork
+anyway. The algorithm as written is flat index arrays with no adjacency invariants to
+violate, which is what makes non-manifold input merely data.
+
+Because it is the same algorithm, the port is checked against `pyfqmr` directly: on a
+clean mesh the two produce *identical* face arrays and positions agreeing to ~1e-12,
+across face-count ratios, aggressiveness settings and both border modes. Three
+deliberate divergences, all about degenerate geometry: upstream normalises vectors
+unconditionally, and since every comparison against the resulting NaN is false, NaN
+silently defeats the two guards that exist to reject a bad collapse. Zero-area faces are
+dropped, absent normals are represented rather than faked, and a collapse landing on top
+of a neighbour is rejected.
+
+Speed is a side effect rather than the aim, but it is not worse: measured end-to-end
+against `pyfqmr` on UV spheres at ratio 0.1, **19.5 ms vs 30.5 ms** at 80k faces,
+**88 ms vs 129 ms** at 319k, and **259 ms vs 395 ms** at 979k — about 1.5x, scaling
+linearly, at roughly 4M input faces/second on one core. Single-threaded by nature —
+each collapse invalidates its own neighbourhood — but the GIL is released for the
+duration, so simplifying several meshes from a thread pool does scale. Deterministic
+run to run; the result does depend on face order, as it does for every implementation
+of this family.
+
+No new dependencies. Available on all three surfaces as `simplify_mesh` and
+`simplify_mesh_lossless`.
+
 ## 0.10.1 (2026-08-03)
 
 **`heal_skeleton` is reproducible again.** Healing the same fragmented neuron twice
