@@ -74,7 +74,7 @@ fn blobs(m: usize, sep: f64) -> (Array2<f64>, Array1<i32>) {
 
 fn time(label: String, coords: &Array2<f64>, comps: &Array1<i32>) {
     let t = Instant::now();
-    let bridges = stitch_fragments(&coords.view(), &comps.view(), &None, f64::INFINITY);
+    let bridges = stitch_fragments(&coords.view(), &comps.view(), &None, f64::INFINITY, None);
     let elapsed = t.elapsed().as_secs_f64();
     let total: f64 = bridges.iter().map(|&(_, _, d)| d as f64).sum();
     println!(

@@ -1,3 +1,4 @@
+use crate::threads::with_pool;
 use itertools::Itertools;
 use ndarray::parallel::prelude::*;
 use ndarray::{s, Array, Array1, Array2, ArrayView1};
@@ -1411,6 +1412,8 @@ where
 /// - `pair_target`: array of target indices
 /// - `weights`: optional array of weights for each child -> parent connection
 /// - `directed`: boolean indicating whether to return only the directed (child -> parent) distances
+/// - `threads`: cap on the rayon worker count for this call; `None` uses the
+///   global pool. See [`crate::threads`] for which of the two levers to reach for.
 ///
 /// Returns:
 ///
@@ -1422,6 +1425,7 @@ pub fn geodesic_pairs(
     pairs_target: &ArrayView1<i32>,
     weights: &Option<Array1<f32>>,
     directed: bool,
+    threads: Option<usize>,
 ) -> Array1<f32> {
     // Make sure we have even number of sources/targets
     if pairs_source.len() != pairs_target.len() {
@@ -1432,42 +1436,46 @@ pub fn geodesic_pairs(
     let pairs_source: Vec<i32> = pairs_source.iter().cloned().collect();
     let pairs_target: Vec<i32> = pairs_target.iter().cloned().collect();
 
-    // Split the pairs into exactly one chunk per worker, and give each chunk one set of
-    // scratch buffers that it reuses for every pair it handles.
-    //
-    // Two traps here. Allocating an N-element array *per pair* (the original) costs O(N) per
-    // pair while the walk itself is only O(depth), so on a large neuron the allocation *is*
-    // the runtime. But `map_init` is not the fix: rayon calls its initialiser once per
-    // work-split, not once per thread, so it quietly keeps far more N-sized buffers alive
-    // than there are threads (measured 45 MB vs 17 MB at N=200k). Chunking explicitly bounds
-    // the number of live buffers to the thread count.
-    let n_chunks = rayon::current_num_threads().max(1);
-    let chunk_size = pairs_source.len().div_ceil(n_chunks).max(1);
+    let chunks: Vec<Vec<f32>> = with_pool(threads, || {
+        // Split the pairs into exactly one chunk per worker, and give each chunk one set of
+        // scratch buffers that it reuses for every pair it handles. Sizing the chunks *inside*
+        // the pool matters: `current_num_threads` reports the ambient pool, so reading it
+        // outside would chunk for the global pool and then run on the capped one.
+        //
+        // Two traps here. Allocating an N-element array *per pair* (the original) costs O(N) per
+        // pair while the walk itself is only O(depth), so on a large neuron the allocation *is*
+        // the runtime. But `map_init` is not the fix: rayon calls its initialiser once per
+        // work-split, not once per thread, so it quietly keeps far more N-sized buffers alive
+        // than there are threads (measured 45 MB vs 17 MB at N=200k). Chunking explicitly bounds
+        // the number of live buffers to the thread count.
+        let n_chunks = rayon::current_num_threads().max(1);
+        let chunk_size = pairs_source.len().div_ceil(n_chunks).max(1);
 
-    let chunks: Vec<Vec<f32>> = pairs_source
-        .par_chunks(chunk_size)
-        .zip(pairs_target.par_chunks(chunk_size))
-        .map(|(sources, targets)| {
-            let mut seen = vec![-1.0f32; parents.len()];
-            let mut touched: Vec<u32> = Vec::new();
+        pairs_source
+            .par_chunks(chunk_size)
+            .zip(pairs_target.par_chunks(chunk_size))
+            .map(|(sources, targets)| {
+                let mut seen = vec![-1.0f32; parents.len()];
+                let mut touched: Vec<u32> = Vec::new();
 
-            sources
-                .iter()
-                .zip(targets.iter())
-                .map(|(idx1, idx2)| {
-                    geodesic_distances_single_pair(
-                        parents,
-                        *idx1 as usize,
-                        *idx2 as usize,
-                        weights,
-                        directed,
-                        &mut seen,
-                        &mut touched,
-                    )
-                })
-                .collect()
-        })
-        .collect();
+                sources
+                    .iter()
+                    .zip(targets.iter())
+                    .map(|(idx1, idx2)| {
+                        geodesic_distances_single_pair(
+                            parents,
+                            *idx1 as usize,
+                            *idx2 as usize,
+                            weights,
+                            directed,
+                            &mut seen,
+                            &mut touched,
+                        )
+                    })
+                    .collect()
+            })
+            .collect()
+    });
 
     // Convert the vector to an array and return
     Array::from(chunks.concat())
@@ -3575,6 +3583,7 @@ mod tests {
             &arr1(&[2, 1, 3]).view(),
             &None,
             false,
+            None,
         );
 
         // 0 -> 2 crosses components; the other two are real one-edge distances.

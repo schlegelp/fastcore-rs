@@ -27,6 +27,7 @@
 //! (navis), matching the general-interface convention of the rest of the crate.
 
 use crate::kdtree::{box_dist2, dist2, KdTree, LEAF};
+use crate::threads::with_pool;
 use ndarray::{Array, Array1, ArrayView1, ArrayView2};
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -319,6 +320,10 @@ fn reduce_and_union(
 /// - `max_dist`: upper bound on the length of any single bridge. Use
 ///   `f64::INFINITY` for no bound. Fragment pairs whose closest eligible nodes
 ///   are farther apart than this are left unconnected.
+/// - `threads`: cap on the rayon worker count for this call. `None` uses the
+///   global pool. Worth setting when healing many skeletons across several
+///   processes — see [`crate::threads`], and prefer
+///   [`crate::threads::set_num_threads`] there, since this builds a pool per call.
 ///
 /// Returns:
 ///
@@ -333,12 +338,13 @@ pub fn stitch_fragments(
     components: &ArrayView1<i32>,
     mask: &Option<Array1<bool>>,
     max_dist: f64,
+    threads: Option<usize>,
 ) -> Vec<(i32, i32, f32)> {
-    match coords.ncols() {
+    with_pool(threads, || match coords.ncols() {
         3 => stitch_impl::<3>(coords, components, mask, max_dist),
         4 => stitch_impl::<4>(coords, components, mask, max_dist),
         d => panic!("`coords` must have 3 or 4 columns, got {d}"),
-    }
+    })
 }
 
 /// The actual stitching, monomorphised for a given dimensionality `D`.
@@ -632,7 +638,7 @@ mod tests {
     ) -> Vec<(i32, i32, f32)> {
         let comps = Array1::from(comps.to_vec());
         let mask = mask.map(Array1::from);
-        stitch_fragments(&coords.view(), &comps.view(), &mask, max_dist)
+        stitch_fragments(&coords.view(), &comps.view(), &mask, max_dist, None)
     }
 
     #[test]

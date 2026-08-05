@@ -14,7 +14,8 @@ heal_skeleton(
   min_size,
   mask,
   radius,
-  use_radius
+  use_radius,
+  threads = NULL
 )
 }
 \arguments{
@@ -46,6 +47,10 @@ fragments of similar calibre. A number weights the effect: higher values give
 radius more influence (\code{TRUE} means 1). To keep this robust we use the mean
 radius of the segment a node belongs to, not the node's own radius. Note that
 \code{max_dist} is then measured in this augmented space too.}
+
+\item{threads}{Optional integer; number of threads. \code{NULL} uses all cores.
+Worth capping when healing many skeletons across several processes — see
+\code{set_num_threads()}, which is cheaper than passing this on every call.}
 }
 \value{
 Integer vector of new 0-based parent indices (roots are \code{-1}). If the

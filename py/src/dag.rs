@@ -399,13 +399,14 @@ pub fn geodesic_farthest_py<'py>(
 /// - `targets`: array of target indices for pairs
 /// - `weights`: optional array of weights for each node
 /// - `directed`: boolean indicating whether to return only the directed (child -> parent) distances
+/// - `threads`: size of the thread pool, or `None` for all cores
 ///
 /// Returns:
 ///
 /// A 1D array of f32 values indicating the distances between the pairs of nodes.
 ///
 #[pyfunction]
-#[pyo3(name = "geodesic_pairs", signature = (parents, pairs_source, pairs_target, weights, directed=false))]
+#[pyo3(name = "geodesic_pairs", signature = (parents, pairs_source, pairs_target, weights, directed=false, threads=None))]
 pub fn geodesic_pairs_py<'py>(
     py: Python<'py>,
     parents: PyReadonlyArray1<i32>,
@@ -413,6 +414,7 @@ pub fn geodesic_pairs_py<'py>(
     pairs_target: PyReadonlyArray1<i32>,
     weights: Option<PyReadonlyArray1<f32>>,
     directed: bool,
+    threads: Option<usize>,
 ) -> Bound<'py, PyArray1<f32>> {
     let weights: Option<Array1<f32>> = if weights.is_some() {
         Some(weights.unwrap().as_array().to_owned())
@@ -426,6 +428,7 @@ pub fn geodesic_pairs_py<'py>(
         &pairs_target.as_array(),
         &weights,
         directed,
+        threads,
     );
     dists.into_pyarray(py)
 }

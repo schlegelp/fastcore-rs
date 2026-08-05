@@ -15,19 +15,21 @@ use fastcore::topo::{reroot_rewire, stitch_fragments};
 ///           endpoints. If not provided all nodes are eligible.
 /// - `max_dist`: upper bound on the length of any single bridge (use `inf` for
 ///               no bound).
+/// - `threads`: size of the thread pool, or `None` for all cores.
 ///
 /// Returns:
 ///
 /// A tuple `(edges, distances)` where `edges` is an `(M, 2)` int32 array of node
 /// index pairs and `distances` is an `(M, )` float32 array of bridge lengths.
 #[pyfunction]
-#[pyo3(name = "stitch_fragments", signature = (coords, components, mask, max_dist))]
+#[pyo3(name = "stitch_fragments", signature = (coords, components, mask, max_dist, threads=None))]
 pub fn stitch_fragments_py<'py>(
     py: Python<'py>,
     coords: PyReadonlyArray2<f64>,
     components: PyReadonlyArray1<i32>,
     mask: Option<PyReadonlyArray1<bool>>,
     max_dist: f64,
+    threads: Option<usize>,
 ) -> (Bound<'py, PyArray2<i32>>, Bound<'py, PyArray1<f32>>) {
     let mask: Option<Array1<bool>> = mask.map(|m| m.as_array().to_owned());
 
@@ -36,6 +38,7 @@ pub fn stitch_fragments_py<'py>(
         &components.as_array(),
         &mask,
         max_dist,
+        threads,
     );
 
     // Split the (a, b, dist) tuples into an (M, 2) edge array and an (M,) dist array.

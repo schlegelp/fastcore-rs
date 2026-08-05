@@ -21,8 +21,9 @@
 use rayon::prelude::*;
 
 use crate::nblast::{
-    build_index, index_bar, is_cancelled, run_scoring, with_pool, Coord, Opts, ScoreOut, Smat,
+    build_index, index_bar, is_cancelled, run_scoring, Coord, Opts, ScoreOut, Smat,
 };
+use crate::threads::with_pool;
 
 /// Group a neuron's connector points by (integer) `type`, building one `aann`
 /// nearest-neighbour index per type.

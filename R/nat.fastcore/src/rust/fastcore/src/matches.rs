@@ -45,7 +45,8 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::sync::atomic::AtomicBool;
 
-use crate::nblast::{is_cancelled, make_bar, with_pool};
+use crate::nblast::{is_cancelled, make_bar};
+use crate::threads::with_pool;
 
 // ---------------------------------------------------------------------------
 // Element type

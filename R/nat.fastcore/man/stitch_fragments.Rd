@@ -4,7 +4,7 @@
 \alias{stitch_fragments}
 \title{Find the minimal-length edges that reconnect the fragments of a skeleton.}
 \usage{
-stitch_fragments(components, x, y, z, w, mask, max_dist)
+stitch_fragments(components, x, y, z, w, mask, max_dist, threads = NULL)
 }
 \arguments{
 \item{components}{Integer vector giving each node's connected component, e.g.
@@ -25,6 +25,10 @@ single eligible node cannot be connected.}
 \item{max_dist}{Optional numeric upper bound on the length of any single new
 edge; \code{NULL} means no limit. Fragments whose closest eligible nodes are
 farther apart than this are left disconnected.}
+
+\item{threads}{Optional integer; number of threads. \code{NULL} uses all cores.
+Worth capping when stitching many skeletons across several processes — see
+\code{set_num_threads()}, which is cheaper than passing this on every call.}
 }
 \value{
 List with \code{from} and \code{to} (integer vectors of 0-based node indices, one

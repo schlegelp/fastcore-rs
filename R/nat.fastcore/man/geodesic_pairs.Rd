@@ -4,7 +4,7 @@
 \alias{geodesic_pairs}
 \title{Geodesic distances for explicit pairs of nodes.}
 \usage{
-geodesic_pairs(parents, sources, targets, weights, directed)
+geodesic_pairs(parents, sources, targets, weights, directed, threads = NULL)
 }
 \arguments{
 \item{parents}{Integer vector of 0-based parent indices (roots are \verb{< 0}).}
@@ -17,6 +17,8 @@ geodesic_pairs(parents, sources, targets, weights, directed)
 \item{weights}{Optional numeric vector of edge weights; \code{NULL} counts edges.}
 
 \item{directed}{Logical; if \code{TRUE} only traverse edges child-to-parent.}
+
+\item{threads}{Optional integer; number of threads. \code{NULL} uses all cores.}
 }
 \value{
 Numeric vector with the distance of each \verb{(source, target)} pair.

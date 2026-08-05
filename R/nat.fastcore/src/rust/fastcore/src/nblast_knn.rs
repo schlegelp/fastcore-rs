@@ -41,9 +41,10 @@ use rayon::prelude::*;
 use std::sync::atomic::AtomicBool;
 
 use crate::nblast::{
-    build_indices, index_bar, is_cancelled, score_pair, scoring_bar, with_pool, Coord, Opts,
-    ScoreOut, GROUP_BLOCK,
+    build_indices, index_bar, is_cancelled, score_pair, scoring_bar, Coord, Opts, ScoreOut,
+    GROUP_BLOCK,
 };
+use crate::threads::with_pool;
 
 // ---------------------------------------------------------------------------
 // Options

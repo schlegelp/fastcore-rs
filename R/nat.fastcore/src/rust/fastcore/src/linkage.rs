@@ -51,7 +51,8 @@ use rayon::prelude::*;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use crate::nblast::{is_cancelled, with_pool};
+use crate::nblast::is_cancelled;
+use crate::threads::with_pool;
 
 // ---------------------------------------------------------------------------
 // Element type

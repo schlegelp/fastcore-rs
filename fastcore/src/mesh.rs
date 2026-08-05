@@ -3,7 +3,7 @@ use rayon::prelude::*;
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 
-use crate::nblast::with_pool;
+use crate::threads::with_pool;
 
 // ---------------------------------------------------------------------------
 // Edge weight width

@@ -250,6 +250,7 @@ pub fn has_cycles(parents: Vec<i32>) -> bool {
 ///   `sources`).
 /// @param weights Optional numeric vector of edge weights; `NULL` counts edges.
 /// @param directed Logical; if `TRUE` only traverse edges child-to-parent.
+/// @param threads Optional integer; number of threads. `NULL` uses all cores.
 /// @return Numeric vector with the distance of each `(source, target)` pair.
 /// @export
 #[extendr]
@@ -259,6 +260,7 @@ pub fn geodesic_pairs(
     targets: Vec<i32>,
     weights: Option<Vec<f64>>,
     directed: bool,
+    #[default = "NULL"] threads: Option<i32>,
 ) -> Vec<f32> {
     let parents = Array1::from_vec(parents);
     let sources = Array1::from_vec(sources);
@@ -272,6 +274,7 @@ pub fn geodesic_pairs(
         &targets.view(),
         &weights,
         directed,
+        threads.map(|t| t as usize),
     )
     .to_vec()
 }
@@ -841,6 +844,9 @@ fn with_radius_column(coords: Array2<f64>, radius_seg: &Array1<f64>) -> Array2<f
 /// @param max_dist Optional numeric upper bound on the length of any single new
 ///   edge; `NULL` means no limit. Fragments whose closest eligible nodes are
 ///   farther apart than this are left disconnected.
+/// @param threads Optional integer; number of threads. `NULL` uses all cores.
+///   Worth capping when stitching many skeletons across several processes — see
+///   `set_num_threads()`, which is cheaper than passing this on every call.
 /// @return List with `from` and `to` (integer vectors of 0-based node indices, one
 ///   pair per new edge) and `dist` (numeric edge lengths). At most
 ///   `(#fragments - 1)` edges.
@@ -854,6 +860,7 @@ pub fn stitch_fragments(
     w: Option<Vec<f64>>,
     mask: Robj,
     max_dist: Option<f64>,
+    #[default = "NULL"] threads: Option<i32>,
 ) -> Robj {
     let n = components.len();
     let mut coords = xyz_to_coords(&x, &y, &z);
@@ -874,6 +881,7 @@ pub fn stitch_fragments(
         &components.view(),
         &mask,
         max_dist.unwrap_or(f64::INFINITY),
+        threads.map(|t| t as usize),
     );
 
     let from: Vec<i32> = bridges.iter().map(|(a, _, _)| *a).collect();
@@ -935,6 +943,9 @@ pub fn reroot_rewire(parents: Vec<i32>, from: Vec<i32>, to: Vec<i32>, root: i32)
 ///   radius more influence (`TRUE` means 1). To keep this robust we use the mean
 ///   radius of the segment a node belongs to, not the node's own radius. Note that
 ///   `max_dist` is then measured in this augmented space too.
+/// @param threads Optional integer; number of threads. `NULL` uses all cores.
+///   Worth capping when healing many skeletons across several processes — see
+///   `set_num_threads()`, which is cheaper than passing this on every call.
 /// @return Integer vector of new 0-based parent indices (roots are `-1`). If the
 ///   skeleton could be fully healed this is a single tree with one root.
 /// @export
@@ -950,6 +961,7 @@ pub fn heal_skeleton(
     mask: Robj,
     radius: Option<Vec<f64>>,
     use_radius: Robj,
+    #[default = "NULL"] threads: Option<i32>,
 ) -> Vec<i32> {
     let n = parents.len();
     let mut coords = xyz_to_coords(&x, &y, &z);
@@ -1007,6 +1019,7 @@ pub fn heal_skeleton(
         &components.view(),
         &Some(candidate),
         max_dist.unwrap_or(f64::INFINITY),
+        threads.map(|t| t as usize),
     );
     let new_edges = Array2::from_shape_fn((bridges.len(), 2), |(i, j)| {
         if j == 0 {
@@ -3684,6 +3697,54 @@ fn leaf_order_raw(merge: RMatrix<i32>) -> Vec<i32> {
     leaf_order(&z, n).into_iter().map(|i| i as i32 + 1).collect()
 }
 
+/// Set the number of threads used for parallel work in this session.
+///
+/// By default nat.fastcore uses every core it can see, which is the right answer
+/// for a single call and the wrong one when the *caller* is already spreading
+/// work over processes (`parallel::mclapply()`, `future::plan(multisession)`, a
+/// cluster job): each worker would claim every core, and the resulting
+/// oversubscription can make the whole thing slower than running it on one core.
+/// Nothing tells a worker process that it is one of twenty, so it has to be told.
+///
+/// Call this once, before any other nat.fastcore function. The pool is built at
+/// most once per session, by whichever comes first: an earlier
+/// `set_num_threads()`, the `RAYON_NUM_THREADS` environment variable, a call to
+/// `get_num_threads()`, or simply the first parallel call. Calling it again with
+/// the same `n` is a no-op; calling it with a different `n` is an error, as the
+/// pool cannot be resized.
+///
+/// @param n Integer; number of threads. Must be >= 1.
+/// @return `NULL`, invisibly. Called for its side effect.
+/// @export
+#[extendr]
+pub fn set_num_threads(n: i32) {
+    // `panic!` as everywhere else in this file. Worth knowing what R sees: the
+    // condition message is extendr's generic "User function panicked:
+    // set_num_threads", and the text below reaches the console on stderr rather
+    // than `conditionMessage()`. Returning a `Result` does not improve on that —
+    // the generated wrapper unwraps it and panics anyway — and `throw_r_error`
+    // longjmps past Rust frames, which is a poor trade for a better string.
+    if n < 1 {
+        panic!("`n` must be >= 1, got {n}");
+    }
+    if let Err(e) = fastcore::threads::set_num_threads(n as usize) {
+        panic!("{e}");
+    }
+}
+
+/// Number of threads available for parallel work in this session.
+///
+/// Note that asking builds the thread pool if it does not exist yet — which is
+/// then exactly what makes a subsequent `set_num_threads()` fail. Set first, ask
+/// second.
+///
+/// @return Integer; the number of threads.
+/// @export
+#[extendr]
+pub fn get_num_threads() -> i32 {
+    fastcore::threads::num_threads() as i32
+}
+
 // Macro to generate exports.
 // This ensures exported functions are registered with R.
 // See corresponding C code in `entrypoint.c`.
@@ -3755,4 +3816,6 @@ extendr_module! {
     fn fast_hclust_raw;
     fn symmetrize_raw;
     fn leaf_order_raw;
+    fn set_num_threads;
+    fn get_num_threads;
 }

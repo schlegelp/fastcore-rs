@@ -48,6 +48,7 @@ def stitch_fragments(
     max_dist=None,
     radius=None,
     use_radius=False,
+    threads=None,
 ):
     """Find minimal-length edges to reconnect a fragmented skeleton.
 
@@ -82,6 +83,11 @@ def stitch_fragments(
                  similar calibre. Pass a float to weight the effect: higher
                  values give radius more influence. Note that ``max_dist`` is
                  then measured in this augmented space too.
+    threads :    int, optional
+                 Number of threads to use. If ``None`` uses all available cores.
+                 If you are stitching many skeletons across several *processes*,
+                 prefer :func:`navis_fastcore.set_num_threads` — it costs nothing
+                 per call, whereas this builds a thread pool each time.
 
     Returns
     -------
@@ -127,7 +133,11 @@ def stitch_fragments(
         max_dist = np.inf
 
     edges_ix, distances = _fastcore.stitch_fragments(
-        coords, components, mask=mask, max_dist=float(max_dist)
+        coords,
+        components,
+        mask=mask,
+        max_dist=float(max_dist),
+        threads=None if threads is None else int(threads),
     )
 
     # Map node indices back to IDs.
@@ -149,6 +159,7 @@ def heal_skeleton(
     mask=None,
     radius=None,
     use_radius=False,
+    threads=None,
 ):
     """Heal a fragmented skeleton by reconnecting its fragments.
 
@@ -189,6 +200,12 @@ def heal_skeleton(
                  radius of the segment a node belongs to, not the node's own.
                  Note that ``max_dist`` is then measured in this augmented space
                  too.
+    threads :    int, optional
+                 Number of threads to use. If ``None`` uses all available cores.
+                 If you are healing many skeletons across several *processes*
+                 (e.g. ``navis.heal_skeleton(nl, parallel=True)``), set this to a
+                 small number or — better, since it costs nothing per call — call
+                 :func:`navis_fastcore.set_num_threads` once per worker.
 
     Returns
     -------
@@ -249,7 +266,11 @@ def heal_skeleton(
 
     # 1. Find the bridging edges (in node-index space).
     edges_ix, _ = _fastcore.stitch_fragments(
-        coords, components, mask=candidate, max_dist=float(max_dist)
+        coords,
+        components,
+        mask=candidate,
+        max_dist=float(max_dist),
+        threads=None if threads is None else int(threads),
     )
 
     # 2. Regenerate the parent array. Prefer the existing (first) root so the

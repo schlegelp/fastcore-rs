@@ -44,6 +44,10 @@
 //!   squares), the fallback when no image registration exists. Both fuse the
 //!   distance computation into the accumulation, so the `n_points x n_landmarks`
 //!   matrix the reference implementations materialise is never built.
+//! - [`threads`] — how wide everything above runs. Most entry points take a
+//!   per-call `threads` cap; [`threads::set_num_threads`] sets the process-wide
+//!   default, which is what a caller running this library across several
+//!   processes wants (see that module for why the default is wrong there).
 //!
 //! # Representing a tree
 //!
@@ -78,5 +82,7 @@ pub mod simplify;
 pub mod points;
 
 pub mod topo;
+
+pub mod threads;
 
 mod kdtree;

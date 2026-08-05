@@ -10,6 +10,37 @@ Tags, source archives and the original announcements are on
 
 ## Unreleased
 
+**You can stop fastcore from taking every core.** `set_num_threads` sizes the thread
+pool for the whole process, and `get_num_threads` reads it back — in Python and in R.
+The default is still every core the process can see, which is right for one call in
+one process and wrong the moment the *caller* is the one running things in parallel:
+nothing tells a worker process that it is one of twenty, so every worker claims the
+whole machine.
+
+That is not a theoretical cost. On a 224-core node, `navis.heal_skeleton(nl,
+parallel=True, n_cores=20)` runs 20 workers x 224 threads = 4480 threads over 224
+cores, and healing 40 skeletons of 200k nodes measured **slower than the same work on
+a single worker** (6.71 s vs 5.10 s) while burning 2.3x the CPU. Capping each worker
+to one thread: 3.60 s, at a sixth of the CPU.
+
+```python
+import functools, navis, navis_fastcore as fastcore
+
+navis.compute.worker_init_hooks.append(
+    functools.partial(fastcore.set_num_threads, 1)
+)
+```
+
+The pool is built once per process, so call it before anything else; calling it again
+with the same value is a no-op (which is what makes it safe in a hook that fires per
+chunk), and with a different value raises. `RAYON_NUM_THREADS` remains the
+no-code-change equivalent.
+
+`heal_skeleton`, `stitch_fragments` and `geodesic_pairs` also grew the per-call
+`threads` argument the rest of the library already had — they were the last parallel
+entry points without one. See [Threads](python/threads.md), and
+`scripts/profile-heal-parallel.py` for measuring where your own workload sits.
+
 **Mesh simplification that remembers where every vertex went.** `simplify_mesh`
 decimates a triangle mesh by quadric-error edge collapse and returns, alongside the
 smaller mesh, a `vertex_map`: for each vertex of the original, the index of the vertex

@@ -131,9 +131,10 @@ has_cycles <- function(parents) .Call(wrap__has_cycles, parents)
 #'   `sources`).
 #' @param weights Optional numeric vector of edge weights; `NULL` counts edges.
 #' @param directed Logical; if `TRUE` only traverse edges child-to-parent.
+#' @param threads Optional integer; number of threads. `NULL` uses all cores.
 #' @return Numeric vector with the distance of each `(source, target)` pair.
 #' @export
-geodesic_pairs <- function(parents, sources, targets, weights, directed) .Call(wrap__geodesic_pairs, parents, sources, targets, weights, directed)
+geodesic_pairs <- function(parents, sources, targets, weights, directed, threads = NULL) .Call(wrap__geodesic_pairs, parents, sources, targets, weights, directed, threads)
 
 #' Distance to the nearest target for each source.
 #'
@@ -379,11 +380,14 @@ descendant_counts <- function(parents, targets = NULL) .Call(wrap__descendant_co
 #' @param max_dist Optional numeric upper bound on the length of any single new
 #'   edge; `NULL` means no limit. Fragments whose closest eligible nodes are
 #'   farther apart than this are left disconnected.
+#' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#'   Worth capping when stitching many skeletons across several processes — see
+#'   `set_num_threads()`, which is cheaper than passing this on every call.
 #' @return List with `from` and `to` (integer vectors of 0-based node indices, one
 #'   pair per new edge) and `dist` (numeric edge lengths). At most
 #'   `(#fragments - 1)` edges.
 #' @export
-stitch_fragments <- function(components, x, y, z, w, mask, max_dist) .Call(wrap__stitch_fragments, components, x, y, z, w, mask, max_dist)
+stitch_fragments <- function(components, x, y, z, w, mask, max_dist, threads = NULL) .Call(wrap__stitch_fragments, components, x, y, z, w, mask, max_dist, threads)
 
 #' Regenerate a parent vector after adding a set of undirected edges.
 #'
@@ -429,10 +433,13 @@ reroot_rewire <- function(parents, from, to, root) .Call(wrap__reroot_rewire, pa
 #'   radius more influence (`TRUE` means 1). To keep this robust we use the mean
 #'   radius of the segment a node belongs to, not the node's own radius. Note that
 #'   `max_dist` is then measured in this augmented space too.
+#' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#'   Worth capping when healing many skeletons across several processes — see
+#'   `set_num_threads()`, which is cheaper than passing this on every call.
 #' @return Integer vector of new 0-based parent indices (roots are `-1`). If the
 #'   skeleton could be fully healed this is a single tree with one root.
 #' @export
-heal_skeleton <- function(parents, x, y, z, method, max_dist, min_size, mask, radius, use_radius) .Call(wrap__heal_skeleton, parents, x, y, z, method, max_dist, min_size, mask, radius, use_radius)
+heal_skeleton <- function(parents, x, y, z, method, max_dist, min_size, mask, radius, use_radius, threads = NULL) .Call(wrap__heal_skeleton, parents, x, y, z, method, max_dist, min_size, mask, radius, use_radius, threads)
 
 #' Find connected components of a triangle mesh.
 #'
@@ -1080,6 +1087,37 @@ fast_hclust_raw <- function(d, method, labels) .Call(wrap__fast_hclust_raw, d, m
 symmetrize_raw <- function(scores, symmetry, n_cores) .Call(wrap__symmetrize_raw, scores, symmetry, n_cores)
 
 leaf_order_raw <- function(merge) .Call(wrap__leaf_order_raw, merge)
+
+#' Set the number of threads used for parallel work in this session.
+#'
+#' By default nat.fastcore uses every core it can see, which is the right answer
+#' for a single call and the wrong one when the *caller* is already spreading
+#' work over processes (`parallel::mclapply()`, `future::plan(multisession)`, a
+#' cluster job): each worker would claim every core, and the resulting
+#' oversubscription can make the whole thing slower than running it on one core.
+#' Nothing tells a worker process that it is one of twenty, so it has to be told.
+#'
+#' Call this once, before any other nat.fastcore function. The pool is built at
+#' most once per session, by whichever comes first: an earlier
+#' `set_num_threads()`, the `RAYON_NUM_THREADS` environment variable, a call to
+#' `get_num_threads()`, or simply the first parallel call. Calling it again with
+#' the same `n` is a no-op; calling it with a different `n` is an error, as the
+#' pool cannot be resized.
+#'
+#' @param n Integer; number of threads. Must be >= 1.
+#' @return `NULL`, invisibly. Called for its side effect.
+#' @export
+set_num_threads <- function(n) invisible(.Call(wrap__set_num_threads, n))
+
+#' Number of threads available for parallel work in this session.
+#'
+#' Note that asking builds the thread pool if it does not exist yet — which is
+#' then exactly what makes a subsequent `set_num_threads()` fail. Set first, ask
+#' second.
+#'
+#' @return Integer; the number of threads.
+#' @export
+get_num_threads <- function() .Call(wrap__get_num_threads)
 
 CmtkRegistration <- new.env(parent = emptyenv())
 

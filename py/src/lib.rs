@@ -33,6 +33,9 @@ use points::*;
 mod topo;
 use topo::*;
 
+mod threads;
+use threads::*;
+
 #[pymodule(gil_used = false)]
 #[pyo3(name = "_fastcore")]
 mod fastcore {
@@ -248,4 +251,10 @@ mod fastcore {
 
     #[pymodule_export]
     use super::PyMlsTransform;
+
+    #[pymodule_export]
+    use super::set_num_threads_py;
+
+    #[pymodule_export]
+    use super::get_num_threads_py;
 }

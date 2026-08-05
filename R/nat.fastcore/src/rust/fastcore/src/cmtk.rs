@@ -57,7 +57,8 @@ use std::sync::atomic::AtomicBool;
 use ndarray::{Array2, ArrayView2};
 use rayon::prelude::*;
 
-use crate::nblast::{is_cancelled, make_bar, with_pool};
+use crate::nblast::{is_cancelled, make_bar};
+use crate::threads::with_pool;
 
 /// Rows per parallel chunk. Sized so the cancellation poll and the progress-bar tick
 /// amortise over real work: an inverse point costs ~5-15 µs, so a chunk is ~10 ms.

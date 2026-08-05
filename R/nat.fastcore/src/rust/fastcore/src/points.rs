@@ -12,7 +12,7 @@
 //! whole thing is one embarrassingly parallel pass.
 
 use crate::kdtree::KdTree;
-use crate::nblast::with_pool;
+use crate::threads::with_pool;
 use ndarray::{Array1, Array2, ArrayView2};
 use rayon::prelude::*;
 

@@ -32,6 +32,8 @@ use rayon::prelude::*;
 use shull::delaunay4d;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::threads::with_pool;
+
 // ---------------------------------------------------------------------------
 // Output element type (precision)
 // ---------------------------------------------------------------------------
@@ -227,35 +229,6 @@ pub struct Opts<'a> {
 #[inline]
 pub(crate) fn is_cancelled(cancel: Option<&AtomicBool>) -> bool {
     cancel.is_some_and(|c| c.load(Ordering::Relaxed))
-}
-
-/// Run `f` on a rayon pool capped to `threads` workers, or on the default global
-/// pool when `threads` is `None`/`Some(0)`. A fresh scoped pool is built per call
-/// only when a cap is requested, so the common (uncapped) path is zero-overhead.
-pub(crate) fn with_pool<R, F>(threads: Option<usize>, f: F) -> R
-where
-    R: Send,
-    F: FnOnce() -> R + Send,
-{
-    // Emscripten (Pyodide/WebAssembly) cannot spawn threads at all, so there is no
-    // pool to build — `ThreadPoolBuilder::build` fails with `ENOSYS`. Honour the
-    // call by running serially rather than panicking on a thread count we cannot
-    // satisfy; rayon's implicit pool already degrades to the calling thread there.
-    #[cfg(target_os = "emscripten")]
-    {
-        let _ = threads;
-        return f();
-    }
-
-    #[cfg(not(target_os = "emscripten"))]
-    match threads {
-        Some(n) if n >= 1 => rayon::ThreadPoolBuilder::new()
-            .num_threads(n)
-            .build()
-            .expect("failed to build rayon thread pool")
-            .install(f),
-        _ => f(),
-    }
 }
 
 // ---------------------------------------------------------------------------

@@ -551,6 +551,7 @@ def geodesic_pairs(
     pairs,
     directed=False,
     weights=None,
+    threads=None,
 ):
     """Calculate geodesic ("along-the-arbor") distances between pairs of nodes.
 
@@ -572,6 +573,11 @@ def geodesic_pairs(
     weights :    (N, ) float32 array, optional
                  Array of distances for each child -> parent connection.
                  If ``None`` all node to node distances are set to 1.
+    threads :    int, optional
+                 Number of threads to use. If ``None`` uses all available cores.
+                 If you are running this across several *processes*, prefer
+                 :func:`navis_fastcore.set_num_threads` — it costs nothing per
+                 call, whereas this builds a thread pool each time.
 
     Returns
     -------
@@ -608,6 +614,7 @@ def geodesic_pairs(
         pairs_target=_ids_to_indices(node_ids, pairs[:, 1]),
         weights=weights,
         directed=directed,
+        threads=None if threads is None else int(threads),
     )
 
     return dists

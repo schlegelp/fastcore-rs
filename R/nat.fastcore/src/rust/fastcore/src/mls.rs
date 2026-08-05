@@ -41,7 +41,8 @@ use std::sync::atomic::AtomicBool;
 use ndarray::{Array2, ArrayView2};
 use rayon::prelude::*;
 
-use crate::nblast::{is_cancelled, with_pool};
+use crate::nblast::is_cancelled;
+use crate::threads::with_pool;
 
 /// Points per parallel work unit. Each carries an `M`-long weight scratch buffer, so this
 /// also bounds the per-thread allocation.
