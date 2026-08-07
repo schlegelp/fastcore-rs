@@ -17,6 +17,17 @@ import pytest
 import navis_fastcore as fastcore
 
 
+#: Emscripten (Pyodide) has no `fork`/`exec`, so a fresh interpreter cannot be
+#: spawned there and `subprocess.run` raises `OSError(ENOTSUP)`. That platform is
+#: also single-threaded, so what these tests pin - the size of the rayon pool and
+#: when it gets built - is not a thing that varies there anyway. The in-process
+#: tests below still run.
+needs_subprocess = pytest.mark.skipif(
+    sys.platform in ("emscripten", "wasi"),
+    reason="wasm platforms cannot spawn processes",
+)
+
+
 def run_snippet(body):
     """Run `body` in a fresh interpreter; return its completed process."""
     return subprocess.run(
@@ -42,6 +53,7 @@ def fragmented(n=20_000, n_frags=200, seed=0):
 # ---------------------------------------------------------------------------
 
 
+@needs_subprocess
 def test_set_num_threads_sizes_the_pool():
     proc = run_snippet("""
         import navis_fastcore as fastcore
@@ -52,6 +64,7 @@ def test_set_num_threads_sizes_the_pool():
     assert proc.stdout.strip() == "2"
 
 
+@needs_subprocess
 def test_set_num_threads_is_idempotent():
     """Safe to call from a worker-init hook, which fires once per chunk."""
     proc = run_snippet("""
@@ -65,6 +78,7 @@ def test_set_num_threads_is_idempotent():
     assert proc.stdout.strip() == "2"
 
 
+@needs_subprocess
 def test_set_num_threads_refuses_to_resize():
     proc = run_snippet("""
         import navis_fastcore as fastcore
@@ -79,6 +93,7 @@ def test_set_num_threads_refuses_to_resize():
     assert "already running with 2 thread(s)" in proc.stdout
 
 
+@needs_subprocess
 def test_set_num_threads_after_parallel_work_raises():
     """The first parallel call builds the pool, so setting it afterwards fails."""
     proc = run_snippet("""
@@ -102,6 +117,7 @@ def test_set_num_threads_after_parallel_work_raises():
     assert proc.stdout.strip() == "raised"
 
 
+@needs_subprocess
 def test_get_num_threads_before_set_blocks_the_set():
     """Documents the footgun the docstring warns about: asking builds the pool."""
     proc = run_snippet("""
@@ -123,6 +139,7 @@ def test_set_num_threads_rejects_zero():
         fastcore.set_num_threads(0)
 
 
+@needs_subprocess
 def test_respects_rayon_env_var():
     """`RAYON_NUM_THREADS` is the no-code-change version of the same lever."""
     proc = subprocess.run(
