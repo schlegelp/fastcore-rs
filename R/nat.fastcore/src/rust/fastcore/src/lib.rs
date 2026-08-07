@@ -40,6 +40,11 @@
 //!   all come out untouched, and the volume correction scales about the mesh's own
 //!   centroid rather than about the origin — which is what `trimesh` does, and why it
 //!   translates a neuron by twice its own diameter.
+//! - [`project`] — [`project::project_mesh_2d`] turns a mesh into the polygons a 2-D
+//!   renderer draws: project onto an axis-aligned view, drop the faces pointing away,
+//!   sort what is left back to front and lay it out as closed rings, in one parallel
+//!   pass. Written as separate steps these are four walks over hundreds of megabytes
+//!   producing intermediates only the next step reads.
 //! - [`points`] — raw 3D point clouds: [`points::dotprops`] derives the unit tangent
 //!   vector and `alpha` of every point's local neighbourhood, which is what [`nblast`]
 //!   consumes and what callers previously had to produce with scipy.
@@ -102,6 +107,8 @@ pub mod caps;
 pub mod simplify;
 
 pub mod smoothing;
+
+pub mod project;
 
 pub mod points;
 
