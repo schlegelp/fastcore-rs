@@ -8,7 +8,7 @@ it is called out.
 Tags, source archives and the original announcements are on
 [GitHub](https://github.com/schlegelp/fastcore-rs/releases).
 
-## Unreleased
+## 0.11.0 (2026-08-07)
 
 **Drawing a mesh flat, in one pass instead of six.** `project_mesh_2d` takes a mesh and
 a view and hands back the polygons a 2-D renderer draws: projected onto the view plane,
@@ -239,8 +239,6 @@ of this family.
 
 No new dependencies. Available on all three surfaces as `simplify_mesh` and
 `simplify_mesh_lossless`.
-
-## 0.11.0 (2026-08-06)
 
 **Six ways to change how densely a skeleton is sampled**, in a new `downsample` module
 on all three surfaces. Until now `fastcore` could only reduce a skeleton
