@@ -1,0 +1,3527 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Fast Rust implementations of navis/nat core functions, with Python and R bindings.">
+      
+      
+      
+        <link rel="canonical" href="https://schlegelp.github.io/fastcore-rs/changelog/">
+      
+      
+        <link rel="prev" href="../rust/">
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="zensical-0.0.53">
+    
+    
+      
+        <title>Changelog - fastcore-rs</title>
+      
+    
+    
+      
+        
+      
+      <link rel="stylesheet" href="../assets/stylesheets/modern/main.20815dad.min.css">
+      
+        
+          
+        
+        <link rel="stylesheet" href="../assets/stylesheets/modern/palette.dfe2e883.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_scope.pathname.endsWith("/")||(__md_scope=new URL(__md_scope.pathname+"/",location)),__md_hash=e=>[...e].reduce(((e,t)=>(e<<5)-e+t.charCodeAt(0)),0),__md_get=(e,t=localStorage,_=__md_scope)=>JSON.parse(t.getItem(_.pathname+"."+e)),__md_set=(e,t,_=localStorage,a=__md_scope)=>{try{_.setItem(a.pathname+"."+e,JSON.stringify(t))}catch(e){}},document.documentElement.setAttribute("data-platform",navigator.platform)</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer" aria-label="Navigation"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#changelog" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="./.." title="fastcore-rs" class="md-header__button md-logo" aria-label="fastcore-rs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer" aria-label="Navigation">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-menu" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            fastcore-rs
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Changelog
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="none" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="none" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-moon" viewBox="0 0 24 24"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search" aria-label="Search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog" aria-label="Search">
+  <button type="button" class="md-search__button">
+    Search
+  </button>
+</div>
+      
+    
+    <div class="md-header__source">
+      
+        <a href="https://github.com/schlegelp/fastcore-rs" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    schlegelp/fastcore-rs
+  </div>
+</a>
+      
+    </div>
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="./.." title="fastcore-rs" class="md-nav__button md-logo" aria-label="fastcore-rs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
+
+    </a>
+    fastcore-rs
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/schlegelp/fastcore-rs" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    schlegelp/fastcore-rs
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Home
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Concepts
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+  Concepts
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/trees/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Rooted trees
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/nblast/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  NBLAST
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../python/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Python (navis-fastcore)
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+  Python (navis-fastcore)
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/geodesic/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Geodesic distances
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/cc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Connected components
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/morphology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Morphology
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/downsampling/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Downsampling
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/segments/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Segments
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/topology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Topology
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/mesh/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Mesh
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/healing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Healing
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/nblast/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  NBLAST
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/cmtk/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  CMTK transforms
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/elastix/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Elastix transforms
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/landmarks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Landmark transforms
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/threads/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Threads
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python/wrappers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Scipy wrappers
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../r/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  R (nat.fastcore)
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rust/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Rust (fastcore crate)
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Changelog
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="././" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Changelog
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Unreleased
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#0110-2026-08-06" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.11.0 (2026-08-06)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#0101-2026-08-03" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.10.1 (2026-08-03)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#0100-2026-08-01" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.10.0 (2026-08-01)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.10.0 (2026-08-01)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#breaking" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Breaking
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixes" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixes
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#090-2026-07-28" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.9.0 (2026-07-28)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#080-2026-07-28" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.8.0 (2026-07-28)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#073-2026-07-20" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.7.3 (2026-07-20)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.7.3 (2026-07-20)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixes_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixes
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#072-2026-07-20" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.7.2 (2026-07-20)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.7.2 (2026-07-20)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#071-2026-07-19" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.7.1 (2026-07-19)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.7.1 (2026-07-19)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#070-2026-07-15" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.7.0 (2026-07-15)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.7.0 (2026-07-15)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#improvements" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Improvements
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#061-2026-07-12" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.6.1 (2026-07-12)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.6.1 (2026-07-12)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#060-2026-07-12" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.6.0 (2026-07-12)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.6.0 (2026-07-12)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#improvements_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Improvements
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixes_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixes
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#breaking_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Breaking
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#051-2026-07-11" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.5.1 (2026-07-11)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.5.1 (2026-07-11)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fixes_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixes
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#050-2026-07-11" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.5.0 (2026-07-11)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.5.0 (2026-07-11)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#040-2026-07-09" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.4.0 (2026-07-09)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.4.0 (2026-07-09)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#improvements_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Improvements
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#030-2026-06-28" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.3.0 (2026-06-28)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.3.0 (2026-06-28)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_7" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#020-2026-06-15" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.2.0 (2026-06-15)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.2.0 (2026-06-15)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_8" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#improvements_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Improvements
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#010-2025-03-13" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.1.0 (2025-03-13)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.1.0 (2025-03-13)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#improvements_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Improvements
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixes_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixes
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#009-2025-02-06" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.0.9 (2025-02-06)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.0.9 (2025-02-06)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_9" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#008-2025-01-05" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.0.8 (2025-01-05)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.0.8 (2025-01-05)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_10" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#007-2024-09-16" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.0.7 (2024-09-16)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.0.7 (2024-09-16)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fixes_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixes
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#006-2024-09-16" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.0.6 (2024-09-16)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.0.6 (2024-09-16)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_11" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#005-2024-09-07" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.0.5 (2024-09-07)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.0.5 (2024-09-07)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#improvements_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Improvements
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#004-2024-07-25" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.0.4 (2024-07-25)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.0.4 (2024-07-25)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_12" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixes_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixes
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#003a-2024-07-09" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.0.3a (2024-07-09)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.0.3a (2024-07-09)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_13" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#improvements_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Improvements
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixes_7" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixes
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#breaking_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Breaking
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#002-2024-06-27" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.0.2 (2024-06-27)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.0.2 (2024-06-27)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_14" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#improvements_7" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Improvements
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#breaking_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Breaking
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#001-2024-06-22" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.0.1 (2024-06-22)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  
+                    
+                    
+                    
+                      
+                    
+                    
+                      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+                      <div class="md-sidebar-button__wrapper">
+                        <label class="md-sidebar-button" for="__toc"></label>
+                      </div>
+                    
+                  
+                  <div class="md-sidebar__inner">
+                    
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Unreleased
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#0110-2026-08-06" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.11.0 (2026-08-06)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#0101-2026-08-03" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.10.1 (2026-08-03)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#0100-2026-08-01" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.10.0 (2026-08-01)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.10.0 (2026-08-01)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#breaking" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Breaking
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixes" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixes
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#090-2026-07-28" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.9.0 (2026-07-28)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#080-2026-07-28" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.8.0 (2026-07-28)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#073-2026-07-20" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.7.3 (2026-07-20)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.7.3 (2026-07-20)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixes_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixes
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#072-2026-07-20" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.7.2 (2026-07-20)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.7.2 (2026-07-20)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#071-2026-07-19" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.7.1 (2026-07-19)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.7.1 (2026-07-19)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#070-2026-07-15" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.7.0 (2026-07-15)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.7.0 (2026-07-15)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#improvements" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Improvements
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#061-2026-07-12" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.6.1 (2026-07-12)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.6.1 (2026-07-12)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#060-2026-07-12" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.6.0 (2026-07-12)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.6.0 (2026-07-12)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#improvements_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Improvements
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixes_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixes
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#breaking_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Breaking
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#051-2026-07-11" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.5.1 (2026-07-11)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.5.1 (2026-07-11)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fixes_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixes
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#050-2026-07-11" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.5.0 (2026-07-11)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.5.0 (2026-07-11)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#040-2026-07-09" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.4.0 (2026-07-09)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.4.0 (2026-07-09)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#improvements_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Improvements
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#030-2026-06-28" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.3.0 (2026-06-28)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.3.0 (2026-06-28)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_7" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#020-2026-06-15" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.2.0 (2026-06-15)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.2.0 (2026-06-15)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_8" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#improvements_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Improvements
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#010-2025-03-13" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.1.0 (2025-03-13)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.1.0 (2025-03-13)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#improvements_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Improvements
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixes_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixes
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#009-2025-02-06" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.0.9 (2025-02-06)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.0.9 (2025-02-06)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_9" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#008-2025-01-05" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.0.8 (2025-01-05)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.0.8 (2025-01-05)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_10" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#007-2024-09-16" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.0.7 (2024-09-16)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.0.7 (2024-09-16)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fixes_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixes
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#006-2024-09-16" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.0.6 (2024-09-16)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.0.6 (2024-09-16)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_11" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#005-2024-09-07" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.0.5 (2024-09-07)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.0.5 (2024-09-07)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#improvements_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Improvements
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#004-2024-07-25" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.0.4 (2024-07-25)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.0.4 (2024-07-25)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_12" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixes_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixes
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#003a-2024-07-09" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.0.3a (2024-07-09)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.0.3a (2024-07-09)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_13" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#improvements_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Improvements
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixes_7" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixes
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#breaking_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Breaking
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#002-2024-06-27" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.0.2 (2024-06-27)
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.0.2 (2024-06-27)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new_14" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        New
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#improvements_7" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Improvements
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#breaking_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Breaking
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#001-2024-06-22" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.0.1 (2024-06-22)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+  
+    <a href="https://github.com/schlegelp/fastcore-rs/edit/main/docs/changelog.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-file-pen" viewBox="0 0 24 24"><path d="M12.659 22H18a2 2 0 0 0 2-2V8a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 14 2H6a2 2 0 0 0-2 2v9.34"/><path d="M14 2v5a1 1 0 0 0 1 1h5M10.378 12.622a1 1 0 0 1 3 3.003L8.36 20.637a2 2 0 0 1-.854.506l-2.867.837a.5.5 0 0 1-.62-.62l.836-2.869a2 2 0 0 1 .506-.853z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="changelog">Changelog<a class="headerlink" href="#changelog" title="Permanent link">&para;</a></h1>
+<p>Notable changes in <code>fastcore-rs</code>. The version number is shared across all three
+surfaces — the Rust crate <code>fastcore</code>, Python's <code>navis-fastcore</code> and R's
+<code>nat.fastcore</code> — so a release often touches only some of them; where that matters
+it is called out.</p>
+<p>Tags, source archives and the original announcements are on
+<a href="https://github.com/schlegelp/fastcore-rs/releases">GitHub</a>.</p>
+<h2 id="unreleased">Unreleased<a class="headerlink" href="#unreleased" title="Permanent link">&para;</a></h2>
+<p><strong>Drawing a mesh flat, in one pass instead of six.</strong> <code>project_mesh_2d</code> takes a mesh and
+a view and hands back the polygons a 2-D renderer draws: projected onto the view plane,
+back faces dropped, sorted furthest-first so that painting them gives correct occlusion,
+and laid out as closed rings — plus the bounding box, reduced on the way past.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">rings</span><span class="p">,</span> <span class="n">bbox</span><span class="p">,</span> <span class="n">ix</span><span class="p">,</span> <span class="n">depth</span><span class="p">,</span> <span class="n">normals</span> <span class="o">=</span> <span class="n">fastcore</span><span class="o">.</span><span class="n">project_mesh_2d</span><span class="p">(</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">xy_ix</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span> <span class="n">depth_ix</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span> <span class="n">front</span><span class="o">=</span><span class="mi">1</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>Written the obvious vectorised way in numpy those are six passes over hundreds of
+megabytes, four of which exist only to feed the next one — 1.27 s and ~900 MB of
+intermediates on an 8.4M-vertex, 16.9M-face neuron. Fused and parallel: <strong>133 ms</strong>, same
+faces, same geometry, same box.</p>
+<p>The cull is the interesting part. Whether a face points at the viewer is the sign of its
+normal's depth component, and that component is a 2x2 determinant of the two columns
+being projected onto — so it never forms the other two components of the cross product
+and never reads the depth column, while applying exactly the test the full cross product
+would.</p>
+<p><code>order=False</code> skips the sort and the depths, for a caller filling the whole mesh as one
+path in one colour: a nonzero-winding fill is blind to the order its subpaths arrive in.
+<code>normals=False</code> skips the face normals, for a caller that is not shading. Smooth shading
+is the one thing this does not do — averaged vertex normals need every face, back-facing
+ones included, so they cannot come from the survivors alone.</p>
+<p>In <code>navis.plot2d</code> this is most of a 17M-face mesh's plotting time: 3.32 s to 0.19 s, and
+the peak memory from 4.75 GB to 1.76 GB, for a byte-identical PNG. Python only for now;
+<code>nat.fastcore</code> does not have it.</p>
+<p>See <a href="../python/mesh/#projecting-for-a-2-d-renderer">Meshes</a>.</p>
+<p><strong>You can stop fastcore from taking every core.</strong> <code>set_num_threads</code> sizes the thread
+pool for the whole process, and <code>get_num_threads</code> reads it back — in Python and in R.
+The default is still every core the process can see, which is right for one call in
+one process and wrong the moment the <em>caller</em> is the one running things in parallel:
+nothing tells a worker process that it is one of twenty, so every worker claims the
+whole machine.</p>
+<p>That is not a theoretical cost. On a 224-core node, <code>navis.heal_skeleton(nl,
+parallel=True, n_cores=20)</code> runs 20 workers x 224 threads = 4480 threads over 224
+cores, and healing 40 skeletons of 200k nodes measured <strong>slower than the same work on
+a single worker</strong> (6.71 s vs 5.10 s) while burning 2.3x the CPU. Capping each worker
+to one thread: 3.60 s, at a sixth of the CPU.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">functools</span><span class="o">,</span><span class="w"> </span><span class="nn">navis</span><span class="o">,</span><span class="w"> </span><span class="nn">navis_fastcore</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">fastcore</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">navis</span><span class="o">.</span><span class="n">compute</span><span class="o">.</span><span class="n">worker_init_hooks</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">functools</span><span class="o">.</span><span class="n">partial</span><span class="p">(</span><span class="n">fastcore</span><span class="o">.</span><span class="n">set_num_threads</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>The pool is built once per process, so call it before anything else; calling it again
+with the same value is a no-op (which is what makes it safe in a hook that fires per
+chunk), and with a different value raises. <code>RAYON_NUM_THREADS</code> remains the
+no-code-change equivalent.</p>
+<p><code>heal_skeleton</code>, <code>stitch_fragments</code> and <code>geodesic_pairs</code> also grew the per-call
+<code>threads</code> argument the rest of the library already had — they were the last parallel
+entry points without one. See <a href="../python/threads/">Threads</a>, and
+<code>scripts/profile-heal-parallel.py</code> for measuring where your own workload sits.</p>
+<p><strong>Capping the holes a cut leaves in a mesh.</strong> Four functions, in Python and in R:
+<code>boundary_halfedges</code> finds every edge of a mesh with only one face on it,
+<code>exposed_halfedges</code> finds only the ones a subset is about to open (given the faces
+<em>before</em> the cut), <code>trace_loops</code> walks either into closed rings, and
+<code>triangulate_rings</code> ear-clips those shut. Only faces are ever added, never vertices, so
+every vertex index a caller already holds still means what it meant — which is what lets
+the cap be applied <em>after</em> a subset rather than during it.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">halfedges</span> <span class="o">=</span> <span class="n">fastcore</span><span class="o">.</span><span class="n">boundary_halfedges</span><span class="p">(</span><span class="n">faces</span><span class="p">)</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">rings</span><span class="p">,</span> <span class="n">offsets</span> <span class="o">=</span> <span class="n">fastcore</span><span class="o">.</span><span class="n">trace_loops</span><span class="p">(</span><span class="n">halfedges</span><span class="p">)</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">faces</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">vstack</span><span class="p">((</span><span class="n">faces</span><span class="p">,</span> <span class="n">fastcore</span><span class="o">.</span><span class="n">triangulate_rings</span><span class="p">(</span><span class="n">rings</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">vertices</span><span class="p">)))</span>
+</span></code></pre></div>
+<p>Almost all of the win is in the first one. Grouping the <code>3F</code> edges a face array names is
+the whole cost of finding a boundary, and the obvious numpy spelling —
+<code>np.unique(keys, return_inverse=True, return_counts=True)</code> — is a stable argsort: <strong>75 ms
+of an 84 ms call</strong> on a 578k-face mesh. That is not a formulation problem, which is worth
+saying because it is the kind that usually is: the bare <code>np.sort</code> of the same keys is
+already 51 ms, so no rearrangement inside numpy can win. Sorting bare <code>u64</code> keys in
+parallel and taking a second pass over the faces to recover each boundary edge's
+direction brings the call to 8 ms. On the same mesh with ~23k holes punched into it,
+end to end: <strong>224 ms of numpy becomes 11 ms</strong>. On the subset path — 400 twig cuts
+exposing 4.3k half-edges — 10.7 ms becomes 0.87 ms.</p>
+<p>There is one caveat worth stating rather than burying: <code>boundary_halfedges</code>,
+<code>exposed_halfedges</code> and <code>trace_loops</code> reproduce the numpy implementation's output
+half-edge for half-edge and ring for ring, but <code>triangulate_rings</code> does not. It agrees on
+about 93% of rings and returns an equally valid alternative on the rest — same triangle
+count, same total oriented area, same winding. Depend on the hole being closed the right
+way round, not on the exact triangles.</p>
+<p><code>trace_loops</code> is greedy rather than a cycle basis, and that is deliberate. At a
+non-manifold boundary vertex several half-edges leave at once; taking whichever is still
+free puts every half-edge in exactly one ring, so the whole boundary is covered.
+<code>networkx.cycle_basis</code> — what <code>trimesh.repair.fill_holes</code> uses — quietly drops the edges
+that are not part of a simple cycle, and those holes stay open.</p>
+<p>The ear-clipping is a Rust port of mapbox's earcut rather than a binding to it, which
+means the triangulation no longer needs the <code>mapbox_earcut</code> extension module at all —
+and that turns out to fix a hang as well as remove a dependency. Greedy tracing can walk
+back through a non-manifold boundary vertex, leaving a ring that names the same vertex
+twice; on a punched neuron mesh roughly 10% of rings are like that, and <code>mapbox_earcut</code>
+loops <strong>forever</strong> on the best-fit-plane retry one of them provokes. This implementation
+falls back to a fan, which is the right answer for a polygon that touches itself.</p>
+<p><strong>Mesh smoothing, without the shrinkage and without the translation.</strong> <code>smooth_mesh</code>
+moves a triangle mesh's vertices to take the noise out of its surface, leaving the face
+array, the vertex count and the vertex order untouched — so anything indexed by vertex
+is still attached to the vertex it was attached to.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">smoothed</span> <span class="o">=</span> <span class="n">fastcore</span><span class="o">.</span><span class="n">smooth_mesh</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">vertices</span><span class="p">)</span>
+</span></code></pre></div>
+<p>That default is Taubin's λ|μ filter rather than the plain Laplacian, and it is worth
+saying why. The Laplacian step removes high frequencies quickly and low ones slowly, and
+a closed surface's enclosed volume <em>is</em> a low frequency: at <code>lamb=0.5</code> and five
+iterations — what <code>navis.smooth_mesh</code> ships today — a neuron mesh comes out having lost
+<strong>88% of its volume</strong>. Taubin alternates a shrinking λ pass with an inflating μ pass tuned
+so the two cancel below a cut-off frequency; on the same fixture it holds its volume to
+within 5%. <code>method="laplacian"</code> and <code>method="humphrey"</code> (the HC filter of Vollmer et al.)
+are there when you want them.</p>
+<p><code>weights="cotangent"</code> is the discrete Laplace–Beltrami operator, and the reason to reach
+for it is that the uniform umbrella cannot tell "this vertex is off the surface" from
+"this vertex has closer neighbours on one side", so on uneven tessellation it slides
+vertices <em>along</em> the surface. Cotangent weights are a function of the shape rather than of
+the triangulation, so they move vertices along the normal instead — on a UV sphere they
+drift less than half as far for the same amount of smoothing. <code>trimesh</code> builds its
+operator once from the input geometry and reuses it; here the geometry-dependent
+weightings are recomputed from the current positions every pass, which is the flow they
+are supposed to discretise rather than a snapshot taken before the first step. That is
+free, because the weights are never materialised at all.</p>
+<p><strong>The volume correction scales about the mesh's centroid, not about the origin.</strong> This is
+the one place the result deliberately differs from <code>trimesh.smoothing.filter_laplacian</code>,
+which is what <code>navis.smooth_mesh</code> calls, and the difference is not cosmetic. Upstream
+rescales by <code>(vol_before / vol_after) ** (1/3)</code> about the origin, which is not a shape
+operation: on the 722817260 test neuron at navis' own defaults it displaces the result by
+<strong>41 µm</strong>, and the mesh is 19–26 µm across. It is also not translation invariant — the
+same mesh smoothed at two different offsets comes out two different shapes, and far enough
+from the origin the volume ratio goes negative and the cube root returns <code>NaN</code> — and it
+divides by the smoothed volume, so a mesh with a hole big enough to make that zero is a
+<code>ZeroDivisionError</code> rather than a diagnostic. Scaling about the centroid is the same size
+change with none of that, and where the ratio is genuinely undecidable (a flat sheet, both
+volumes exactly zero) the mesh comes back unscaled with a warning rather than silently
+wrong.</p>
+<p>The correction also runs once, at the end, which is not an approximation of running it
+every iteration but exactly equal to it: every filter here is an affine combination of a
+vertex and a normalised average of its neighbours, and those commute with a uniform
+scaling.</p>
+<p><code>preserve_border</code> pins the rim of an open mesh — a boundary vertex's one-ring lies
+entirely to one side of it, so without this the rim rolls inwards under any of these
+filters — and <code>lock</code> freezes an arbitrary set on top of that, bitwise, while still
+letting those vertices pull on their neighbours. Same name and same meaning as
+<code>simplify_mesh</code>'s <code>lock</code>, since it is the same concept.</p>
+<p>Ten iterations with the volume correction on a 421k-vertex / 881k-face mesh: <strong>5.42 s
+with <code>trimesh</code>, 0.03 s here</strong> (0.06 s on cotangent weights). The arithmetic was never the
+cost — the sparse matrix–vector product is 42 ms of upstream's 5.4 s. What it spends is
+57% building the operator, where <code>vertex_neighbors</code> is a list of 421k Python lists costing
+636 MB of heap for 10 MB of vertices, and another 40% in the volume constraint's
+per-iteration <code>vertices[faces]</code> gather. Against <code>trimesh</code> on the uniform umbrella all
+three filters agree to ~1e-11 on coordinates spanning 25,880 units, which is what the test
+suite checks; the deliberate divergences are the volume correction, the per-pass weight
+recomputation, and that one Taubin iteration here is a full λ/μ pair rather than a
+half-step.</p>
+<p>Available in Python and in R. See <a href="../python/mesh/#smoothing">Meshes</a>.</p>
+<p><strong>Mesh simplification that remembers where every vertex went.</strong> <code>simplify_mesh</code>
+decimates a triangle mesh by quadric-error edge collapse and returns, alongside the
+smaller mesh, a <code>vertex_map</code>: for each vertex of the original, the index of the vertex
+of the simplified mesh it ended up in, or <code>-1</code> if it did not survive.</p>
+<p>That map is the point. Every other simplifier hands back a mesh and nothing else, so
+per-vertex data — synapses, radii, compartment labels — is orphaned by the operation,
+and the usual workaround of re-attaching by nearest neighbour afterwards is both slower
+and wrong: a collapse moves its survivor to the quadric-optimal point, which is often
+nearer some <em>other</em> vertex than the one that actually merged into it. <code>bincount</code> over
+the map replaces the spatial query entirely.</p>
+<p><code>lock</code> pins a set of vertices: a locked vertex is never merged into another and never
+moved, so it comes back at bitwise the same coordinates. It may still absorb its
+neighbours, which is what keeps a face target reachable when the pinned set is large.
+<code>simplify_mesh_lossless</code> is the other mode — collapse only what costs nothing, run to a
+fixed point — for shedding over-tessellation rather than hitting a budget.</p>
+<p>This is a port of Sven Forstmann's <code>Simplify.h</code> (MIT), the algorithm <code>pyfqmr</code> wraps,
+rather than a wrapper around an existing crate. Wrapping was the preferred route and
+none of the candidates survived two constraints. <code>meshopt</code> has exactly the right
+semantics but vendors C++ and builds it through <code>cc</code>, which would cost the pyodide wheel
+and the R source tarball — the same reason <code>flate2</code> and <code>kodama</code> are pinned to pure-Rust
+backends. <code>alum</code> and <code>baby_shark</code> are pure Rust but built on a halfedge and a corner
+table respectively, so they need manifold input: the first returns <code>Err(ComplexVertex)</code>,
+the second silently drops the offending faces and returns an empty mesh on any build
+error. Meshes out of EM segmentation have edges shared by three faces as a matter of
+course. And none of the three expose a collapse map, so each would have needed a fork
+anyway. The algorithm as written is flat index arrays with no adjacency invariants to
+violate, which is what makes non-manifold input merely data.</p>
+<p>Because it is the same algorithm, the port is checked against <code>pyfqmr</code> directly: on a
+clean mesh the two produce <em>identical</em> face arrays and positions agreeing to ~1e-12,
+across face-count ratios, aggressiveness settings and both border modes. Three
+deliberate divergences, all about degenerate geometry: upstream normalises vectors
+unconditionally, and since every comparison against the resulting NaN is false, NaN
+silently defeats the two guards that exist to reject a bad collapse. Zero-area faces are
+dropped, absent normals are represented rather than faked, and a collapse landing on top
+of a neighbour is rejected.</p>
+<p>Speed is a side effect rather than the aim, but it is not worse: measured end-to-end
+against <code>pyfqmr</code> on UV spheres at ratio 0.1, <strong>19.5 ms vs 30.5 ms</strong> at 80k faces,
+<strong>88 ms vs 129 ms</strong> at 319k, and <strong>259 ms vs 395 ms</strong> at 979k — about 1.5x, scaling
+linearly, at roughly 4M input faces/second on one core. Single-threaded by nature —
+each collapse invalidates its own neighbourhood — but the GIL is released for the
+duration, so simplifying several meshes from a thread pool does scale. Deterministic
+run to run; the result does depend on face order, as it does for every implementation
+of this family.</p>
+<p>No new dependencies. Available on all three surfaces as <code>simplify_mesh</code> and
+<code>simplify_mesh_lossless</code>.</p>
+<h2 id="0110-2026-08-06">0.11.0 (2026-08-06)<a class="headerlink" href="#0110-2026-08-06" title="Permanent link">&para;</a></h2>
+<p><strong>Six ways to change how densely a skeleton is sampled</strong>, in a new <code>downsample</code> module
+on all three surfaces. Until now <code>fastcore</code> could only reduce a skeleton
+<em>topologically</em>, with <code>simplify_skeleton</code> dropping every slab node; there was nothing
+that reduced it <em>geometrically</em>. See the new <a href="../python/downsampling/">Downsampling</a>
+page.</p>
+<ul>
+<li><code>downsample_skeleton</code> — keep every Nth node of each segment. This is
+  <code>navis.downsample_neuron</code>.</li>
+<li><code>simplify_rdp</code> / <code>simplify_vw</code> — the same job done by <em>shape</em> rather than by counting.
+  Ramer-Douglas-Peucker drops a node when removing it would move the path by less than
+  <code>epsilon</code>; Visvalingam-Whyatt removes whichever node contributes least area, which
+  sheds detail more evenly when the simplification is aggressive.</li>
+<li><code>resample_skeleton</code> — the inverse: interpolated nodes at a fixed spacing, so a
+  skeleton whose node density varies tenfold between neurites comes out even. It reports
+  the input edge and fraction each new node came from, so radii (or anything else
+  per-node) interpolate in one expression.</li>
+<li><code>smooth_skeleton</code> / <code>smooth_skeleton_gaussian</code> — move the coordinates and nothing
+  else, over a window of nodes or a distance along the neurite.</li>
+</ul>
+<p>All six work on the linear segments between roots, branch points and leafs and never
+touch the nodes at their ends, so the topology is unchanged: same leafs, same branch
+points, same tree. The three that drop nodes return the same tuple as
+<code>simplify_skeleton</code>, all take a <code>preserve</code> list of nodes that must survive whatever the
+rule decides, and all carry each dropped chain's length into the edge that replaces it,
+so total cable length and geodesic distances are preserved exactly.</p>
+<p><strong>Every one of them that changes the node table also says where your data went.</strong> A
+skeleton rarely travels alone — synapses, soma tags and manual annotations hang off
+particular nodes — and renumbering the nodes strands them. The four node-dropping
+functions and <code>resample_skeleton</code> now return a <code>node_map</code>: one entry per <em>input</em> node,
+naming the output node its data belongs to now. It is the same direction as
+<code>simplify_mesh</code>'s <code>vertex_map</code>, and total, so unlike that one it needs no <code>-1</code> masking:
+every input node names exactly one output node, the nearest along the neurite, ties
+going towards the root.</p>
+<p>For <code>resample_skeleton</code> this is the half that could not be derived. <code>source</code>/<code>alpha</code>
+carries a per-node <em>column</em> forward, but it does not invert — an input node that fell
+between two output nodes has no output row of its own — so there was no way to answer
+"which new node does this synapse belong to" short of a spatial query, which is wrong
+across a hairpin. The two smoothers have no <code>node_map</code> and need none: they move
+coordinates only, so every node keeps its ID and its parent.</p>
+<p>The map falls out of walks these functions already do, so it is cheap rather than free.
+On a 1M-node arbor: <code>resample_skeleton</code> <strong>177.5 → 184.0 ms</strong>, <code>simplify_rdp</code> <strong>48.7 →
+52.3 ms</strong>, <code>downsample_skeleton</code> <strong>39.2 → 44.4 ms</strong>, <code>simplify_skeleton</code> <strong>8.3 → 11.1
+ms</strong>. The share is largest where the function does least — <code>simplify_skeleton</code> is a bare
+pointer chase, so a 4-byte-per-node array and one store per dropped node are a real
+fraction of it, and 3 ms per million nodes.</p>
+<p><strong>Breaking:</strong> <code>simplify_skeleton</code> returns a 4-tuple rather than a 3-tuple in Python and
+Rust — it shares its rewiring with the three new droppers, so it gained the same
+<code>node_map</code>. R is unaffected: the return is a list, and <code>node_map</code> is a new element.</p>
+<p>The three linestring algorithms are ports of Chris L. Barnes'
+<a href="https://github.com/clbarnes/simples"><code>simples</code></a> (MIT), adapted for skeletons: iterative
+rather than recursive (a 100k-node unbranched neurite would overflow the stack),
+triangle areas from the Gram determinant rather than Heron's formula (which loses most
+of its digits on exactly the sliver triangles Visvalingam-Whyatt searches for), and a
+smoothing kernel over distance <em>along</em> the neurite rather than between the points. No
+new dependencies.</p>
+<h2 id="0101-2026-08-03">0.10.1 (2026-08-03)<a class="headerlink" href="#0101-2026-08-03" title="Permanent link">&para;</a></h2>
+<p><strong><code>heal_skeleton</code> is reproducible again.</strong> Healing the same fragmented neuron twice
+could return two different skeletons. The bridge search runs in parallel and prunes
+with a per-fragment bound shared across threads; when two nodes tied for their
+fragment's shortest bridge, which one got to report it came down to which thread read
+that bound first. Ties are routine here, because skeleton coordinates come off a
+lattice. The healed skeleton was never <em>wrong</em> — the total added cable was identical
+every time, since the bound cannot drop below a fragment's true minimum — but which of
+several equally short bridges it used varied from run to run.</p>
+<p>Each query now searches just past the shared bound, so every node achieving its
+fragment's minimum reports it however the threads interleave, and equal-length
+candidates are settled on their endpoints. Same bridges, same total length, same
+answer every run. Affects <code>heal_skeleton</code> and <code>stitch_fragments</code> on all three
+surfaces.</p>
+<h2 id="0100-2026-08-01">0.10.0 (2026-08-01)<a class="headerlink" href="#0100-2026-08-01" title="Permanent link">&para;</a></h2>
+<p><strong>Six new tree primitives</strong>, filling the gap between what <code>navis</code> asks igraph for
+internally and what <code>fastcore</code> could answer. Each looks like a general graph algorithm but
+is a linear pass over the parent vector on a rooted forest, so building a graph object to
+answer it costs more than the answer does. See the new
+<a href="../python/topology/">Topology</a> page.</p>
+<ul>
+<li><code>descendants</code> / <code>paths_to_root</code> — the two directions of the same walk: everything below a
+  node, and everything above it. <code>descendants</code> replaces igraph's
+  <code>subcomponent(v, mode="IN")</code> and is what makes "cut the skeleton here" a masking
+  operation rather than a graph rebuild.</li>
+<li><code>reroot</code> — re-orient a forest at given nodes, reversing only the edges between each new
+  root and the old one. Components nobody names are left byte-identical. Generalises
+  <code>topo::reroot_rewire</code>, which takes one preferred root plus a set of new edges.</li>
+<li><code>contract_nodes</code> — collapse groups of nodes onto a representative and rewire what is
+  left. Edges internal to a group are dropped rather than turned into self-loops; a mapping
+  that would close a cycle is refused rather than silently returning a non-forest.</li>
+<li><code>simplify_skeleton</code> — keep only roots, leafs and branch points, with each replacement edge
+  carrying the total length of the chain it stands in for, so cable length is preserved
+  exactly. On the example skeleton that is 4332 nodes down to 1290.</li>
+<li><code>adjacency</code> — the CSR triple (<code>indptr</code>, <code>indices</code>, <code>data</code>) of the skeleton's adjacency
+  matrix, with column indices sorted within each row. Handing back the raw arrays rather
+  than a matrix keeps this package free of a scipy dependency.</li>
+</ul>
+<p><strong>Four more</strong>, completing the set navis needs:</p>
+<ul>
+<li><code>longest_path</code> / <code>longest_paths</code> — the longest path from a node to its root, and the <code>n</code>
+  longest taken in turn with each peeled off before the next is sought. Not the NP-hard
+  general problem: in a rooted forest every maximal path is fixed by its start node, so this
+  is a distances-to-root question. Ties break towards the lowest index, matching
+  <code>numpy.argmax</code>, which is what navis' implementation relies on for a stable answer.</li>
+<li><code>betweenness</code> — betweenness centrality in <strong>O(N)</strong> rather than Brandes' O(V·E). Shortest
+  paths in a tree are unique, so the count through a node is a closed form: descendants ×
+  ancestors when directed, and a sum of products over the parts it separates when not.
+  Counts are <code>int64</code>, because an undirected 100k-node skeleton reaches ~5e9.</li>
+<li><code>descendant_counts</code> — how many nodes, or how many of a given set, lie strictly below each
+  node. See the note below on why this exists.</li>
+</ul>
+<div class="admonition note">
+<p class="admonition-title"><code>betweenness</code> is <em>not</em> navis' <code>betweeness_centrality(from_=...)</code></p>
+<p>navis' <code>from_</code> branch does not compute betweenness at all. It walks root→source paths
+and tallies every node except the source, which counts, for each node, <strong>how many of
+<code>from_</code> lie below it</strong> — a descendant count. That is why <code>descendant_counts</code> is a
+separate function rather than a <code>sources</code> argument here: naming it <code>betweenness</code> would
+have made the two behaviours indistinguishable at the call site. navis'
+<code>find_main_branchpoint(method="betweenness")</code> — which is that function's <em>default</em> —
+is the one caller, and wants <code>descendant_counts</code>.</p>
+</div>
+<p><strong>Three graph primitives</strong>, the ones <code>skeletor</code> still needs a graph library for. Where the
+tree primitives above serve navis, these serve mesh skeletonization — see the
+<a href="../python/mesh/">Meshes</a> page.</p>
+<ul>
+<li><code>parents_from_edges</code> — orient an edge list into a rooted forest: one parent per node, <code>-1</code>
+  at the roots, cycles broken. <code>minimum_spanning_tree</code> picks <em>which</em> edges survive; this
+  picks which way they point, which is what turns a bag of undirected edges into something
+  you can walk, root or write out as SWC. It also returns the order the nodes settled in,
+  which is free (the search visits them in it) and is exactly the relabelling that makes
+  parents precede their children. One search covers the whole graph rather than one per
+  component: the shortest-path-tree-per-component construction costs
+  <code>O(components x n_nodes)</code> in <em>output alone</em>, which on a skeleton shattered into four
+  thousand fragments is a 2 GB array for an answer that is one column. At 100k nodes,
+  2.9 ms against igraph's 14 ms for one arbor — and 2.7 ms against 4370 ms once it
+  fragments, because igraph pays per component and this does not.</li>
+<li><code>bridges</code> — which edges may not be dropped without disconnecting their component
+  (Tarjan, on an explicit stack, so a 200k-node strip does not overflow). The counterpart
+  to <code>minimum_spanning_tree</code> rather than a variant of it: the MST asks what to keep to stay
+  connected, this asks what may not be removed. Parallel edges are honoured — two nodes
+  joined twice are joined by a cycle, so neither edge is a bridge, which is why this does
+  not share the deduplicated adjacency the geodesic searches use. 2.6 ms against igraph's
+  13.5 ms at 100k nodes, 2.2 ms against 207 ms fragmented.</li>
+<li><code>geodesic_mst_mesh</code> / <code>geodesic_mst_graph</code> — the minimum spanning tree over a <em>subset</em> of
+  nodes, weighted by geodesic distance through the graph they were carved out of, <strong>without
+  materialising the <code>k x k</code> distance matrix</strong>. That matrix is <code>k**2</code> distances to use
+  <code>k - 1</code> of them — 400 MB at <code>k = 10_000</code> before the <code>O(k^2)</code> MST itself, and <code>k</code> searches
+  to fill it. Following Mehlhorn's distance-network construction, one multi-source sweep
+  partitions every node by nearest subset member and each edge straddling two cells offers
+  one candidate; an MST over those is an MST of the full distance network. The cost is flat
+  in <code>k</code> because it is one sweep whatever <code>k</code> is: at 100k nodes, 12.7 ms at <code>k=250</code> and
+  8.3 ms at <code>k=4000</code>, against 187 ms and 7820 ms for the matrix route. Returned weights are
+  exactly the geodesic distances between the pairs they join, so they are usable as lengths.
+  <code>limit</code> bounds how far apart two nodes may be and still be joined, and prunes the sweep
+  rather than merely discarding results.</li>
+</ul>
+<p><strong>The R bindings caught up.</strong> 22 new functions in <code>nat.fastcore</code> — every tree and graph
+primitive above, plus the ones that had accumulated unbound before it — taking R from 39
+documented capabilities to 58, and to 66 of 77 with the clustering pair below. The
+signatures are the ones the Python side settled on, translated to R conventions: 0-based node indices throughout (as the rest of
+the DAG family already used), roots and "no such node" as <code>-1</code>, and multi-value results
+as a named list rather than a tuple.</p>
+<p>New optional arguments have R defaults, so <code>adjacency(parents)</code> and
+<code>parents_from_edges(edges, n)</code> work without spelling out a <code>NULL</code> per argument. Note this
+is <em>not</em> true of the bindings that predate this release — those still require every
+argument positionally, which is worth fixing before 1.0.</p>
+<p>Two things are worth doing before 1.0 alongside that. Argument errors currently reach R
+as <code>Error: User function panicked: &lt;name&gt;</code>, because extendr discards the panic payload
+and the R layer does no validation of its own — where Python raises a message naming the
+offending value. The fix belongs in the three shared converters, not per function. And
+what remains unbound is <code>GeodesicGraph</code> and its methods (a stateful pointer class, so a
+different kind of job) plus five of the NBLAST/matches helpers.</p>
+<p>Every one of these is pinned against igraph in the parity suite and against
+brute-force references under <code>hypothesis</code>, across a fixture matrix that includes
+100k-deep chains — the traversals are iterative precisely because the recursive versions
+segfault there.</p>
+<p><strong>The geodesic searches run in float64 on request.</strong> Dijkstra sums one weight per hop, so
+a path of <code>k</code> hops carries up to <code>k</code> roundings; at float32 and <code>k</code> in the tens of
+thousands — a densely sampled arbor, a fine mesh — the drift becomes visible against an
+exact answer, and comparisons against <code>scipy.sparse.csgraph</code>, which works in float64
+unconditionally, stop agreeing to the last bits. It also matters when weights span a wide
+dynamic range, since <code>fl(du + w)</code> loses <code>w</code> entirely once <code>du</code> exceeds it by 2^24.</p>
+<p>The width is now a type parameter on the core rather than baked into it: <code>Adjacency</code>,
+the search scratch, both kernels and every driver in <code>mesh</code> are generic over a new
+<code>mesh::Weight</code> trait, implemented for <code>f32</code> and <code>f64</code>. The heap key stays an integer
+compare on the raw IEEE bits — see <code>Weight::Bits</code> for why that is an exact ordering and
+not an approximation — so the float32 path is unchanged, in both results and speed.</p>
+<p>In Python the rule is <strong>your dtype in, your dtype out</strong>, the one
+<a href="../python/wrappers/"><code>linkage</code></a> already follows for score matrices: float64 weights give
+float64 distances, anything else gives float32.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">fastcore</span><span class="o">.</span><span class="n">geodesic_matrix_graph</span><span class="p">(</span><span class="n">edges</span><span class="p">,</span> <span class="n">n</span><span class="p">,</span> <span class="n">weights</span><span class="o">=</span><span class="n">w</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">))</span>  <span class="c1"># -&gt; float64</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">fastcore</span><span class="o">.</span><span class="n">geodesic_matrix_graph</span><span class="p">(</span><span class="n">edges</span><span class="p">,</span> <span class="n">n</span><span class="p">,</span> <span class="n">weights</span><span class="o">=</span><span class="n">w</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">)</span>   <span class="c1"># -&gt; float64</span>
+</span></code></pre></div>
+<p>A new <code>dtype</code> argument overrides that in either direction, on
+<code>geodesic_matrix_graph</code>, <code>geodesic_matrix_mesh</code>, <code>geodesic_nearest_mesh</code>,
+<code>geodesic_farthest_mesh</code>, <code>geodesic_predecessors</code> and the two <code>geodesic_mst_*</code>. Only
+something carrying a float64 <em>dtype</em> counts as having asked: a list of Python floats does
+not, because <code>np.asarray([1.0, 2.0])</code> is float64 by numpy's default rather than by
+anyone's intent, and honouring it would quietly double the output of every caller who
+passes one.</p>
+<div class="admonition warning">
+<p class="admonition-title">This changes the return dtype for existing callers</p>
+<p>If you already pass a float64 <code>weights</code> <strong>array</strong>, you were getting it cast down to
+float32 and a float32 result; you now get float64 — twice the output memory, and about
+10% slower. Pass <code>dtype=np.float32</code> to keep the old behaviour. Callers passing lists,
+int arrays or no weights at all are unaffected.</p>
+</div>
+<p>The mesh functions default to float32 and take <code>dtype</code> alone, with no input dtype read
+off <code>vertices</code>. Those are <em>coordinates</em>, taken at float64 either way — each edge length is
+computed from them at that width and rounded once on the way in — so reading the
+distances' width off them would flip nearly every existing call to float64 and double the
+largest thing this library allocates. A full <code>V x V</code> matrix is already 107 GB at
+<code>V = 164k</code>.</p>
+<p><code>geodesic_path</code>, <code>geodesic_clusters</code>, <code>parents_from_edges</code> and <code>minimum_spanning_tree</code>
+have no <code>dtype</code> argument, because none of them returns a distance — but all four honour
+the weights' own width, since it decides which route or which tie wins.</p>
+<p><code>GeodesicGraph</code> stays float32. It is the type for "large graph, many small queries", which
+is exactly the case where float32 is the right width and where doubling the several
+node-sized arrays it keeps resident across a whole run would be felt.</p>
+<p>R gets a <code>precision</code> argument (32 or 64, default 32) on the eleven corresponding
+functions, matching <code>nblast(precision = )</code>. R has no float32 type, so unlike Python there
+is nothing to read the choice off — weights arrive as doubles whatever the caller meant by
+them, and the result goes back as doubles either way — so this buys accuracy, not a
+different return type.</p>
+<p><strong>Interface polish, ahead of 1.0.</strong> Small things that cost nothing to change now and get
+expensive once the API is frozen.</p>
+<ul>
+<li><strong>Integer returns follow one rule</strong>, written down in the
+  <a href="../python/#integer-return-dtypes">Python overview</a>: a node id is <code>uint32</code>; a node
+  id needing a <code>-1</code> sentinel, or a dense label such as a cluster id, is <code>int32</code>; and a
+  <em>position in an array you passed in</em> is <code>int64</code>. The point is the last — <code>int64</code> tells
+  you the values index your array rather than the graph, so <code>nodes[out]</code> is the node-id
+  form and <code>out</code> alone is not. Four returns moved to fit (see Breaking). The rule governs
+  the index-space API; the tree functions work in <em>ID space</em> and hand back values in the
+  dtype of the <code>node_ids</code> you gave them, which the overview now states explicitly.</li>
+<li><strong><code>from navis_fastcore import *</code> exports functions only.</strong> The package had no <code>__all__</code>,
+  so <code>import *</code> took the default and dragged in seven submodule objects while dropping
+  <code>__version__</code> for starting with an underscore. It is now composed from the submodules'
+  own <code>__all__</code>, so a new function is exported by listing it in one place. <code>parent_dist</code>
+  is exported for the first time along with it: it was public and documented but in no
+  <code>__all__</code>, so <code>fastcore.parent_dist</code> did not resolve.</li>
+<li><strong><code>has_cycles</code> is callable from Python.</strong> The core has had it all along and R binds it,
+  but on the Python side it lived in the extension module only, used internally by the
+  scipy interop shim — so the one function that tells you whether the input to everything
+  else is well-formed was the one you could not call. It is now
+  <code>fastcore.has_cycles(node_ids, parent_ids)</code>, in ID space like the rest of the tree
+  family, with a parent ID that is not a node treated as a root rather than as a cycle.</li>
+<li><strong>Four more that the Rust had and Python did not.</strong> An audit of the crate against the
+  bindings, prompted by the one above; what it turned up is now bound, tested and
+  documented. Only the first needed new Rust — the rest were already compiled in and
+  merely private.<ul>
+<li><code>leaf_order</code> — SciPy's <code>leaves_list</code>: the order to place the leaves in so a
+  dendrogram draws without crossing branches. It was the one core function with no
+  pyo3 wrapper at all, which meant the one step of the clustering story that still
+  required scipy was drawing it. Iterative, so a 200k-observation chain does not need
+  200k stack frames, and it rejects a linkage matrix naming a cluster that does not
+  exist yet rather than walking off the end of it.</li>
+<li><code>nblast_pairs</code> — NBLAST of an explicit <code>(query, target)</code> list, one score per pair
+  rather than a matrix. <code>k</code> pairs cost <code>k</code> comparisons instead of
+  <code>n_query x n_target</code>, which is the point when a cheaper filter has already told you
+  which cells you care about. Smart NBLAST has used this internally for its
+  full-resolution pass since it shipped; it is the same primitive, so a target whose
+  whole column you request reproduces that column of <code>nblast</code> exactly.</li>
+<li><code>reroot_rewire</code> — turn an edited edge set back into a rooted forest. Step 2 of
+  <code>heal_skeleton</code>, for callers who choose their own edges rather than taking the
+  minimal bridges from <code>stitch_fragments</code>. Distinct from <code>reroot</code>, which re-orients an
+  <em>unchanged</em> forest and leaves untouched components byte-identical: once the edge set
+  moves there is no unchanged to preserve.</li>
+<li><code>symmetrize</code> — the in-place symmetrise, on its own. <code>linkage</code> and
+  <code>condensed_distances</code> already fold it into their fused pass, so this is for when
+  something <em>else</em> has to read the matrix. It is the case numpy cannot do cheaply:
+  <code>(M + M.T) / 2</code> builds two full <code>n x n</code> temporaries and even
+  <code>np.add(M, M.T, out=M)</code> still builds one, where this allocates nothing.</li>
+</ul>
+</li>
+<li><strong><code>CmtkRegistration.domain</code></strong>, the spline warp's domain box, which R has had as
+  <code>cmtk_domain</code>. Points outside <code>[0, domain]</code> have no spline value — CMTK prints <code>FAILED</code>
+  and <code>xform</code> returns <code>NaN</code> — so this is how you predict a <code>NaN</code> instead of reconstructing
+  the box from <code>.spacing</code> and <code>.dims</code> yourself.</li>
+<li><strong>The same two, back the other way, in R.</strong> <code>symmetrize</code> and <code>leaf_order</code> are now
+  exported from <code>nat.fastcore</code> as well, so the clustering family reads the same on both
+  surfaces. Two differences are forced by R rather than chosen: <code>symmetrize</code> returns a
+  copy, because R's value semantics forbid writing to the caller's matrix (it is still
+  one <code>n x n</code> against <code>(m + t(m)) / 2</code>'s two), and <code>leaf_order</code> takes an <code>hclust</code> or its
+  merge matrix rather than a SciPy linkage matrix, returning a 1-based ordering in the
+  same form as <code>hclust$order</code>. It agrees with <code>stats::hclust</code>'s own <code>order</code> element on
+  the trees that package builds, which is what "same child order" has to mean.</li>
+<li><strong>The capability tables gained a Clustering section.</strong> <code>linkage</code>,
+  <code>condensed_distances</code>, <code>symmetrize</code> and <code>leaf_order</code> and their R counterparts had
+  never appeared in them, so the one family where all three surfaces differ in the
+  <em>object</em> they hand back — linkage matrix, <code>dist</code>, <code>hclust</code> — was the one you could not
+  look up. Every public Python name now appears in some row.</li>
+<li><code>GeodesicGraph.subset</code> validated its <code>nodes</code> argument in three places — the Python
+  wrapper, the binding layer and the core. The binding-layer copy is gone; the wrapper now
+  uses the same <code>unique=True</code> check every other node subset in the package goes through.</li>
+</ul>
+<h3 id="breaking">Breaking<a class="headerlink" href="#breaking" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong><code>spanning_forest</code> is now <code>parents_from_edges</code>.</strong> It sat one word away from
+  <code>minimum_spanning_tree</code> while answering a different question — that one picks <em>which</em>
+  edges survive, this picks which way they point — and the new name says what it hands
+  back, which is the parent vector the rest of the package consumes. <code>minimum_spanning_tree</code>
+  keeps its name: it is what scipy, igraph and networkx all call this, including scipy's
+  behaviour of returning a forest when the input is disconnected. No alias, since
+  <code>spanning_forest</code> was never in a release. Affects all three surfaces.</li>
+<li><strong>Node ids come back as <code>uint32</code> where they used to be <code>int64</code></strong>, under the rule above:
+  <code>unique_edges</code>' <code>edges</code>, <code>contract_vertices</code>, and <code>parents_from_edges</code>' <code>order</code> (the last
+  of these unreleased). Their <code>index</code> / <code>inverse</code> companions stay <code>int64</code> — those are
+  positions in the <code>3F</code> edge list, not node ids. Python callers who fed these straight back
+  in were already coercing to <code>uint32</code>; those coercions are now no-ops rather than copies.
+  R is unaffected — the bindings already narrowed to R integers.</li>
+<li><strong><code>matches_above</code>' <code>indices</code> is now <code>int64</code>, not <code>uint32</code>.</strong> It is a position along the
+  scanned axis of the <code>scores</code> matrix you passed in — the same quantity <code>top_matches</code>
+  returns, which was already <code>int64</code>. The two disagreed on the dtype of one thing. The
+  ragged array is the larger of the two, so this does cost memory; consistency at the call
+  site is worth more than the width. <code>MatchError::AxisTooLong</code> goes with it — it existed
+  only to refuse a scanned axis longer than <code>u32::MAX</code>, which is no longer a limit.</li>
+<li><code>generate_segments</code> now measures a segment's length from its <strong>first node to its last</strong>.
+  It previously summed the weight vector over <em>every</em> node in the segment, including the
+  terminal one — but a segment stops <em>at</em> a branch point, whose own child→parent edge
+  continues into the parent segment. Every segment ending at a branch point was therefore
+  one edge too long; segments ending at a root were already correct, because a root's
+  weight slot is 0. Unweighted lengths change with it, from a node count to an edge count,
+  so that <code>weights=None</code> stays equivalent to <code>weights=ones</code> — the same correction
+  <code>dist_to_root</code> had in 0.6.0. Segments themselves are unchanged; only <code>lengths</code> moves
+  (and, where lengths tie differently, the order they are sorted in). Affects all three
+  surfaces.</li>
+</ul>
+<h3 id="fixes">Fixes<a class="headerlink" href="#fixes" title="Permanent link">&para;</a></h3>
+<ul>
+<li>results carrying a "no such node" sentinel no longer wrap around on <code>uint64</code> node IDs.
+  <code>geodesic_nearest</code>, <code>geodesic_farthest</code> and <code>heal_skeleton</code> built their output with
+  <code>np.full(..., -1, dtype=node_ids.dtype)</code> and then wrote <code>-1</code> into it, where it wraps —
+  so an unreachable source or a root came back as 18446744073709551615, on exactly the
+  uint64 IDs segmentation backends hand out. All of them now go through the helper that
+  already handled this for <code>reroot</code> and friends, which promotes to <code>int64</code> when the ID
+  dtype cannot represent the sentinel. The sentinel marks a source with no reachable
+  target (so, any skeleton with more than one component) and the healed skeleton's root,
+  which is what made this easy to hit.</li>
+<li><code>_ids_to_indices</code> no longer raises on an empty ID array when the node and target dtypes
+  differ — it took <code>max()</code> of both unconditionally. Reachable from any function taking an
+  optional set of node IDs (<code>descendant_counts(targets=[])</code> and friends) whenever node IDs
+  are <code>uint64</code> and the target array is <code>int64</code>, which is navis' normal convention.</li>
+<li><code>geodesic_matrix(directed=True)</code> no longer leaks across zero-weight edges when <code>sources</code>
+  or <code>targets</code> are given. The partial backend used depth as a proxy for ancestry, which
+  holds only while every edge weight is strictly positive: a zero-weight edge gives an
+  ancestor the <em>same</em> depth, so it slipped through the guard and was written at distance 0
+  — reporting a parent as reachable from its child's direction. Coincident nodes are
+  routine in traced and resampled skeletons. The all-by-all backend, <code>geodesic_nearest</code>,
+  <code>geodesic_farthest</code> and <code>geodesic_pairs</code> were unaffected.</li>
+</ul>
+<h2 id="090-2026-07-28">0.9.0 (2026-07-28)<a class="headerlink" href="#090-2026-07-28" title="Permanent link">&para;</a></h2>
+<p><strong><code>mesh.GeodesicGraph</code> — build the adjacency index once, query it many times.</strong> The
+<a href="../python/geodesic/">geodesic free functions</a> each build an index, answer one question and
+throw it away: the right trade for a single sweep, the wrong one for algorithms asking
+<em>many small</em> questions of one graph. Every existing query is available as a method
+(<code>distances</code>, <code>nearest</code>, <code>farthest</code>, <code>predecessors</code>, <code>path</code>, <code>clusters</code>, <code>components</code>), so
+migrating is mechanical, and <code>subset</code> carves an induced subgraph out of the built CSR
+instead of sending you back to numpy to mask and renumber an edge list. 500 short-path
+queries on a 40k-vertex mesh run ~100x faster as methods. It buys nothing measurable when
+one query already sweeps the graph.</p>
+<p>Four operations are new, because they only make sense against a graph you keep:</p>
+<ul>
+<li><code>grow</code> — a connected region of a fixed <em>number</em> of nodes (or of attached cloud points),
+  plus each one's distance to the seed. 33x per patch on a 160k-vertex mesh; 37x over a
+  53k-point cloud.</li>
+<li><code>farthest_seed</code> — the next farthest-point seed, for spreading patches evenly. An
+  incrementally folded and self-pruning distance field plus a lazily-corrected max-heap:
+  2560 seeds on a 160k-vertex mesh, 92.5 s → 0.35 s (265x).</li>
+<li><code>ball</code> — everything within a radius of a <em>set</em> of nodes, how far, and which source is
+  nearest. Returns the ball itself rather than three node-sized arrays with the ball buried
+  in them.</li>
+<li><code>set_weights</code> — re-weight edges in place, O(edits log valence) against the O(E) of a
+  rebuild. TEASAR zeroing each path it extracts is the motivating case.</li>
+</ul>
+<p>Pinned against <code>navis</code>' own pure-Python implementations (<code>navis.ml.chunk</code>) and scipy. One
+caveat: the search is float32 where those references are float64, so on graphs with edge
+lengths that tie in float32 the settle <em>order</em> of equally-distant nodes can differ. Regions
+are still exact balls — verified against a float64 oracle.</p>
+<p><strong>Pyodide / JupyterLite wheels (experimental).</strong> A <code>wasm32-unknown-emscripten</code> wheel is now
+built, run against the full test suite under Pyodide in CI, and published to PyPI alongside
+the native wheels under PEP 783. Emscripten cannot spawn threads, so NBLAST and the
+transforms run serially there and are not interruptible — a documented degradation rather
+than a runtime panic.</p>
+<p>Python-facing release; R is unchanged.</p>
+<h2 id="080-2026-07-28">0.8.0 (2026-07-28)<a class="headerlink" href="#080-2026-07-28" title="Permanent link">&para;</a></h2>
+<p><strong>NBLAST peak memory cut ~45%</strong> — 2.22 GB → 1.26 GB on 6.9M points. Two independent
+reductions: f32 coordinate storage, and <code>aann</code> 0.3.0's u32 neighbourhood graph. Scoring is
+unchanged — the accumulator, tangent dot products and every score-matrix lookup still run
+in f64; only storage and the descent's own distance comparisons narrow. Python selects the
+width from the input dtype, so float32 <code>points</code>/<code>vect</code> now reach the index with no copy
+(previously they were silently upcast, which cost <em>more</em> than passing f64). Expect ~1e-4
+relative movement on scores: on 40k real neurons, 98.7% of k-NN rows are bit-identical and
+top-1 agreement is 99.98%.</p>
+<p><strong><code>dotprops()</code> — tangent vectors and alpha from a bare point cloud.</strong> An exact k-d tree
+k-NN plus a parallel Jacobi symmetric-3x3 eigensolve, replacing <code>cKDTree.query</code> + N SVDs:
+10.5x at N=10k, 15.5x at N=100k. This was the last thing pulling in scipy, so
+<code>navis-fastcore</code> no longer imports it anywhere. Also available as <code>Dotprop.from_points()</code>.</p>
+<p><strong>Graph primitives on <code>mesh</code>, straight off an edge list</strong> — no graph object to build first:</p>
+<ul>
+<li><code>level_set_components</code> — connected components of every label's induced subgraph in one
+  DSU sweep, replacing a per-level loop (12.2 ms → 0.3 ms on a 41k-vertex mesh)</li>
+<li><code>geodesic_path</code> / <code>geodesic_predecessors</code> — the route, not just its length (11.7x
+  including build; 2.0x against a <em>cached</em> igraph object)</li>
+<li><code>geodesic_clusters</code> — greedy partition into connected clusters of bounded geodesic radius</li>
+<li><code>connected_components_graph</code>, <code>contract_vertices</code>, <code>minimum_spanning_tree</code></li>
+</ul>
+<p>New APIs are Rust + Python. R gets the synced core and the NBLAST memory work; wrappers for
+the new mesh/points functions are still to come.</p>
+<h2 id="073-2026-07-20">0.7.3 (2026-07-20)<a class="headerlink" href="#073-2026-07-20" title="Permanent link">&para;</a></h2>
+<h3 id="new">New<a class="headerlink" href="#new" title="Permanent link">&para;</a></h3>
+<ul>
+<li>thin plate spline and moving least squares <a href="../python/landmarks/">landmark transforms</a>
+  (<code>TpsTransform</code>, <code>MlsTransform</code>) — for when there is no registration file, only matched
+  landmarks</li>
+<li><code>nblast_knn</code>: k nearest neighbours without a score matrix</li>
+</ul>
+<h3 id="fixes_1">Fixes<a class="headerlink" href="#fixes_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>MlsTransform.xform</code> gained a <code>reverse</code> parameter</li>
+<li>custom scoring matrices are now checked for conformance</li>
+<li>picked up the upstream tie-breaker fix in <code>aann</code></li>
+<li>Python: <code>Dotprops</code> is exposed at top-level</li>
+</ul>
+<h2 id="072-2026-07-20">0.7.2 (2026-07-20)<a class="headerlink" href="#072-2026-07-20" title="Permanent link">&para;</a></h2>
+<h3 id="new_1">New<a class="headerlink" href="#new_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li>NBLAST support functions across Rust/Python/R: <code>linkage</code> and <code>condensed_distances</code> in
+  Python, <code>fast_hclust</code>, <code>nblast_dist</code> and <code>nblast_hclust</code> in R — hierarchical clustering
+  straight off a score matrix, without ever casting it (at 100k a side that would quietly
+  materialise tens of GB)</li>
+</ul>
+<h2 id="071-2026-07-19">0.7.1 (2026-07-19)<a class="headerlink" href="#071-2026-07-19" title="Permanent link">&para;</a></h2>
+<h3 id="new_2">New<a class="headerlink" href="#new_2" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>unique_edges</code>: the unique undirected edges of a triangle mesh</li>
+</ul>
+<h2 id="070-2026-07-15">0.7.0 (2026-07-15)<a class="headerlink" href="#070-2026-07-15" title="Permanent link">&para;</a></h2>
+<h3 id="new_3">New<a class="headerlink" href="#new_3" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Rust re-implementations of <a href="../python/cmtk/">CMTK</a> and <a href="../python/elastix/">Elastix</a>
+  transforms — both several orders of magnitude faster than the original binaries
+  (<code>streamxform</code> / <code>transformix</code>), and neither tool needs to be installed. Bonus:
+  <code>fastcore</code> can <em>invert</em> Elastix transforms, which Elastix itself cannot.</li>
+<li>functions to extract top matches (N, threshold, percentile) from NBLAST matrices:
+  <code>indices, values = fastcore.top_matches(scores, 5, skip_self=True)</code></li>
+</ul>
+<h3 id="improvements">Improvements<a class="headerlink" href="#improvements" title="Permanent link">&para;</a></h3>
+<ul>
+<li>another ~2x speed-up for NBLAST, from upstream improvements in
+  <a href="https://github.com/schlegelp/aann"><code>aann</code></a></li>
+</ul>
+<h2 id="061-2026-07-12">0.6.1 (2026-07-12)<a class="headerlink" href="#061-2026-07-12" title="Permanent link">&para;</a></h2>
+<h3 id="new_4">New<a class="headerlink" href="#new_4" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>subtree_height()</code> returns, for each node, the geodesic distance to the farthest leaf</li>
+<li><code>dist_to_root()</code> returns, for each node, the distance to its root</li>
+</ul>
+<h2 id="060-2026-07-12">0.6.0 (2026-07-12)<a class="headerlink" href="#060-2026-07-12" title="Permanent link">&para;</a></h2>
+<h3 id="new_5">New<a class="headerlink" href="#new_5" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>geodesic_farthest(parents, sources, targets)</code> implements the opposite of
+  <code>geodesic_nearest()</code></li>
+<li><code>geodesic_matrix_mesh</code> and <code>geodesic_farthest/nearest_mesh</code> compute geodesic distances on
+  meshes:<ul>
+<li>they operate directly on faces/vertices; in <code>navis</code> this needs a costly round trip
+  <code>mesh</code> → <code>igraph</code> → <code>csgraph.dijkstra</code></li>
+<li>they use threads</li>
+<li>they allow defining sources <em>and</em> targets (csgraph only does sources), which cuts the
+  memory footprint drastically and can be faster</li>
+</ul>
+</li>
+</ul>
+<h3 id="improvements_1">Improvements<a class="headerlink" href="#improvements_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li>better performance (speed / scaling / memory) for <code>classify_nodes</code>, <code>strahler_order</code>,
+  <code>geodesic_matrix</code>, <code>geodesic_nearest</code>, <code>all_dists_to_root</code>, <code>has_cycles</code>,
+  <code>geodesic_distances</code>, <code>geodesic_pairs</code>, <code>node_indices_*</code> and <code>extract_parent_child</code></li>
+<li>guarded <code>geodesic_distances</code> against segfaults on very large (100ks of nodes) neurons</li>
+<li><code>geodesic_distances</code> now computes in <code>f64</code> internally but still writes <code>f32</code>, improving
+  relative error from <code>3.9e-06</code> to <code>7.0e-08</code></li>
+</ul>
+<h3 id="fixes_2">Fixes<a class="headerlink" href="#fixes_2" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>generate_segments</code> now returns segment lengths in the correct order</li>
+</ul>
+<h3 id="breaking_1">Breaking<a class="headerlink" href="#breaking_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>geodesic_pairs</code> now correctly returns <code>-1</code> for unreachable pairs (previously an
+  incorrect <code>1</code>)</li>
+<li><code>dist_to_root</code> now counts edges instead of nodes (previously the root was reported at
+  distance <code>1</code>)</li>
+</ul>
+<h2 id="051-2026-07-11">0.5.1 (2026-07-11)<a class="headerlink" href="#051-2026-07-11" title="Permanent link">&para;</a></h2>
+<h3 id="fixes_3">Fixes<a class="headerlink" href="#fixes_3" title="Permanent link">&para;</a></h3>
+<ul>
+<li>refactored <code>heal_skeleton</code> to deal with some pathological cases</li>
+</ul>
+<h2 id="050-2026-07-11">0.5.0 (2026-07-11)<a class="headerlink" href="#050-2026-07-11" title="Permanent link">&para;</a></h2>
+<h3 id="new_6">New<a class="headerlink" href="#new_6" title="Permanent link">&para;</a></h3>
+<ul>
+<li>skeleton <a href="../python/healing/">healing</a> functions (Rust + Python/R bindings)</li>
+</ul>
+<h2 id="040-2026-07-09">0.4.0 (2026-07-09)<a class="headerlink" href="#040-2026-07-09" title="Permanent link">&para;</a></h2>
+<h3 id="improvements_2">Improvements<a class="headerlink" href="#improvements_2" title="Permanent link">&para;</a></h3>
+<ul>
+<li>NBLAST is rebased on <a href="https://github.com/schlegelp/aann"><code>aann</code></a> for all-nearest-neighbour
+  lookup plus <a href="https://github.com/schlegelp/shull"><code>shull</code></a> for Delaunay triangulation —
+  together a ~5x speed-up over <code>navis</code>' built-in implementation</li>
+<li>precompiled binaries for the R bindings are now on
+  <a href="https://schlegelp.r-universe.dev/builds">R-universe</a></li>
+</ul>
+<h2 id="030-2026-06-28">0.3.0 (2026-06-28)<a class="headerlink" href="#030-2026-06-28" title="Permanent link">&para;</a></h2>
+<h3 id="new_7">New<a class="headerlink" href="#new_7" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>geodesic_nearest</code> returns, for each query node, the closest node among a set of targets
+  and the distance to it. The full distance matrix is never materialised, so it scales.</li>
+</ul>
+<h2 id="020-2026-06-15">0.2.0 (2026-06-15)<a class="headerlink" href="#020-2026-06-15" title="Permanent link">&para;</a></h2>
+<h3 id="new_8">New<a class="headerlink" href="#new_8" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>connected_components_mesh()</code>: fast connected components on meshes, much faster than e.g.
+  conversion to igraph and subsequent graph-based CC</li>
+</ul>
+<h3 id="improvements_3">Improvements<a class="headerlink" href="#improvements_3" title="Permanent link">&para;</a></h3>
+<ul>
+<li>large performance increase for <code>connected_components()</code>, especially when the skeleton has
+  many roots</li>
+<li>speed-up for <code>segment_coords()</code></li>
+<li>technically supporting Python's free-threading (3.14+), though this is largely untested</li>
+</ul>
+<h2 id="010-2025-03-13">0.1.0 (2025-03-13)<a class="headerlink" href="#010-2025-03-13" title="Permanent link">&para;</a></h2>
+<h3 id="improvements_4">Improvements<a class="headerlink" href="#improvements_4" title="Permanent link">&para;</a></h3>
+<ul>
+<li>support for 16-bit node IDs</li>
+<li>better handling of node and parent IDs with different dtypes</li>
+<li><code>csgraph</code> drop-ins: added <a href="../python/wrappers/">documentation</a> and proper checks for
+  whether the input is a rooted tree</li>
+</ul>
+<h3 id="fixes_4">Fixes<a class="headerlink" href="#fixes_4" title="Permanent link">&para;</a></h3>
+<ul>
+<li>fixed an incorrect parameter name in the <code>csgraph</code> drop-ins</li>
+</ul>
+<h2 id="009-2025-02-06">0.0.9 (2025-02-06)<a class="headerlink" href="#009-2025-02-06" title="Permanent link">&para;</a></h2>
+<h3 id="new_9">New<a class="headerlink" href="#new_9" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>generate_segments</code> accepts a <code>lengths</code> parameter, sorts segments by total length when
+  given, and returns the segment lengths</li>
+</ul>
+<h2 id="008-2025-01-05">0.0.8 (2025-01-05)<a class="headerlink" href="#008-2025-01-05" title="Permanent link">&para;</a></h2>
+<h3 id="new_10">New<a class="headerlink" href="#new_10" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>prune_twigs()</code> gained a <code>mask</code> parameter to restrict pruning to parts of the neuron</li>
+</ul>
+<h2 id="007-2024-09-16">0.0.7 (2024-09-16)<a class="headerlink" href="#007-2024-09-16" title="Permanent link">&para;</a></h2>
+<h3 id="fixes_5">Fixes<a class="headerlink" href="#fixes_5" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>geodesic_matrix()</code> no longer returns the distance matrix in the wrong order when
+  <code>sources</code> and/or <code>targets</code> are given</li>
+</ul>
+<h2 id="006-2024-09-16">0.0.6 (2024-09-16)<a class="headerlink" href="#006-2024-09-16" title="Permanent link">&para;</a></h2>
+<h3 id="new_11">New<a class="headerlink" href="#new_11" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>geodesic_pairs</code>: geodesic distances between given node pairs</li>
+</ul>
+<h2 id="005-2024-09-07">0.0.5 (2024-09-07)<a class="headerlink" href="#005-2024-09-07" title="Permanent link">&para;</a></h2>
+<h3 id="improvements_5">Improvements<a class="headerlink" href="#improvements_5" title="Permanent link">&para;</a></h3>
+<ul>
+<li>more flexible about 32-bit vs 64-bit node/parent IDs</li>
+<li>more checks before calling into Rust, so exceptions are more helpful</li>
+</ul>
+<h2 id="004-2024-07-25">0.0.4 (2024-07-25)<a class="headerlink" href="#004-2024-07-25" title="Permanent link">&para;</a></h2>
+<h3 id="new_12">New<a class="headerlink" href="#new_12" title="Permanent link">&para;</a></h3>
+<ul>
+<li>reorganised into a monorepo holding the <code>fastcore</code> Rust crate, the <code>navis-fastcore</code>
+  Python bindings and the <code>nat.fastcore</code> R bindings</li>
+<li><code>navis-fastcore</code>: <a href="../python/wrappers/">drop-in replacements</a> for some <code>csgraph</code> functions</li>
+</ul>
+<h3 id="fixes_6">Fixes<a class="headerlink" href="#fixes_6" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>fastcore</code>: <code>break_segments</code> no longer drops the last node of a sequence</li>
+</ul>
+<h2 id="003a-2024-07-09">0.0.3a (2024-07-09)<a class="headerlink" href="#003a-2024-07-09" title="Permanent link">&para;</a></h2>
+<h3 id="new_13">New<a class="headerlink" href="#new_13" title="Permanent link">&para;</a></h3>
+<ul>
+<li>new functions: <code>prune_twigs()</code>, <code>strahler_index()</code>, <code>break_segments()</code> and
+  <code>classify_nodes()</code></li>
+</ul>
+<h3 id="improvements_6">Improvements<a class="headerlink" href="#improvements_6" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>synapse_flow_centrality()</code>: added a <code>mode</code> parameter (centrifugal, centripetal or sum)</li>
+</ul>
+<h3 id="fixes_7">Fixes<a class="headerlink" href="#fixes_7" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>geodesic_matrix()</code> now actually respects <code>directed=True</code></li>
+</ul>
+<h3 id="breaking_2">Breaking<a class="headerlink" href="#breaking_2" title="Permanent link">&para;</a></h3>
+<ul>
+<li>
+<p>the module was renamed from <code>fastcore</code> to <code>navis-fastcore</code> to avoid name clashes:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>pip<span class="w"> </span>install<span class="w"> </span>navis-fastcore
+</span></code></pre></div>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">navis_fastcore</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">fastcore</span>
+</span></code></pre></div>
+</li>
+</ul>
+<h2 id="002-2024-06-27">0.0.2 (2024-06-27)<a class="headerlink" href="#002-2024-06-27" title="Permanent link">&para;</a></h2>
+<h3 id="new_14">New<a class="headerlink" href="#new_14" title="Permanent link">&para;</a></h3>
+<ul>
+<li><a href="https://schlegelp.github.io/fastcore-rs/">documentation</a>!</li>
+</ul>
+<h3 id="improvements_7">Improvements<a class="headerlink" href="#improvements_7" title="Permanent link">&para;</a></h3>
+<ul>
+<li>a Rust implementation of <code>geodesic_matrix</code> for specific <code>sources</code> and/or <code>targets</code>, which
+  is faster and much more memory efficient than the all-by-all as long as the number of
+  sources/targets is small-ish. <code>fastcore.geodesic_matrix</code> picks the right one for you.</li>
+</ul>
+<h3 id="breaking_3">Breaking<a class="headerlink" href="#breaking_3" title="Permanent link">&para;</a></h3>
+<ul>
+<li>removed the <code>modifier</code> parameter from <code>fastcore.segment_coords</code></li>
+</ul>
+<h2 id="001-2024-06-22">0.0.1 (2024-06-22)<a class="headerlink" href="#001-2024-06-22" title="Permanent link">&para;</a></h2>
+<p>Mostly a release to test publishing via CI.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-circle-arrow-up" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m16 12-4-4-4 4M12 16V8"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://zensical.org/" target="_blank" rel="noopener">
+      Zensical
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["content.action.edit","content.code.annotate","content.code.copy","content.tabs.link","navigation.indexes","navigation.instant","navigation.top","search.highlight","toc.follow"],"search":"../assets/javascripts/workers/search.7d14d953.min.js","tags":null,"translations":{"clipboard.copied":"Copied to clipboard","clipboard.copy":"Copy to clipboard","search.result.more.one":"1 more on this page","search.result.more.other":"# more on this page","search.result.none":"No matching documents","search.result.one":"1 matching document","search.result.other":"# matching documents","search.result.placeholder":"Type to start searching","search.result.term.missing":"Missing","select.version":"Select version"},"version":null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.69c251d7.min.js"></script>
+      
+    
+  </body>
+</html>
