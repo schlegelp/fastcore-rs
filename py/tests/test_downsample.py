@@ -38,27 +38,59 @@ def test_droppers_honour_the_shared_contract(topo, method):
     suite - the three methods differ only in which nodes they drop, so the contract
     they owe is one contract, and it is stated once.
     """
-    ids, parents, weights = DROPPERS[method](topo, topo.coords, topo.weights)
+    ids, parents, weights, node_map = DROPPERS[method](topo, topo.coords, topo.weights)
 
     topologies.check_dropping_invariants(
         (topo.node_ids, topo.parent_ids),
         (ids, parents),
         weights=topo.weights,
         new_weights=weights,
+        node_map=node_map,
     )
 
 
 @pytest.mark.parametrize("method", list(DROPPERS))
 def test_droppers_return_no_weights_when_given_none(topo, method):
-    _, _, weights = DROPPERS[method](topo, topo.coords, None)
+    _, _, weights, _ = DROPPERS[method](topo, topo.coords, None)
     assert weights is None
+
+
+@pytest.mark.parametrize("method", list(DROPPERS))
+def test_droppers_map_dropped_nodes_to_the_nearest_survivor(real_topo, method):
+    """`node_map` names the nearest survivor, not merely the next one rootwards.
+
+    The proximal end is where the rewiring walk arrives anyway; taking the *nearer* of
+    a chain's two ends is the extra thing this promises, and on a real skeleton the two
+    rules disagree for most dropped nodes. The check is against every survivor rather
+    than against the two obvious candidates, since nothing else may be closer either.
+    """
+    topo = real_topo
+    ids, _, _, node_map = DROPPERS[method](topo, topo.coords, topo.weights)
+
+    was_dropped = ~np.isin(topo.node_ids, ids)
+    assert was_dropped.sum() > 100, "the fixture has to lose nodes for this to mean much"
+    dropped = topo.node_ids[was_dropped]
+
+    # Geodesic distance from each dropped node to every survivor. Nothing may be closer
+    # than the survivor it was actually handed to.
+    dists = fastcore.geodesic_matrix(
+        topo.node_ids,
+        topo.parent_ids,
+        weights=topo.weights,
+        sources=dropped,
+        targets=ids,
+    )
+    slot = {node: i for i, node in enumerate(ids.tolist())}
+    chosen = np.array([slot[m] for m in node_map[was_dropped].tolist()])
+    got = dists[np.arange(len(dropped)), chosen]
+    assert (got <= dists.min(axis=1) + 1e-4).all()
 
 
 # ------------------------------------------------------------------ downsample_skeleton
 
 
 def test_downsample_factor_one_is_a_no_op(topo):
-    ids, parents, _ = fastcore.downsample_skeleton(topo.node_ids, topo.parent_ids, 1)
+    ids, parents, _, _ = fastcore.downsample_skeleton(topo.node_ids, topo.parent_ids, 1)
     np.testing.assert_array_equal(ids, topo.node_ids)
     np.testing.assert_array_equal(parents, topo.parent_ids)
 
@@ -79,7 +111,7 @@ def test_downsample_huge_factor_matches_simplify_skeleton(topo):
 def test_downsample_preserve_keeps_the_named_nodes(topo):
     # Every fifth node, whether the factor would have kept it or not.
     preserve = np.asarray(topo.node_ids)[::5]
-    ids, _, _ = fastcore.downsample_skeleton(
+    ids, _, _, _ = fastcore.downsample_skeleton(
         topo.node_ids, topo.parent_ids, 10**6, preserve=preserve
     )
     assert set(preserve.tolist()) <= set(np.asarray(ids).tolist())
@@ -144,7 +176,7 @@ def test_rdp_zero_epsilon_drops_only_collinear_nodes(topo):
     tolerance test at its limit rather than an identity check.
     """
     xyz = topo.coords
-    ids, _, _ = fastcore.simplify_rdp(topo.node_ids, topo.parent_ids, xyz, 0.0)
+    ids, _, _, _ = fastcore.simplify_rdp(topo.node_ids, topo.parent_ids, xyz, 0.0)
 
     deviations = dropped_node_deviations(topo, xyz, set(np.asarray(ids).tolist()))
     if len(deviations):
@@ -184,7 +216,7 @@ def test_rdp_respects_its_tolerance(real_topo):
     topo = real_topo
     xyz = topo.coords
     epsilon = 50.0
-    ids, _, _ = fastcore.simplify_rdp(topo.node_ids, topo.parent_ids, xyz, epsilon)
+    ids, _, _, _ = fastcore.simplify_rdp(topo.node_ids, topo.parent_ids, xyz, epsilon)
 
     deviations = dropped_node_deviations(topo, xyz, set(np.asarray(ids).tolist()))
     # The test is only worth anything if nodes were actually dropped.
@@ -196,7 +228,7 @@ def test_rdp_respects_its_tolerance(real_topo):
 
 
 def test_vw_zero_area_is_a_no_op(topo):
-    ids, parents, _ = fastcore.simplify_vw(
+    ids, parents, _, _ = fastcore.simplify_vw(
         topo.node_ids, topo.parent_ids, topo.coords, 0.0
     )
     np.testing.assert_array_equal(ids, topo.node_ids)
@@ -229,7 +261,7 @@ def test_vw_is_reproducible(topo):
 
 def test_resample_keeps_the_topology_nodes_first_and_unmoved(topo):
     xyz = topo.coords
-    ids, parents, out_xyz, source, alpha = fastcore.resample_skeleton(
+    ids, parents, out_xyz, source, alpha, _ = fastcore.resample_skeleton(
         topo.node_ids, topo.parent_ids, xyz, 10.0
     )
 
@@ -240,10 +272,11 @@ def test_resample_keeps_the_topology_nodes_first_and_unmoved(topo):
 
 
 def test_resample_is_a_forest_with_the_same_shape(topo):
-    ids, parents, _, _, _ = fastcore.resample_skeleton(
+    ids, parents, _, _, _, node_map = fastcore.resample_skeleton(
         topo.node_ids, topo.parent_ids, topo.coords, 10.0
     )
     topologies.check_is_forest(ids, parents)
+    topologies.check_node_map(topo.node_ids, ids, node_map)
     # Resampling mints new IDs, so only the counts per class can be compared.
     topologies.check_topology_preserved(
         (topo.node_ids, topo.parent_ids), (ids, parents), same_nodes=False
@@ -254,7 +287,7 @@ def test_resample_source_and_alpha_reproduce_the_coordinates(topo):
     """The documented interpolation must give back the coordinates the function chose -
     otherwise a caller interpolating a radius the same way would get something else."""
     xyz = topo.coords
-    _, _, out_xyz, source, alpha = fastcore.resample_skeleton(
+    _, _, out_xyz, source, alpha, _ = fastcore.resample_skeleton(
         topo.node_ids, topo.parent_ids, xyz, 10.0
     )
     want = xyz[source[:, 0]] * (1 - alpha)[:, None] + xyz[source[:, 1]] * alpha[:, None]
@@ -273,7 +306,7 @@ def test_resample_hits_the_requested_spacing(real_topo):
     xyz = topo.coords
     spacing = 500.0
 
-    ids, parents, out_xyz, _, _ = fastcore.resample_skeleton(
+    ids, parents, out_xyz, _, _, _ = fastcore.resample_skeleton(
         topo.node_ids, topo.parent_ids, xyz, spacing
     )
     lengths = fastcore.parent_dist(ids, parents, out_xyz, root_dist=0)
@@ -298,6 +331,26 @@ def test_resample_finer_spacing_gives_more_nodes(real_topo):
         for s in (2000.0, 500.0, 100.0)
     ]
     assert sizes[0] < sizes[1] < sizes[2]
+
+
+@pytest.mark.parametrize("spacing", [100.0, 500.0, 2000.0])
+def test_resample_node_map_lands_within_three_quarters_of_a_spacing(real_topo, spacing):
+    """An input node's data goes somewhere near enough that it still means something.
+
+    Output nodes divide each segment into equal parts of at most ``1.5 * spacing`` -- a
+    segment shorter than that becomes a single part -- so the nearest one is never more
+    than ``0.75 * spacing`` along the neurite, and the straight line is shorter still.
+    """
+    topo = real_topo
+    ids, _, xyz, _, _, node_map = fastcore.resample_skeleton(
+        topo.node_ids, topo.parent_ids, topo.coords, spacing
+    )
+    topologies.check_node_map(topo.node_ids, ids, node_map)
+
+    slot = {node: i for i, node in enumerate(ids.tolist())}
+    landed = np.array([slot[m] for m in node_map.tolist()])
+    offset = np.linalg.norm(topo.coords - xyz[landed], axis=1)
+    assert offset.max() <= 0.75 * spacing + 1e-6
 
 
 def test_resample_rejects_a_bad_spacing():

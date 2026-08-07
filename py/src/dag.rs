@@ -730,7 +730,8 @@ pub fn contract_nodes_py<'py>(
 ///
 /// Returns:
 ///
-/// `(kept, new_parents, new_weights)`; `new_parents` indexes into `kept`.
+/// `(kept, new_parents, new_weights, node_map)`; `new_parents` indexes into `kept`, and
+/// `node_map` is (N, ): for each input node, the surviving node its data belongs to now.
 ///
 #[pyfunction]
 #[pyo3(name = "simplify_skeleton")]
@@ -742,13 +743,16 @@ pub fn simplify_skeleton_py<'py>(
     Bound<'py, PyArray1<i32>>,
     Bound<'py, PyArray1<i32>>,
     Option<Bound<'py, PyArray1<f32>>>,
+    Bound<'py, PyArray1<i32>>,
 ) {
     let weights: Option<Array1<f32>> = weights.map(|w| w.as_array().to_owned());
-    let (kept, new_parents, new_weights) = simplify_skeleton(&parents.as_array(), &weights);
+    let (kept, new_parents, new_weights, node_map) =
+        simplify_skeleton(&parents.as_array(), &weights);
     (
         Array1::from(kept).into_pyarray(py),
         new_parents.into_pyarray(py),
         new_weights.map(|w| Array1::from(w).into_pyarray(py)),
+        node_map.into_pyarray(py),
     )
 }
 

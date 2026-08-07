@@ -27,6 +27,7 @@ from topologies import (  # noqa: E402
     ancestors,
     check_dropping_invariants,
     check_is_forest,
+    check_node_map,
     check_topology_preserved,
     parent_map,
 )
@@ -267,7 +268,7 @@ def test_simplify_skeleton_keeps_the_non_slabs(forest):
     node_ids, parent_ids, _ = forest
     types = fastcore.classify_nodes(node_ids, parent_ids)
 
-    ids, _, _ = fastcore.simplify_skeleton(node_ids, parent_ids)
+    ids, _, _, _ = fastcore.simplify_skeleton(node_ids, parent_ids)
 
     assert ids.tolist() == node_ids[types != 3].tolist()
 
@@ -276,7 +277,7 @@ def test_simplify_skeleton_keeps_the_non_slabs(forest):
 def test_simplify_skeleton_conserves_cable(forest):
     node_ids, parent_ids, weights = forest
 
-    _, _, new_weights = fastcore.simplify_skeleton(
+    _, _, new_weights, _ = fastcore.simplify_skeleton(
         node_ids, parent_ids, weights=weights
     )
 
@@ -288,7 +289,7 @@ def test_simplify_skeleton_conserves_cable(forest):
 def test_simplify_skeleton_yields_a_valid_forest(forest):
     node_ids, parent_ids, weights = forest
 
-    ids, parents, _ = fastcore.simplify_skeleton(
+    ids, parents, _, _ = fastcore.simplify_skeleton(
         node_ids, parent_ids, weights=weights
     )
 
@@ -309,7 +310,7 @@ def test_simplify_skeleton_preserves_root_to_leaf_distances(forest):
             fastcore.dist_to_root(node_ids, parent_ids, weights=weights).tolist(),
         )
     )
-    ids, parents, new_weights = fastcore.simplify_skeleton(
+    ids, parents, new_weights, _ = fastcore.simplify_skeleton(
         node_ids, parent_ids, weights=weights
     )
     after = fastcore.dist_to_root(ids, parents, weights=new_weights)
@@ -787,7 +788,7 @@ def test_dropping_preserves_topology_and_cable(forest_coords, which):
     in, at a different sampling density, with the same total cable length."""
     (node_ids, parent_ids, weights), coords = forest_coords
 
-    ids, parents, new_weights = DROP_METHODS[which](
+    ids, parents, new_weights, node_map = DROP_METHODS[which](
         node_ids, parent_ids, coords, weights
     )
 
@@ -797,6 +798,7 @@ def test_dropping_preserves_topology_and_cable(forest_coords, which):
         (ids, parents),
         weights=weights,
         new_weights=new_weights,
+        node_map=node_map,
     )
 
 
@@ -805,11 +807,12 @@ def test_resample_is_a_forest_with_the_same_shape(forest_coords):
     (node_ids, parent_ids, _), coords = forest_coords
     spacing = 3.0
 
-    ids, parents, xyz, source, alpha = fastcore.resample_skeleton(
+    ids, parents, xyz, source, alpha, node_map = fastcore.resample_skeleton(
         node_ids, parent_ids, coords, spacing
     )
 
     check_is_forest(ids, parents)
+    check_node_map(node_ids, ids, node_map)
     # Resampling mints new IDs, so only the counts per class can be compared.
     check_topology_preserved(
         (node_ids, parent_ids), (ids, parents), same_nodes=False

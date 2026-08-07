@@ -18,14 +18,40 @@ They come in three families:
 | [`resample_skeleton`](#navis_fastcore.resample_skeleton) | either way | new ones for the new nodes | interpolated |
 | [`smooth_skeleton`](#navis_fastcore.smooth_skeleton), [`smooth_skeleton_gaussian`](#navis_fastcore.smooth_skeleton_gaussian) | unchanged | unchanged | moved |
 
+## Taking your data with you
+
+A skeleton rarely travels alone. Synapses, soma tags and manual annotations all hang
+off particular nodes, and renumbering the nodes strands them — so every function here
+that changes the node table also says where each input node's data should go, as a
+`node_map`:
+
+```python
+ids, parents, weights, node_map = fastcore.simplify_rdp(
+    node_ids, parent_ids, coords, epsilon=100
+)
+
+# node_map is indexed like node_ids and valued in the returned ids, so this is a
+# lookup table from old node to new.
+lookup = pd.Series(node_map, index=node_ids)
+synapses["node_id"] = lookup[synapses["node_id"]].values
+```
+
+It is *total*: every input node names exactly one output node — the nearest one along
+the neurite, ties going towards the root — so there is no sentinel to mask off. Nodes
+that survive map to themselves.
+
+The two smoothers have no `node_map` and need none: they move coordinates and nothing
+else, so anything attached to a node is still attached to it afterwards. The one thing
+that does go stale is a *copy* of a node's position taken beforehand.
+
 ## Dropping nodes
 
 The three thinning methods share an output contract with
 [`simplify_skeleton`](topology.md#navis_fastcore.simplify_skeleton) — surviving IDs,
-their new parents, and the edge weights that replace the dropped chains — so they
-are interchangeable at the call site. Because the replacement edges carry the
-*summed* length of the chains they stand in for, total cable length and geodesic
-distances survive exactly, even where the geometry has been cut across.
+their new parents, the edge weights that replace the dropped chains, and the
+`node_map` — so they are interchangeable at the call site. Because the replacement
+edges carry the *summed* length of the chains they stand in for, total cable length
+and geodesic distances survive exactly, even where the geometry has been cut across.
 
 All three take a `preserve` list of node IDs that must survive whatever the rule
 decides — nodes carrying synapses, say. They differ in what they spend the node budget
@@ -46,13 +72,13 @@ on:
 import navis_fastcore as fastcore
 
 # Same skeleton, three ways to make it a fifth of the size.
-ids, parents, weights = fastcore.downsample_skeleton(
+ids, parents, weights, node_map = fastcore.downsample_skeleton(
     node_ids, parent_ids, 5, weights=weights
 )
-ids, parents, weights = fastcore.simplify_rdp(
+ids, parents, weights, node_map = fastcore.simplify_rdp(
     node_ids, parent_ids, coords, epsilon=100, weights=weights
 )
-ids, parents, weights = fastcore.simplify_vw(
+ids, parents, weights, node_map = fastcore.simplify_vw(
     node_ids, parent_ids, coords, min_area=1e4, weights=weights
 )
 ```
@@ -80,18 +106,25 @@ throughout. Anything that averages a quantity *per node* wants this in front of 
 otherwise the average is weighted by how finely each neurite happened to be traced.
 
 Because it creates nodes, it is the one function here that returns a new node table
-rather than a subset. `source` and `alpha` are how the rest of your data follows:
-they name the input edge each output node sits on and how far along it, so any
-per-node column interpolates in one expression.
+rather than a subset — and the only one that reports both directions. `source` and
+`alpha` name the input edge each output node sits on and how far along it, so any
+per-node *column* interpolates in one expression; `node_map` points the other way,
+for whatever is *attached* to a node.
 
 ```python
-ids, parents, xyz, source, alpha = fastcore.resample_skeleton(
+ids, parents, xyz, source, alpha, node_map = fastcore.resample_skeleton(
     node_ids, parent_ids, coords, spacing=1000
 )
 
-# ...and everything else you track per node comes along the same way
+# Per-node columns interpolate onto the new nodes...
 new_radius = radius[source[:, 0]] * (1 - alpha) + radius[source[:, 1]] * alpha
+
+# ...and per-node attachments follow node_map to their new home.
+synapses["node_id"] = pd.Series(node_map, index=node_ids)[synapses["node_id"]].values
 ```
+
+You need both because neither derives from the other: an input node that fell between
+two output nodes has no output row of its own, so `source`/`alpha` does not invert.
 
 ::: navis_fastcore.resample_skeleton
 

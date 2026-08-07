@@ -16,28 +16,31 @@ type DroppedOut<'py> = (
     Bound<'py, PyArray1<i32>>,
     Bound<'py, PyArray1<i32>>,
     Option<Bound<'py, PyArray1<f32>>>,
+    Bound<'py, PyArray1<i32>>,
 );
 
-/// What `resample_skeleton` hands back: parents, coordinates, and the `(source, alpha)`
-/// pair that says where each output node came from. Aliased for the same reason as
-/// `DroppedOut` — four arrays of three different shapes is past the point where the
-/// signature reads.
+/// What `resample_skeleton` hands back: parents, coordinates, the `(source, alpha)` pair
+/// that says where each output node came from, and the `node_map` that says where each
+/// input node went. Aliased for the same reason as `DroppedOut` — five arrays of four
+/// different shapes is past the point where the signature reads.
 type ResampledOut<'py> = (
     Bound<'py, PyArray1<i32>>,
     Bound<'py, PyArray2<f64>>,
     Bound<'py, PyArray2<i32>>,
     Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyArray1<i32>>,
 );
 
 fn dropped_to_py(
     py: Python<'_>,
-    out: (Vec<i32>, Array1<i32>, Option<Vec<f32>>),
+    out: (Vec<i32>, Array1<i32>, Option<Vec<f32>>, Array1<i32>),
 ) -> DroppedOut<'_> {
-    let (kept, new_parents, new_weights) = out;
+    let (kept, new_parents, new_weights, node_map) = out;
     (
         Array1::from(kept).into_pyarray(py),
         new_parents.into_pyarray(py),
         new_weights.map(|w| Array1::from(w).into_pyarray(py)),
+        node_map.into_pyarray(py),
     )
 }
 
@@ -52,7 +55,8 @@ fn dropped_to_py(
 ///
 /// Returns:
 ///
-/// `(kept, new_parents, new_weights)`; `new_parents` indexes into `kept`.
+/// `(kept, new_parents, new_weights, node_map)`; `new_parents` indexes into `kept`, and
+/// `node_map` is (N, ): for each input node, the surviving node its data belongs to now.
 ///
 #[pyfunction]
 #[pyo3(name = "downsample_skeleton", signature = (parents, factor, preserve=None, weights=None))]
@@ -84,7 +88,8 @@ pub fn downsample_skeleton_py<'py>(
 ///
 /// Returns:
 ///
-/// `(kept, new_parents, new_weights)`; `new_parents` indexes into `kept`.
+/// `(kept, new_parents, new_weights, node_map)`; `new_parents` indexes into `kept`, and
+/// `node_map` is (N, ): for each input node, the surviving node its data belongs to now.
 ///
 #[pyfunction]
 #[pyo3(name = "simplify_rdp", signature = (parents, coords, epsilon, preserve=None, weights=None, threads=None))]
@@ -125,7 +130,8 @@ pub fn simplify_rdp_py<'py>(
 ///
 /// Returns:
 ///
-/// `(kept, new_parents, new_weights)`; `new_parents` indexes into `kept`.
+/// `(kept, new_parents, new_weights, node_map)`; `new_parents` indexes into `kept`, and
+/// `node_map` is (N, ): for each input node, the surviving node its data belongs to now.
 ///
 #[pyfunction]
 #[pyo3(name = "simplify_vw", signature = (parents, coords, min_area, preserve=None, weights=None, threads=None))]
@@ -164,10 +170,10 @@ pub fn simplify_vw_py<'py>(
 ///
 /// Returns:
 ///
-/// `(new_parents, new_coords, source, alpha)`. `source` is (M, 2): the input node indices
-/// of the edge each output node sits on, child then parent. `alpha` is how far along that
-/// edge it lies. The first rows are the input's roots, branch points and leafs, in input
-/// order and unmoved.
+/// `(new_parents, new_coords, source, alpha, node_map)`. `source` is (M, 2): the input node
+/// indices of the edge each output node sits on, child then parent. `alpha` is how far along
+/// that edge it lies. `node_map` is (N, ): the output node nearest each input node. The first
+/// rows are the input's roots, branch points and leafs, in input order and unmoved.
 ///
 #[pyfunction]
 #[pyo3(name = "resample_skeleton", signature = (parents, coords, spacing, threads=None))]
@@ -184,6 +190,7 @@ pub fn resample_skeleton_py<'py>(
         out.coords.into_pyarray(py),
         out.source.into_pyarray(py),
         out.alpha.into_pyarray(py),
+        out.node_map.into_pyarray(py),
     )
 }
 

@@ -33,7 +33,8 @@ returns no \code{weights}.}
 \item{threads}{Optional integer; number of threads. \code{NULL} uses all cores.}
 }
 \value{
-List with \code{nodes}, \code{parents} and \code{weights}, as \code{downsample_skeleton()}.
+List with \code{nodes}, \code{parents}, \code{weights} and \code{node_map}, as
+\code{downsample_skeleton()}.
 }
 \description{
 The other geometry-aware thinning. Where \code{simplify_rdp()} asks how far the path

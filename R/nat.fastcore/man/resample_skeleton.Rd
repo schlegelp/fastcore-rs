@@ -23,7 +23,10 @@ List with \code{parents} (0-based parent index per output node, \code{-1} for ro
 branch points and leafs come first, in input order and unmoved; they carry their own
 index in both \code{source_} columns and an \code{alpha} of 0, so
 \code{attr[source_from + 1] * (1 - alpha) + attr[source_to + 1] * alpha} interpolates any
-per-node quantity over the whole output.
+per-node quantity over the whole output. \code{node_map} points the other way: one entry
+per \emph{input} node, giving the 0-based index of the output node nearest it along the
+neurite (ties going towards the root). Use \code{source_}/\code{alpha} to carry a per-node
+column forward and \code{node_map} to re-home whatever is \emph{attached} to a node.
 }
 \description{
 The inverse problem to \code{downsample_skeleton()}: rather than thinning what is there,

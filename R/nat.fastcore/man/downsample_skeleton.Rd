@@ -21,9 +21,12 @@ returns no \code{weights}.}
 \value{
 List with \code{nodes} (0-based indices of the surviving nodes, in their original
 relative order), \code{parents} (their new 0-based parent indices, \code{-1} for roots,
-indexing \emph{into} \code{nodes}) and \code{weights} (length of each node's edge to its new
+indexing \emph{into} \code{nodes}), \code{weights} (length of each node's edge to its new
 parent, i.e. the summed length of the chain it replaces; \code{NULL} exactly when
-\code{weights} was \code{NULL}). Total cable length is preserved.
+\code{weights} was \code{NULL}) and \code{node_map} (one entry per \emph{input} node, giving the
+0-based index \emph{into} \code{nodes} of the survivor its data belongs to now: itself if it
+survived, otherwise whichever end of its chain is nearer, measured in \code{weights},
+ties going towards the root). Total cable length is preserved.
 }
 \description{
 The plain "make this skeleton smaller" operation: it pays no attention to geometry,

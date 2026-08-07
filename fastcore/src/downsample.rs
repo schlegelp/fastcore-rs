@@ -4,7 +4,7 @@
 //!
 //! - **Dropping nodes** — [`downsample_skeleton`] (keep every Nth), [`simplify_rdp`]
 //!   (Ramer-Douglas-Peucker) and [`simplify_vw`] (Visvalingam-Whyatt). All three hand
-//!   back `(kept, new_parents, new_weights)`, the same triple as
+//!   back `(kept, new_parents, new_weights, node_map)`, the same tuple as
 //!   [`crate::dag::simplify_skeleton`], with each replacement edge carrying the summed
 //!   length of the chain it stands in for — so total cable length survives exactly.
 //! - **Adding nodes** — [`resample_skeleton`] places interpolated points at a fixed
@@ -13,6 +13,20 @@
 //! - **Moving nodes** — [`smooth_skeleton`] (moving average) and
 //!   [`smooth_skeleton_gaussian`] take the jitter out of a traced arbor without changing
 //!   the node count at all.
+//!
+//! # Following the data
+//!
+//! A skeleton rarely travels alone: synapses, soma tags and manual annotations all hang off
+//! particular nodes, and an operation that renumbers the nodes strands them. Everything here
+//! that changes the node table therefore also reports where each *input* node's data should
+//! go — `node_map` for the droppers and for [`Resampled`], indexed by input node and valued
+//! in output nodes, the same direction as [`crate::simplify::simplify_mesh`]'s vertex map.
+//! It is total in both cases: every input node names exactly one output node, the nearest
+//! along the neurite, with ties going proximal.
+//!
+//! The two smoothers need no such map and do not have one. They move coordinates only —
+//! every node keeps its ID and its parent — so anything attached to a node is still attached
+//! to it afterwards. Only a *copy* of a node's position taken beforehand goes stale.
 //!
 //! # The segment model
 //!
@@ -189,7 +203,7 @@ fn drop_with<T, F>(
     preserve: &Option<Array1<bool>>,
     threads: Option<usize>,
     rule: F,
-) -> (Vec<i32>, Array1<i32>, Option<Vec<T>>)
+) -> (Vec<i32>, Array1<i32>, Option<Vec<T>>, Array1<i32>)
 where
     T: Float + AddAssign,
     F: Fn(&[i32]) -> Vec<i32> + Sync + Send,
@@ -243,8 +257,9 @@ where
 ///
 /// Returns:
 ///
-/// `(kept, new_parents, new_weights)` -- see [`crate::dag::simplify_skeleton`] for the
-/// convention. Total cable length is preserved.
+/// `(kept, new_parents, new_weights, node_map)` -- see [`crate::dag::simplify_skeleton`]
+/// for the convention. Total cable length is preserved, and `node_map` says which surviving
+/// node each input node's data belongs to now.
 ///
 /// Panics if `factor` is 0.
 pub fn downsample_skeleton<T>(
@@ -252,7 +267,7 @@ pub fn downsample_skeleton<T>(
     factor: usize,
     preserve: &Option<Array1<bool>>,
     weights: &Option<Array1<T>>,
-) -> (Vec<i32>, Array1<i32>, Option<Vec<T>>)
+) -> (Vec<i32>, Array1<i32>, Option<Vec<T>>, Array1<i32>)
 where
     T: Float + AddAssign,
 {
@@ -291,10 +306,10 @@ where
 ///
 /// Returns:
 ///
-/// `(kept, new_parents, new_weights)` -- see [`crate::dag::simplify_skeleton`] for the
-/// convention. Total cable length is preserved: the replacement edges carry the length of
-/// the chains they stand in for, *not* the shorter straight line the simplified path
-/// takes. Distances therefore stay right even where the geometry has been cut across.
+/// `(kept, new_parents, new_weights, node_map)` -- see [`crate::dag::simplify_skeleton`]
+/// for the convention. Total cable length is preserved: the replacement edges carry the
+/// length of the chains they stand in for, *not* the shorter straight line the simplified
+/// path takes. Distances therefore stay right even where the geometry has been cut across.
 ///
 /// # Complexity
 ///
@@ -311,7 +326,7 @@ pub fn simplify_rdp<T>(
     preserve: &Option<Array1<bool>>,
     weights: &Option<Array1<T>>,
     threads: Option<usize>,
-) -> (Vec<i32>, Array1<i32>, Option<Vec<T>>)
+) -> (Vec<i32>, Array1<i32>, Option<Vec<T>>, Array1<i32>)
 where
     T: Float + AddAssign,
 {
@@ -387,8 +402,8 @@ fn rdp_segment(seg: &[i32], coords: &ArrayView2<f64>, d: usize, epsilon_sq: f64)
 ///
 /// Returns:
 ///
-/// `(kept, new_parents, new_weights)` -- see [`crate::dag::simplify_skeleton`] for the
-/// convention. Total cable length is preserved, as in [`simplify_rdp`].
+/// `(kept, new_parents, new_weights, node_map)` -- see [`crate::dag::simplify_skeleton`]
+/// for the convention. Total cable length is preserved, as in [`simplify_rdp`].
 pub fn simplify_vw<T>(
     parents: &ArrayView1<i32>,
     coords: &ArrayView2<f64>,
@@ -396,7 +411,7 @@ pub fn simplify_vw<T>(
     preserve: &Option<Array1<bool>>,
     weights: &Option<Array1<T>>,
     threads: Option<usize>,
-) -> (Vec<i32>, Array1<i32>, Option<Vec<T>>)
+) -> (Vec<i32>, Array1<i32>, Option<Vec<T>>, Array1<i32>)
 where
     T: Float + AddAssign,
 {
@@ -524,6 +539,15 @@ pub struct Resampled {
     /// interpolates any per-node quantity over the whole output, carried-over nodes
     /// included.
     pub alpha: Array1<f64>,
+    /// `(N, )` the reverse direction: for each *input* node, the output node nearest to it
+    /// along the neurite, with ties going proximal. Total -- every input node gets one.
+    ///
+    /// [`Resampled::source`] and [`Resampled::alpha`] carry per-node *columns* forward, but
+    /// they cannot answer "where did node 12345 go": an input node between two output nodes
+    /// has no output row of its own, so the mapping is not invertible. That is the question
+    /// anything *attached* to a node asks -- a synapse, a soma tag, a manual annotation --
+    /// and this answers it. Carried-over nodes map to themselves.
+    pub node_map: Array1<i32>,
 }
 
 /// Place nodes at a fixed spacing along every neurite.
@@ -570,20 +594,21 @@ pub fn resample_skeleton(
     // nodes segment by segment) is what lets a caller line the two node tables up.
     let (kept, position) = compact(parents.len(), |idx| keep[idx]);
 
-    let sampled: Vec<Vec<Sample>> = with_pool(threads, || {
+    let sampled: Vec<(Vec<Sample>, Vec<u32>)> = with_pool(threads, || {
         segments
             .par_iter()
             .map(|seg| resample_segment(seg, coords, d, spacing))
             .collect()
     });
 
-    let n_new: usize = sampled.iter().map(|s| s.len()).sum();
+    let n_new: usize = sampled.iter().map(|(s, _)| s.len()).sum();
     let m = kept.len() + n_new;
 
     let mut out_parents: Array1<i32> = Array::from_elem(m, -1);
     let mut out_coords: Array2<f64> = Array2::zeros((m, d));
     let mut out_source: Array2<i32> = Array2::zeros((m, 2));
     let mut out_alpha: Array1<f64> = Array1::zeros(m);
+    let mut node_map: Array1<i32> = Array::from_elem(parents.len(), -1);
 
     // The carried-over nodes keep their coordinates exactly -- resampling must not nudge
     // a branch point, or the neurites meeting there would come apart.
@@ -593,10 +618,11 @@ pub fn resample_skeleton(
         }
         out_source[[slot, 0]] = node;
         out_source[[slot, 1]] = node;
+        node_map[node as usize] = slot as i32;
     }
 
     let mut offset = kept.len();
-    for (seg, samples) in segments.iter().zip(sampled.iter()) {
+    for (seg, (samples, nearest)) in segments.iter().zip(sampled.iter()) {
         for (i, s) in samples.iter().enumerate() {
             let slot = offset + i;
             // The coordinates are re-derived here rather than carried on the `Sample`,
@@ -624,6 +650,13 @@ pub fn resample_skeleton(
             out_parents[pair[0] as usize] = pair[1];
         }
 
+        // `chain` is also the segment's output nodes in order, which is what `nearest`
+        // indexes into: the dropped interior nodes hand their data to whichever of them
+        // ended up closest. The two endpoints already mapped to themselves above.
+        for (i, &k) in nearest.iter().enumerate() {
+            node_map[seg[i + 1] as usize] = chain[k as usize];
+        }
+
         offset += samples.len();
     }
 
@@ -632,6 +665,7 @@ pub fn resample_skeleton(
         coords: out_coords,
         source: out_source,
         alpha: out_alpha,
+        node_map,
     }
 }
 
@@ -660,15 +694,26 @@ fn divisions(total: f64, spacing: f64) -> usize {
     }
 }
 
-/// The new interior nodes of one resampled segment, distal to proximal.
-fn resample_segment(seg: &[i32], coords: &ArrayView2<f64>, d: usize, spacing: f64) -> Vec<Sample> {
+/// One resampled segment: its new interior nodes distal to proximal, and where each
+/// *original* interior node's data should go.
+///
+/// The second vector has one entry per node in `seg[1..n-1]`, indexing the segment's output
+/// nodes in order -- `0` the distal endpoint, `1..=samples.len()` the new nodes, and
+/// `samples.len() + 1` the proximal endpoint. Resolving that to a global index needs the
+/// output offset, which only the caller knows.
+fn resample_segment(
+    seg: &[i32],
+    coords: &ArrayView2<f64>,
+    d: usize,
+    spacing: f64,
+) -> (Vec<Sample>, Vec<u32>) {
     let n = seg.len();
     // A two-node segment cannot be subdivided into more than the edge it already is unless
     // it is longer than `spacing`, and on a real arbor most segments are exactly two nodes
     // (twigs) -- 522k of 728k on the performance fixture. Answering those from one distance
     // keeps the common case out of `gather` and `arc_lengths` entirely.
     if n < 2 {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     if n == 2 {
         let total = (0..d)
@@ -680,7 +725,9 @@ fn resample_segment(seg: &[i32], coords: &ArrayView2<f64>, d: usize, spacing: f6
         // rounding boundary. Falling through is always safe; returning early when the
         // general path would have added a node would not be.
         if divisions(total, spacing) == 1 {
-            return Vec::new();
+            // Both endpoints survive and there is nothing in between, so no node needs
+            // rehousing either way.
+            return (Vec::new(), Vec::new());
         }
     }
 
@@ -714,7 +761,21 @@ fn resample_segment(seg: &[i32], coords: &ArrayView2<f64>, d: usize, spacing: f6
         });
     }
 
-    out
+    // Output node `k` sits at arc length `total * k / parts` by construction, so the nearest
+    // one to an original node is a division away -- no second walk over the segment. `round`
+    // breaks a tie upwards, which is towards the root, matching `rewire_kept`.
+    let nearest = (1..n - 1)
+        .map(|i| {
+            let k = if total > 0.0 {
+                (arc[i] / total * parts as f64).round() as usize
+            } else {
+                0 // a segment of coincident nodes: every one of them is "at" the distal end
+            };
+            k.min(parts) as u32
+        })
+        .collect();
+
+    (out, nearest)
 }
 
 // ------------------------------------------------------------------------ moving nodes
@@ -971,7 +1032,7 @@ mod tests {
     #[test]
     fn downsample_factor_one_keeps_everything() {
         let (parents, _) = chain(10);
-        let (kept, new_parents, _) =
+        let (kept, new_parents, _, _) =
             downsample_skeleton(&parents.view(), 1, &None, &no_weights());
         assert_eq!(kept.len(), 10);
         assert_eq!(new_parents, parents);
@@ -981,10 +1042,10 @@ mod tests {
     fn downsample_keeps_every_nth_and_both_ends() {
         let (parents, _) = chain(11);
         // The chain runs 10 (leaf) -> 0 (root), so positions count down from the leaf.
-        let (kept, _, _) = downsample_skeleton(&parents.view(), 2, &None, &no_weights());
+        let (kept, _, _, _) = downsample_skeleton(&parents.view(), 2, &None, &no_weights());
         assert_eq!(kept, vec![0, 2, 4, 6, 8, 10]);
 
-        let (kept, _, _) = downsample_skeleton(&parents.view(), 5, &None, &no_weights());
+        let (kept, _, _, _) = downsample_skeleton(&parents.view(), 5, &None, &no_weights());
         assert_eq!(kept, vec![0, 5, 10]);
     }
 
@@ -992,7 +1053,7 @@ mod tests {
     fn downsample_preserves_topology_nodes_and_cable() {
         let parents = tree();
         let weights: Array1<f32> = arr1(&[0.0, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0]);
-        let (kept, _, new_weights) =
+        let (kept, _, new_weights, _) =
             downsample_skeleton(&parents.view(), 100, &None, &Some(weights.clone()));
 
         // Root 0, branch 1, leafs 3 and 6 survive a factor nothing else could.
@@ -1007,7 +1068,7 @@ mod tests {
         let (parents, _) = chain(11);
         let mut preserve = Array1::from_elem(11, false);
         preserve[7] = true;
-        let (kept, _, _) =
+        let (kept, _, _, _) =
             downsample_skeleton(&parents.view(), 5, &Some(preserve), &no_weights());
         assert_eq!(kept, vec![0, 5, 7, 10]);
     }
@@ -1036,6 +1097,42 @@ mod tests {
             // Only the root, the leaf and the preserved node survive thresholds that
             // aggressive -- and node 7 is there only because it was named.
             assert_eq!(kept, vec![0, 7, 10]);
+        }
+    }
+
+    /// `node_map` is likewise part of the shared step, so all three droppers agree on it.
+    #[test]
+    fn node_map_is_the_same_for_every_dropper() {
+        let (parents, coords) = chain(11);
+        let (p, c) = (parents.view(), coords.view());
+
+        for map in [
+            downsample_skeleton(&p, 100, &None, &no_weights()).3,
+            simplify_rdp(&p, &c, 1e9, &None, &no_weights(), None).3,
+            simplify_vw(&p, &c, 1e9, &None, &no_weights(), None).3,
+        ] {
+            // Root 0 and leaf 10 survive as slots 0 and 1. Nodes 1-5 are nearer the root
+            // (node 5 by the proximal tie-break), 6-9 nearer the leaf.
+            assert_eq!(map.to_vec(), vec![0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1]);
+        }
+    }
+
+    /// Every input node lands somewhere, and never on a node that was itself dropped.
+    #[test]
+    fn node_map_is_total_and_points_at_survivors() {
+        let parents = tree();
+        let coords = Array2::from_shape_fn((7, 3), |(i, k)| if k == 0 { i as f64 } else { 0.0 });
+        let (kept, _, _, map) =
+            simplify_rdp(&parents.view(), &coords.view(), 0.0, &None, &no_weights(), None);
+
+        assert_eq!(map.len(), 7);
+        for (node, &slot) in map.iter().enumerate() {
+            assert!(slot >= 0, "node {node} mapped nowhere");
+            assert!((slot as usize) < kept.len(), "node {node} mapped out of range");
+        }
+        // A survivor maps to its own slot, so `kept[map[node]] == node`.
+        for (slot, &node) in kept.iter().enumerate() {
+            assert_eq!(map[node as usize], slot as i32);
         }
     }
 
@@ -1074,7 +1171,7 @@ mod tests {
     #[test]
     fn rdp_collapses_a_straight_line() {
         let (parents, coords) = chain(50);
-        let (kept, new_parents, _) =
+        let (kept, new_parents, _, _) =
             simplify_rdp(&parents.view(), &coords.view(), 0.5, &None, &no_weights(), None);
         assert_eq!(kept, vec![0, 49]);
         assert_eq!(new_parents, arr1(&[-1, 0]));
@@ -1088,7 +1185,7 @@ mod tests {
             coords[[i, 0]] = 4.0;
             coords[[i, 1]] = (i - 4) as f64;
         }
-        let (kept, _, _) =
+        let (kept, _, _, _) =
             simplify_rdp(&parents.view(), &coords.view(), 0.5, &None, &no_weights(), None);
         assert_eq!(kept, vec![0, 4, 8]);
     }
@@ -1099,7 +1196,7 @@ mod tests {
         for i in 0..20 {
             coords[[i, 1]] = if i % 2 == 0 { 0.0 } else { 0.001 };
         }
-        let (kept, _, _) =
+        let (kept, _, _, _) =
             simplify_rdp(&parents.view(), &coords.view(), 0.0, &None, &no_weights(), None);
         assert_eq!(kept.len(), 20);
     }
@@ -1108,7 +1205,7 @@ mod tests {
     fn rdp_preserves_cable_length() {
         let (parents, coords) = chain(50);
         let weights: Option<Array1<f64>> = Some(Array1::from_elem(50, 1.0));
-        let (_, _, new_weights) =
+        let (_, _, new_weights, _) =
             simplify_rdp(&parents.view(), &coords.view(), 10.0, &None, &weights, None);
         // 49 edges of length 1, all folded into the single surviving edge.
         assert_eq!(new_weights.unwrap().iter().sum::<f64>(), 49.0);
@@ -1129,7 +1226,7 @@ mod tests {
             1 => ((i % 2) as f64) * 10.0,
             _ => 0.0,
         });
-        let (kept, _, _) =
+        let (kept, _, _, _) =
             simplify_rdp(&parents.view(), &coords.view(), 1.0, &None, &no_weights(), None);
         assert_eq!(kept.len(), n);
     }
@@ -1149,7 +1246,7 @@ mod tests {
                 _ => 0.0,
             }
         });
-        let (kept, _, _) =
+        let (kept, _, _, _) =
             simplify_rdp(&parents.view(), &coords.view(), 1.0, &None, &no_weights(), None);
         assert!(kept.len() > 2 && kept.len() < n, "kept {}", kept.len());
     }
@@ -1159,7 +1256,7 @@ mod tests {
     #[test]
     fn vw_collapses_a_straight_line() {
         let (parents, coords) = chain(50);
-        let (kept, _, _) =
+        let (kept, _, _, _) =
             simplify_vw(&parents.view(), &coords.view(), 1e-9, &None, &no_weights(), None);
         assert_eq!(kept, vec![0, 49]);
     }
@@ -1171,7 +1268,7 @@ mod tests {
         let (parents, mut coords) = chain(5);
         coords[[1, 1]] = 0.1;
         coords[[3, 1]] = 1.0;
-        let (kept, _, _) =
+        let (kept, _, _, _) =
             simplify_vw(&parents.view(), &coords.view(), 0.5, &None, &no_weights(), None);
         // The small spike goes. Node 2 survives despite starting under the threshold:
         // losing node 1 widens its triangle to 1.0, which is the point of re-weighing a
@@ -1182,7 +1279,7 @@ mod tests {
     #[test]
     fn vw_zero_threshold_is_a_no_op() {
         let (parents, coords) = chain(20);
-        let (kept, _, _) =
+        let (kept, _, _, _) =
             simplify_vw(&parents.view(), &coords.view(), 0.0, &None, &no_weights(), None);
         assert_eq!(kept.len(), 20);
     }
@@ -1260,6 +1357,48 @@ mod tests {
         let coords = Array2::zeros((4, 3));
         let out = resample_skeleton(&parents.view(), &coords.view(), 1.0, None);
         assert_eq!(out.parents.len(), 2);
+        // A segment with no length has no nearer end, so its interior falls to the distal
+        // endpoint -- the leaf, node 3, which is output slot 1.
+        assert_eq!(out.node_map.to_vec(), vec![0, 1, 1, 1]);
+    }
+
+    /// Each input node hands its data to the output node nearest it along the neurite.
+    #[test]
+    fn resample_maps_input_nodes_to_the_nearest_output_node() {
+        let (parents, coords) = chain(5); // 4 units long, x = 0..4
+        let out = resample_skeleton(&parents.view(), &coords.view(), 2.0, None);
+
+        // 4 units at a spacing of 2 => 2 edges. Root 0 and leaf 4 are carried over as
+        // slots 0 and 1; the one new node, at x = 2, is slot 2.
+        assert_eq!(out.parents.len(), 3);
+        assert_eq!(out.coords[[2, 0]], 2.0);
+        // Nodes 1 and 3 are both exactly halfway between two output nodes, and both go
+        // the proximal way: node 1 to the root (slot 0), node 3 to the new node (slot 2).
+        // Node 2 lands on the new node exactly.
+        assert_eq!(out.node_map.to_vec(), vec![0, 0, 2, 2, 1]);
+    }
+
+    /// Nothing may map onto a node that is not in the output, and nothing may go unmapped.
+    #[test]
+    fn resample_node_map_is_total_and_in_range() {
+        let parents = tree();
+        let coords = Array2::from_shape_fn((7, 3), |(i, k)| if k == 0 { i as f64 } else { 0.0 });
+
+        for spacing in [0.25, 1.0, 100.0] {
+            let out = resample_skeleton(&parents.view(), &coords.view(), spacing, None);
+            assert_eq!(out.node_map.len(), 7);
+            for (node, &slot) in out.node_map.iter().enumerate() {
+                assert!(
+                    slot >= 0 && (slot as usize) < out.parents.len(),
+                    "spacing {spacing}: node {node} mapped to {slot}"
+                );
+            }
+            // Roots, branch points and leafs are carried over, so they map to themselves --
+            // and those are the first rows of the output, in input order.
+            for (slot, node) in [0usize, 1, 3, 6].iter().enumerate() {
+                assert_eq!(out.node_map[*node], slot as i32);
+            }
+        }
     }
 
     #[test]

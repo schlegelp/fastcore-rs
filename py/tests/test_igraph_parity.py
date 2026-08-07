@@ -576,7 +576,7 @@ def test_simplify_skeleton(topo, weighted):
     """Kept nodes, their new parents and the replacement lengths must all match."""
     weights = topo.weights if weighted else None
 
-    ids, parents, new_weights = fastcore.simplify_skeleton(
+    ids, parents, new_weights, _ = fastcore.simplify_skeleton(
         topo.node_ids, topo.parent_ids, weights=weights
     )
 

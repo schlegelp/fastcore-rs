@@ -36,7 +36,9 @@ old one and leaves the rest of the tree alone.
 [`contract_nodes`](#navis_fastcore.contract_nodes) merges groups of nodes onto a
 representative. [`simplify_skeleton`](#navis_fastcore.simplify_skeleton) throws
 away the slab nodes that carry no topological information, keeping total cable
-length intact.
+length intact and reporting a `node_map` so anything you keep per node can follow
+— see [Downsampling](downsampling.md#taking-your-data-with-you), whose three
+thinning methods share its output contract.
 
 !!! note
 

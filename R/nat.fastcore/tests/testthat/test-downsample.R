@@ -49,6 +49,45 @@ test_that("downsample_skeleton honours preserve", {
   expect_equal(downsample_skeleton(p, 5L, preserve = keep)$nodes, c(0L, 5L, 7L, 10L))
 })
 
+test_that("node_map sends every node to the nearest survivor", {
+  p <- .chain_parents(11L) # nodes 0..10, only the root and the leaf survive
+
+  # Unweighted, so hops: nodes 1-5 are nearer the root (node 5 by the tie-break
+  # towards the root), 6-9 nearer the leaf. The map is 0-based *into* `nodes`, so
+  # the root is 0 and the leaf is 1.
+  map <- downsample_skeleton(p, 100L)$node_map
+  expect_equal(map, c(0L, 0L, 0L, 0L, 0L, 0L, 1L, 1L, 1L, 1L, 1L))
+
+  # Weighting the first edge heavily moves the split. Reaching the root now costs 8
+  # on top of the walk down the chain, so only node 1 is still nearer to it -- the
+  # five nodes that went to the root unweighted are down to one.
+  w <- c(0, 8, rep(1, 9))
+  expect_equal(
+    downsample_skeleton(p, 100L, weights = w)$node_map,
+    c(0L, 0L, rep(1L, 9L))
+  )
+})
+
+test_that("node_map is the same for every dropper, and points at survivors", {
+  p <- .arbor_parents()
+  x <- c(0, 1, 2, 3, 2, 3) # the two arms run straight, so all three drop the slabs
+
+  maps <- list(
+    downsample_skeleton(p, 1000L)$node_map,
+    simplify_rdp(p, x, .zeros(6L), .zeros(6L), epsilon = 1e9)$node_map,
+    simplify_vw(p, x, .zeros(6L), .zeros(6L), min_area = 1e9)$node_map
+  )
+  expect_equal(maps[[2]], maps[[1]])
+  expect_equal(maps[[3]], maps[[1]])
+
+  # One entry per input node, every entry indexing a node that is actually there,
+  # and a survivor mapping to its own slot.
+  nodes <- downsample_skeleton(p, 1000L)$nodes
+  expect_equal(length(maps[[1]]), length(p))
+  expect_true(all(maps[[1]] %in% (seq_along(nodes) - 1L)))
+  expect_equal(nodes[maps[[1]][nodes + 1L] + 1L], nodes)
+})
+
 test_that("simplify_rdp collapses a straight line and keeps a corner", {
   n <- 9L
   p <- .chain_parents(n)
@@ -122,6 +161,24 @@ test_that("resample_skeleton reports where each node came from", {
   from <- out$source_from + 1L
   to <- out$source_to + 1L
   expect_equal(out$x, .chain_x(n)[from] * (1 - out$alpha) + .chain_x(n)[to] * out$alpha)
+})
+
+test_that("resample_skeleton reports where each node went", {
+  n <- 5L # 4 units of cable at x = 0..4
+  p <- .chain_parents(n)
+
+  out <- resample_skeleton(p, .chain_x(n), .zeros(n), .zeros(n), spacing = 2)
+
+  # Root and leaf are carried over as slots 0 and 1; the one new node, at x = 2, is
+  # slot 2. Nodes at x = 1 and x = 3 are each exactly halfway between two output
+  # nodes and both go the proximal way -- towards the root at slot 0.
+  expect_equal(length(out$parents), 3L)
+  expect_equal(out$x[3], 2)
+  expect_equal(out$node_map, c(0L, 0L, 2L, 2L, 1L))
+
+  # Every input node lands on an output node, and the carried-over ones on themselves.
+  expect_equal(length(out$node_map), n)
+  expect_true(all(out$node_map %in% (seq_along(out$parents) - 1L)))
 })
 
 test_that("resample_skeleton collapses a segment shorter than the spacing", {

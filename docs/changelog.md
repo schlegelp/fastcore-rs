@@ -116,10 +116,37 @@ page.
 
 All six work on the linear segments between roots, branch points and leafs and never
 touch the nodes at their ends, so the topology is unchanged: same leafs, same branch
-points, same tree. The three that drop nodes return the same triple as
+points, same tree. The three that drop nodes return the same tuple as
 `simplify_skeleton`, all take a `preserve` list of nodes that must survive whatever the
 rule decides, and all carry each dropped chain's length into the edge that replaces it,
 so total cable length and geodesic distances are preserved exactly.
+
+**Every one of them that changes the node table also says where your data went.** A
+skeleton rarely travels alone — synapses, soma tags and manual annotations hang off
+particular nodes — and renumbering the nodes strands them. The four node-dropping
+functions and `resample_skeleton` now return a `node_map`: one entry per *input* node,
+naming the output node its data belongs to now. It is the same direction as
+`simplify_mesh`'s `vertex_map`, and total, so unlike that one it needs no `-1` masking:
+every input node names exactly one output node, the nearest along the neurite, ties
+going towards the root.
+
+For `resample_skeleton` this is the half that could not be derived. `source`/`alpha`
+carries a per-node *column* forward, but it does not invert — an input node that fell
+between two output nodes has no output row of its own — so there was no way to answer
+"which new node does this synapse belong to" short of a spatial query, which is wrong
+across a hairpin. The two smoothers have no `node_map` and need none: they move
+coordinates only, so every node keeps its ID and its parent.
+
+The map falls out of walks these functions already do, so it is cheap rather than free.
+On a 1M-node arbor: `resample_skeleton` **177.5 → 184.0 ms**, `simplify_rdp` **48.7 →
+52.3 ms**, `downsample_skeleton` **39.2 → 44.4 ms**, `simplify_skeleton` **8.3 → 11.1
+ms**. The share is largest where the function does least — `simplify_skeleton` is a bare
+pointer chase, so a 4-byte-per-node array and one store per dropped node are a real
+fraction of it, and 3 ms per million nodes.
+
+**Breaking:** `simplify_skeleton` returns a 4-tuple rather than a 3-tuple in Python and
+Rust — it shares its rewiring with the three new droppers, so it gained the same
+`node_map`. R is unaffected: the return is a list, and `node_map` is a new element.
 
 The three linestring algorithms are ports of Chris L. Barnes'
 [`simples`](https://github.com/clbarnes/simples) (MIT), adapted for skeletons: iterative

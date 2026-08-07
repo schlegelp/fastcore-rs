@@ -273,8 +273,11 @@ contract_nodes <- function(parents, mapping) .Call(wrap__contract_nodes, parents
 #'   returns no `weights`.
 #' @return List with `nodes` (0-based indices of the surviving nodes, in their
 #'   original relative order), `parents` (their new 0-based parent indices, `-1` for
-#'   roots, indexing *into* `nodes`) and `weights` (length of each node's edge to its
-#'   new parent, roots `0`; `NULL` exactly when `weights` was `NULL`).
+#'   roots, indexing *into* `nodes`), `weights` (length of each node's edge to its
+#'   new parent, roots `0`; `NULL` exactly when `weights` was `NULL`) and `node_map`
+#'   (one entry per *input* node, giving the 0-based index *into* `nodes` of the
+#'   survivor its data belongs to now: itself if it survived, otherwise whichever end
+#'   of its chain is nearer, measured in `weights`, ties going towards the root).
 #' @export
 simplify_skeleton <- function(parents, weights = NULL) .Call(wrap__simplify_skeleton, parents, weights)
 
@@ -295,9 +298,12 @@ simplify_skeleton <- function(parents, weights = NULL) .Call(wrap__simplify_skel
 #'   returns no `weights`.
 #' @return List with `nodes` (0-based indices of the surviving nodes, in their original
 #'   relative order), `parents` (their new 0-based parent indices, `-1` for roots,
-#'   indexing *into* `nodes`) and `weights` (length of each node's edge to its new
+#'   indexing *into* `nodes`), `weights` (length of each node's edge to its new
 #'   parent, i.e. the summed length of the chain it replaces; `NULL` exactly when
-#'   `weights` was `NULL`). Total cable length is preserved.
+#'   `weights` was `NULL`) and `node_map` (one entry per *input* node, giving the
+#'   0-based index *into* `nodes` of the survivor its data belongs to now: itself if it
+#'   survived, otherwise whichever end of its chain is nearer, measured in `weights`,
+#'   ties going towards the root). Total cable length is preserved.
 #' @export
 downsample_skeleton <- function(parents, factor, preserve = NULL, weights = NULL) .Call(wrap__downsample_skeleton, parents, factor, preserve, weights)
 
@@ -322,7 +328,8 @@ downsample_skeleton <- function(parents, factor, preserve = NULL, weights = NULL
 #' @param weights Optional numeric vector of child-to-parent edge weights; `NULL`
 #'   returns no `weights`.
 #' @param threads Optional integer; number of threads. `NULL` uses all cores.
-#' @return List with `nodes`, `parents` and `weights`, as `downsample_skeleton()`.
+#' @return List with `nodes`, `parents`, `weights` and `node_map`, as
+#'   `downsample_skeleton()`.
 #' @export
 simplify_rdp <- function(parents, x, y, z, epsilon, preserve = NULL, weights = NULL, threads = NULL) .Call(wrap__simplify_rdp, parents, x, y, z, epsilon, preserve, weights, threads)
 
@@ -344,7 +351,8 @@ simplify_rdp <- function(parents, x, y, z, epsilon, preserve = NULL, weights = N
 #' @param weights Optional numeric vector of child-to-parent edge weights; `NULL`
 #'   returns no `weights`.
 #' @param threads Optional integer; number of threads. `NULL` uses all cores.
-#' @return List with `nodes`, `parents` and `weights`, as `downsample_skeleton()`.
+#' @return List with `nodes`, `parents`, `weights` and `node_map`, as
+#'   `downsample_skeleton()`.
 #' @export
 simplify_vw <- function(parents, x, y, z, min_area, preserve = NULL, weights = NULL, threads = NULL) .Call(wrap__simplify_vw, parents, x, y, z, min_area, preserve, weights, threads)
 
@@ -368,7 +376,10 @@ simplify_vw <- function(parents, x, y, z, min_area, preserve = NULL, weights = N
 #'   branch points and leafs come first, in input order and unmoved; they carry their own
 #'   index in both `source_` columns and an `alpha` of 0, so
 #'   `attr[source_from + 1] * (1 - alpha) + attr[source_to + 1] * alpha` interpolates any
-#'   per-node quantity over the whole output.
+#'   per-node quantity over the whole output. `node_map` points the other way: one entry
+#'   per *input* node, giving the 0-based index of the output node nearest it along the
+#'   neurite (ties going towards the root). Use `source_`/`alpha` to carry a per-node
+#'   column forward and `node_map` to re-home whatever is *attached* to a node.
 #' @export
 resample_skeleton <- function(parents, x, y, z, spacing, threads = NULL) .Call(wrap__resample_skeleton, parents, x, y, z, spacing, threads)
 

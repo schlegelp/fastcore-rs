@@ -579,8 +579,11 @@ pub fn contract_nodes(parents: Vec<i32>, mapping: Vec<i32>) -> Robj {
 ///   returns no `weights`.
 /// @return List with `nodes` (0-based indices of the surviving nodes, in their
 ///   original relative order), `parents` (their new 0-based parent indices, `-1` for
-///   roots, indexing *into* `nodes`) and `weights` (length of each node's edge to its
-///   new parent, roots `0`; `NULL` exactly when `weights` was `NULL`).
+///   roots, indexing *into* `nodes`), `weights` (length of each node's edge to its
+///   new parent, roots `0`; `NULL` exactly when `weights` was `NULL`) and `node_map`
+///   (one entry per *input* node, giving the 0-based index *into* `nodes` of the
+///   survivor its data belongs to now: itself if it survived, otherwise whichever end
+///   of its chain is nearer, measured in `weights`, ties going towards the root).
 /// @export
 #[extendr]
 pub fn simplify_skeleton(parents: Vec<i32>, #[default = "NULL"] weights: Option<Vec<f64>>) -> Robj {
@@ -607,13 +610,14 @@ fn parents_and_coords(
     (Array1::from_vec(parents), coords)
 }
 
-/// Pack the triple every node-dropping method returns into an R list.
-fn dropped_to_list(out: (Vec<i32>, Array1<i32>, Option<Vec<f32>>)) -> Robj {
-    let (nodes, new_parents, new_weights) = out;
+/// Pack the tuple every node-dropping method returns into an R list.
+fn dropped_to_list(out: (Vec<i32>, Array1<i32>, Option<Vec<f32>>, Array1<i32>)) -> Robj {
+    let (nodes, new_parents, new_weights, node_map) = out;
     list!(
         nodes = nodes,
         parents = new_parents.to_vec(),
-        weights = opt_lengths(new_weights)
+        weights = opt_lengths(new_weights),
+        node_map = node_map.to_vec()
     )
     .into()
 }
@@ -635,9 +639,12 @@ fn dropped_to_list(out: (Vec<i32>, Array1<i32>, Option<Vec<f32>>)) -> Robj {
 ///   returns no `weights`.
 /// @return List with `nodes` (0-based indices of the surviving nodes, in their original
 ///   relative order), `parents` (their new 0-based parent indices, `-1` for roots,
-///   indexing *into* `nodes`) and `weights` (length of each node's edge to its new
+///   indexing *into* `nodes`), `weights` (length of each node's edge to its new
 ///   parent, i.e. the summed length of the chain it replaces; `NULL` exactly when
-///   `weights` was `NULL`). Total cable length is preserved.
+///   `weights` was `NULL`) and `node_map` (one entry per *input* node, giving the
+///   0-based index *into* `nodes` of the survivor its data belongs to now: itself if it
+///   survived, otherwise whichever end of its chain is nearer, measured in `weights`,
+///   ties going towards the root). Total cable length is preserved.
 /// @export
 #[extendr]
 pub fn downsample_skeleton(
@@ -681,7 +688,8 @@ pub fn downsample_skeleton(
 /// @param weights Optional numeric vector of child-to-parent edge weights; `NULL`
 ///   returns no `weights`.
 /// @param threads Optional integer; number of threads. `NULL` uses all cores.
-/// @return List with `nodes`, `parents` and `weights`, as `downsample_skeleton()`.
+/// @return List with `nodes`, `parents`, `weights` and `node_map`, as
+///   `downsample_skeleton()`.
 /// @export
 #[extendr]
 pub fn simplify_rdp(
@@ -727,7 +735,8 @@ pub fn simplify_rdp(
 /// @param weights Optional numeric vector of child-to-parent edge weights; `NULL`
 ///   returns no `weights`.
 /// @param threads Optional integer; number of threads. `NULL` uses all cores.
-/// @return List with `nodes`, `parents` and `weights`, as `downsample_skeleton()`.
+/// @return List with `nodes`, `parents`, `weights` and `node_map`, as
+///   `downsample_skeleton()`.
 /// @export
 #[extendr]
 pub fn simplify_vw(
@@ -775,7 +784,10 @@ pub fn simplify_vw(
 ///   branch points and leafs come first, in input order and unmoved; they carry their own
 ///   index in both `source_` columns and an `alpha` of 0, so
 ///   `attr[source_from + 1] * (1 - alpha) + attr[source_to + 1] * alpha` interpolates any
-///   per-node quantity over the whole output.
+///   per-node quantity over the whole output. `node_map` points the other way: one entry
+///   per *input* node, giving the 0-based index of the output node nearest it along the
+///   neurite (ties going towards the root). Use `source_`/`alpha` to carry a per-node
+///   column forward and `node_map` to re-home whatever is *attached* to a node.
 /// @export
 #[extendr]
 pub fn resample_skeleton(
@@ -802,7 +814,8 @@ pub fn resample_skeleton(
         z = out.coords.column(2).to_vec(),
         source_from = out.source.column(0).to_vec(),
         source_to = out.source.column(1).to_vec(),
-        alpha = out.alpha.to_vec()
+        alpha = out.alpha.to_vec(),
+        node_map = out.node_map.to_vec()
     )
     .into()
 }

@@ -455,7 +455,31 @@ def check_topology_preserved(before, after, same_nodes=True):
             )
 
 
-def check_dropping_invariants(before, after, weights=None, new_weights=None):
+def check_node_map(before_ids, after_ids, node_map):
+    """A `node_map` names one surviving node for every node that went in.
+
+    The contract shared by the droppers and by `resample_skeleton`: one entry per
+    *input* node, in input order, each naming a node that is actually in the output,
+    and a node that survived maps to itself.
+    """
+    before_ids = np.asarray(before_ids)
+    after = set(np.asarray(after_ids).tolist())
+
+    assert len(node_map) == len(before_ids), "one entry per input node"
+    assert set(np.asarray(node_map).tolist()) <= after, "mapped to a node that is gone"
+
+    # Total: -1 is the "nowhere to go" sentinel, and no rule in the library produces it.
+    assert (np.asarray(node_map) != -1).all(), "some node mapped nowhere"
+
+    survived = np.isin(before_ids, np.asarray(after_ids))
+    assert (np.asarray(node_map)[survived] == before_ids[survived]).all(), (
+        "a surviving node was mapped somewhere other than itself"
+    )
+
+
+def check_dropping_invariants(
+    before, after, weights=None, new_weights=None, node_map=None
+):
     """Everything that must hold of a node-dropping result, whatever went in.
 
     Shared by `downsample_skeleton`, `simplify_rdp` and `simplify_vw`: they differ only
@@ -470,6 +494,9 @@ def check_dropping_invariants(before, after, weights=None, new_weights=None):
 
     check_is_forest(a_ids, a_parents)
     check_topology_preserved(before, after)
+
+    if node_map is not None:
+        check_node_map(b_ids, a_ids, node_map)
 
     # The cable the dropped nodes carried moved into the edges that replaced them
     # rather than disappearing.

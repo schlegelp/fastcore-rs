@@ -1201,19 +1201,23 @@ def _prep_coords(coords, node_ids, name="coords"):
     return coords
 
 
-def _dropped_to_ids(node_ids, kept, new_parent_ix, new_weights):
-    """Map a `(kept, new_parents, new_weights)` triple back into ID space.
+def _dropped_to_ids(node_ids, kept, new_parent_ix, new_weights, node_map_ix):
+    """Map a `(kept, new_parents, new_weights, node_map)` tuple back into ID space.
 
-    Shared by every method that drops nodes and rewires what is left - the four in
+    Shared by every method that drops nodes and rewires what is left - the three in
     [`navis_fastcore.downsample`][] plus `simplify_skeleton`. They differ only in
     which nodes they decide to drop, and all of them then owe the caller the same
     thing.
+
+    `node_map` comes back in ID space too, so it reads as "the node this node's data
+    belongs to now" rather than needing the caller to index `kept` themselves.
     """
     new_node_ids = _indices_to_ids(node_ids, kept)
     return (
         new_node_ids,
         _indices_to_ids_sentinel(new_node_ids, new_parent_ix),
         new_weights,
+        _indices_to_ids_sentinel(new_node_ids, node_map_ix),
     )
 
 
@@ -1481,6 +1485,13 @@ def simplify_skeleton(node_ids, parent_ids, weights=None):
                  Length of each node's edge to its new parent, i.e. the summed
                  length of the chain it replaces. Roots are 0. ``None`` exactly
                  when `weights` was ``None``.
+    node_map :   (N, ) array
+                 For each **input** node, the ID of the surviving node its data
+                 belongs to now - indexed like `node_ids`, valued in the returned
+                 `node_ids`. Surviving nodes map to themselves; a dropped node maps
+                 to whichever end of its chain is nearer, measured in `weights` (in
+                 hops if `weights` is ``None``), with ties going towards the root.
+                 Use it to re-attach anything you keep per node, such as synapses.
 
     Examples
     --------
@@ -1489,7 +1500,7 @@ def simplify_skeleton(node_ids, parent_ids, weights=None):
     >>> node_ids = np.arange(5)
     >>> parent_ids = np.array([-1, 0, 1, 2, 2])
     >>> weights = np.array([0, 1, 2, 4, 8], dtype=np.float32)
-    >>> ids, parents, w = fastcore.simplify_skeleton(
+    >>> ids, parents, w, node_map = fastcore.simplify_skeleton(
     ...     node_ids, parent_ids, weights=weights
     ... )
 
@@ -1503,16 +1514,22 @@ def simplify_skeleton(node_ids, parent_ids, weights=None):
     >>> w
     array([0., 3., 4., 8.], dtype=float32)
 
+    Node 1 sat 1 unit from node 0 and 2 units from node 2, so anything attached to
+    it now belongs to node 0:
+
+    >>> node_map
+    array([0, 0, 2, 3, 4])
+
     """
     parent_ix = _ids_to_indices(node_ids, parent_ids)
 
     weights = _prep_weights(weights, node_ids)
 
-    kept, new_parent_ix, new_weights = _fastcore.simplify_skeleton(
+    kept, new_parent_ix, new_weights, node_map_ix = _fastcore.simplify_skeleton(
         parent_ix, weights=weights
     )
 
-    return _dropped_to_ids(node_ids, kept, new_parent_ix, new_weights)
+    return _dropped_to_ids(node_ids, kept, new_parent_ix, new_weights, node_map_ix)
 
 
 def adjacency(node_ids, parent_ids, weights=None, directed=True, transpose=False):

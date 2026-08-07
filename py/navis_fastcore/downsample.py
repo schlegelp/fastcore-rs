@@ -70,6 +70,13 @@ def downsample_skeleton(node_ids, parent_ids, factor, preserve=None, weights=Non
                  Length of each node's edge to its new parent, i.e. the summed
                  length of the chain it replaces. Roots are 0. ``None`` exactly
                  when `weights` was ``None``.
+    node_map :   (N, ) array
+                 For each **input** node, the ID of the surviving node its data
+                 belongs to now - indexed like `node_ids`, valued in the returned
+                 `node_ids`. Surviving nodes map to themselves; a dropped node maps
+                 to whichever end of its chain is nearer, measured in `weights` (in
+                 hops if `weights` is ``None``), with ties going towards the root.
+                 Use it to re-attach anything you keep per node, such as synapses.
 
     Examples
     --------
@@ -80,7 +87,7 @@ def downsample_skeleton(node_ids, parent_ids, factor, preserve=None, weights=Non
 
     Every second node of each segment, plus the root, the branch point and the leafs:
 
-    >>> fastcore.downsample_skeleton(node_ids, parent_ids, 2)
+    >>> fastcore.downsample_skeleton(node_ids, parent_ids, 2)[:3]
     (array([0, 1, 3, 4, 6]), array([-1,  0,  1,  1,  4]), None)
 
     A factor nothing can satisfy leaves just the root, the branch point and the two
@@ -88,13 +95,18 @@ def downsample_skeleton(node_ids, parent_ids, factor, preserve=None, weights=Non
     moved into the edges that replaced them:
 
     >>> weights = np.array([0, 1, 1, 1, 1, 1, 1], dtype=np.float32)
-    >>> ids, _, w = fastcore.downsample_skeleton(
+    >>> ids, _, w, node_map = fastcore.downsample_skeleton(
     ...     node_ids, parent_ids, 100, weights=weights
     ... )
     >>> ids
     array([0, 1, 3, 6])
     >>> w
     array([0., 1., 2., 3.], dtype=float32)
+
+    The dropped nodes 2, 4 and 5 hand their data to whichever survivor is nearer:
+
+    >>> node_map
+    array([0, 1, 1, 3, 1, 6, 6])
 
     """
     factor = int(factor)
@@ -104,11 +116,11 @@ def downsample_skeleton(node_ids, parent_ids, factor, preserve=None, weights=Non
     parent_ix = _ids_to_indices(node_ids, parent_ids)
     weights = _prep_weights(weights, node_ids)
 
-    kept, new_parent_ix, new_weights = _fastcore.downsample_skeleton(
+    kept, new_parent_ix, new_weights, node_map_ix = _fastcore.downsample_skeleton(
         parent_ix, factor, preserve=_preserve_mask(preserve, node_ids), weights=weights
     )
 
-    return _dropped_to_ids(node_ids, kept, new_parent_ix, new_weights)
+    return _dropped_to_ids(node_ids, kept, new_parent_ix, new_weights, node_map_ix)
 
 
 def simplify_rdp(
@@ -157,6 +169,13 @@ def simplify_rdp(
     weights :    (M, ) float32 array or None
                  Length of each node's edge to its new parent. ``None`` exactly
                  when `weights` was ``None``.
+    node_map :   (N, ) array
+                 For each **input** node, the ID of the surviving node its data
+                 belongs to now - indexed like `node_ids`, valued in the returned
+                 `node_ids`. Surviving nodes map to themselves; a dropped node maps
+                 to whichever end of its chain is nearer, measured in `weights` (in
+                 hops if `weights` is ``None``), with ties going towards the root.
+                 Use it to re-attach anything you keep per node, such as synapses.
 
     Examples
     --------
@@ -186,7 +205,7 @@ def simplify_rdp(
     coords = _prep_coords(coords, node_ids)
     weights = _prep_weights(weights, node_ids)
 
-    kept, new_parent_ix, new_weights = _fastcore.simplify_rdp(
+    kept, new_parent_ix, new_weights, node_map_ix = _fastcore.simplify_rdp(
         parent_ix,
         coords,
         float(epsilon),
@@ -195,7 +214,7 @@ def simplify_rdp(
         threads=threads,
     )
 
-    return _dropped_to_ids(node_ids, kept, new_parent_ix, new_weights)
+    return _dropped_to_ids(node_ids, kept, new_parent_ix, new_weights, node_map_ix)
 
 
 def simplify_vw(
@@ -241,6 +260,13 @@ def simplify_vw(
     weights :    (M, ) float32 array or None
                  Length of each node's edge to its new parent. ``None`` exactly
                  when `weights` was ``None``.
+    node_map :   (N, ) array
+                 For each **input** node, the ID of the surviving node its data
+                 belongs to now - indexed like `node_ids`, valued in the returned
+                 `node_ids`. Surviving nodes map to themselves; a dropped node maps
+                 to whichever end of its chain is nearer, measured in `weights` (in
+                 hops if `weights` is ``None``), with ties going towards the root.
+                 Use it to re-attach anything you keep per node, such as synapses.
 
     Examples
     --------
@@ -263,7 +289,7 @@ def simplify_vw(
     coords = _prep_coords(coords, node_ids)
     weights = _prep_weights(weights, node_ids)
 
-    kept, new_parent_ix, new_weights = _fastcore.simplify_vw(
+    kept, new_parent_ix, new_weights, node_map_ix = _fastcore.simplify_vw(
         parent_ix,
         coords,
         float(min_area),
@@ -272,7 +298,7 @@ def simplify_vw(
         threads=threads,
     )
 
-    return _dropped_to_ids(node_ids, kept, new_parent_ix, new_weights)
+    return _dropped_to_ids(node_ids, kept, new_parent_ix, new_weights, node_map_ix)
 
 
 def resample_skeleton(node_ids, parent_ids, coords, spacing, threads=None):
@@ -322,17 +348,34 @@ def resample_skeleton(node_ids, parent_ids, coords, spacing, threads=None):
     alpha :      (M, ) float64 array
                  How far along that edge each new node lies, from the child end.
                  Zero for a node carried over unchanged.
+    node_map :   (N, ) array
+                 The other direction: for each **input** node, the ID of the output
+                 node nearest it along the neurite, with ties going towards the root.
+                 Indexed like `node_ids`, valued in the returned `node_ids`. Nodes
+                 carried over map to themselves.
 
     Notes
     -----
-    `source` and `alpha` are there so this function does not have to know what else
-    you keep per node. Radius, label, confidence and anything else numeric
-    interpolate the same way, over the whole output at once:
+    `source`/`alpha` and `node_map` point opposite ways, and which you want depends
+    on what you are moving.
+
+    `source` and `alpha` carry a per-node *column* forward, so this function does not
+    have to know what else you keep per node. Radius, label, confidence and anything
+    else numeric interpolate the same way, over the whole output at once:
 
     ```python
     new_radius = (
         radius[source[:, 0]] * (1 - alpha) + radius[source[:, 1]] * alpha
     )
+    ```
+
+    `node_map` re-homes whatever is *attached* to a node - a synapse, a soma tag, a
+    manual annotation. That question cannot be answered from `source` and `alpha`:
+    an input node between two output nodes has no output row of its own, so the
+    mapping does not invert.
+
+    ```python
+    synapses["node_id"] = pd.Series(node_map, index=node_ids)[synapses["node_id"]].values
     ```
 
     Examples
@@ -346,7 +389,7 @@ def resample_skeleton(node_ids, parent_ids, coords, spacing, threads=None):
     Two units of cable at a spacing of 0.5 gives four edges, so five nodes. The
     root and the leaf keep their IDs and lead the way; the three new ones follow:
 
-    >>> ids, parents, xyz, source, alpha = fastcore.resample_skeleton(
+    >>> ids, parents, xyz, source, alpha, node_map = fastcore.resample_skeleton(
     ...     node_ids, parent_ids, coords, 0.5
     ... )
     >>> ids
@@ -360,6 +403,12 @@ def resample_skeleton(node_ids, parent_ids, coords, spacing, threads=None):
     >>> xyz[:, 0]
     array([0. , 2. , 1.5, 1. , 0.5])
 
+    Input node 1 sat at x = 1, where new node 4 now is, so that is where its data
+    goes; the root and the leaf were carried over and map to themselves:
+
+    >>> node_map
+    array([0, 4, 2])
+
     """
     spacing = float(spacing)
     if not spacing > 0:
@@ -368,7 +417,7 @@ def resample_skeleton(node_ids, parent_ids, coords, spacing, threads=None):
     parent_ix = _ids_to_indices(node_ids, parent_ids)
     coords = _prep_coords(coords, node_ids)
 
-    new_parent_ix, new_coords, source, alpha = _fastcore.resample_skeleton(
+    new_parent_ix, new_coords, source, alpha, node_map_ix = _fastcore.resample_skeleton(
         parent_ix, coords, spacing, threads=threads
     )
 
@@ -393,6 +442,7 @@ def resample_skeleton(node_ids, parent_ids, coords, spacing, threads=None):
         new_coords,
         source,
         alpha,
+        _indices_to_ids_sentinel(new_node_ids, node_map_ix),
     )
 
 
@@ -432,6 +482,13 @@ def smooth_skeleton(node_ids, parent_ids, coords, window=5, threads=None):
     -------
     coords :     (N, 3) float64 array
                  New coordinates, in the same order as `node_ids`.
+
+    Notes
+    -----
+    There is no ``node_map`` here, unlike the functions that drop or add nodes: this
+    changes coordinates only, so every node keeps its ID and its parent and anything
+    attached to a node is still attached to it afterwards. The one thing that does go
+    stale is a *copy* of a node's position taken beforehand.
 
     Examples
     --------
@@ -489,6 +546,13 @@ def smooth_skeleton_gaussian(
     -------
     coords :     (N, 3) float64 array
                  New coordinates, in the same order as `node_ids`.
+
+    Notes
+    -----
+    There is no ``node_map`` here, unlike the functions that drop or add nodes: this
+    changes coordinates only, so every node keeps its ID and its parent and anything
+    attached to a node is still attached to it afterwards. The one thing that does go
+    stale is a *copy* of a node's position taken beforehand.
 
     Examples
     --------
