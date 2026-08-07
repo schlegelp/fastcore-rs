@@ -40,6 +40,11 @@ kodama = "0.3.0"
 # The all-by-all uses aann's grouped split API (GroupedQueriesF64 / query_grouped).
 shull = "0.3.0"
 aann-graph = "0.3.0"
+# Ear-clipping triangulation for `caps`, which closes the openings a subset cuts into a
+# mesh. A Rust port of mapbox/earcut — the same algorithm navis reached for through the
+# `mapbox_earcut` extension module, so having it here is what lets that soft dependency
+# go. `no_std`, num-traits only, MIT/Apache-2.0.
+earcut = "0.4.11"
 # CMTK registrations are commonly distributed gzipped (a `registration` file that is
 # actually gzip, hence the magic-byte sniff in cmtk.rs). Default features give the pure-Rust
 # miniz_oxide backend: no C toolchain, no system zlib, so the R tarball still builds anywhere.

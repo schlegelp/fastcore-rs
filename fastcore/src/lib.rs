@@ -25,6 +25,11 @@
 //!   the tracing jitter ([`downsample::smooth_skeleton`]). All of it works on the linear
 //!   segments between roots, branch points and leafs and leaves those fixed, so the
 //!   topology comes out untouched.
+//! - [`caps`] — closing the openings a cut leaves in a mesh: finding the boundary
+//!   ([`caps::boundary_halfedges`] over a whole mesh, [`caps::exposed_halfedges`] when the
+//!   vertices about to go are known), walking it into rings ([`caps::trace_loops`]) and
+//!   ear-clipping those shut ([`caps::triangulate_rings`]). Only faces are added, never
+//!   vertices, so every index a caller already holds still means what it meant.
 //! - [`simplify`] — decimating a triangle mesh by quadric-error edge collapse, and —
 //!   the reason it is here rather than in a dependency — reporting which vertex of the
 //!   simplified mesh every vertex of the original ended up in, so per-vertex data
@@ -91,6 +96,8 @@ pub mod dag;
 pub mod downsample;
 
 pub mod mesh;
+
+pub mod caps;
 
 pub mod simplify;
 

@@ -45,10 +45,10 @@ the dtype tells you which:
 
 | dtype | What it holds | Examples |
 |---|---|---|
-| `uint32` | A **node id** — an index into the graph. | `connected_components_graph`, `mesh_connected_components`, `unique_edges`'s `edges`, `contract_vertices`, `parents_from_edges`'s `order`, `geodesic_path`, `GeodesicGraph.components` / `.parent_nodes` |
+| `uint32` | A **node id** — an index into the graph. | `connected_components_graph`, `mesh_connected_components`, `unique_edges`'s `edges`, `contract_vertices`, `parents_from_edges`'s `order`, `geodesic_path`, `GeodesicGraph.components` / `.parent_nodes`, `boundary_halfedges`, `exposed_halfedges`, `trace_loops`'s `rings`, `triangulate_rings` |
 | `int32` | An id that needs a **`-1` sentinel** for "none" — into the graph you passed in, or into a mesh the function itself returns. | `parents_from_edges`'s `parents`, `geodesic_predecessors`, `geodesic_nearest_mesh`, `simplify_mesh`'s `vertex_map` |
 | `int32` | A dense **label** — a cluster or level-set id, not a node id. Contiguous from 0, negative where a node is excluded. | `geodesic_clusters`, `level_set_components`, `GeodesicGraph.clusters` |
-| `int64` | A **position in an array you passed in** — not a node id. | `minimum_spanning_tree` (rows of `edges`), `geodesic_mst_*` (positions in `nodes`), `unique_edges`'s `index` / `inverse` |
+| `int64` | A **position in an array you passed in** — not a node id. | `minimum_spanning_tree` (rows of `edges`), `geodesic_mst_*` (positions in `nodes`), `unique_edges`'s `index` / `inverse`, `trace_loops`'s `offsets` |
 
 The distinction that matters is the last one: `int64` means the values index
 *your* array, so `nodes[out]` is the node-id form and `out` alone is not.
@@ -161,6 +161,8 @@ Meshes:
 - [`geodesic_clusters`](mesh.md#navis_fastcore.geodesic_clusters): greedily partition a graph into clusters of bounded geodesic radius
 - [`GeodesicGraph`](mesh.md#navis_fastcore.GeodesicGraph): a graph prepared once for many small geodesic queries — grow fixed-*size* connected regions, and place evenly-spread seeds by farthest-point sampling
 - [`simplify_mesh`](mesh.md#navis_fastcore.simplify_mesh) / [`simplify_mesh_lossless`](mesh.md#navis_fastcore.simplify_mesh_lossless): quadric-error decimation that tells you which simplified vertex each original one became, so per-vertex data survives
+- [`boundary_halfedges`](mesh.md#navis_fastcore.boundary_halfedges) / [`exposed_halfedges`](mesh.md#navis_fastcore.exposed_halfedges): where a mesh is open — everywhere, or only where a cut is about to open it
+- [`trace_loops`](mesh.md#navis_fastcore.trace_loops) / [`triangulate_rings`](mesh.md#navis_fastcore.triangulate_rings): walk that boundary into rings and cap them, adding faces but never vertices
 
 [Neuron similarity](../concepts/nblast.md):
 

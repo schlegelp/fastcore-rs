@@ -27,6 +27,9 @@ use downsample::*;
 mod mesh;
 use mesh::*;
 
+mod caps;
+use caps::*;
+
 mod simplify;
 use simplify::*;
 
@@ -161,6 +164,18 @@ mod fastcore {
 
     #[pymodule_export]
     use super::unique_edges_py;
+
+    #[pymodule_export]
+    use super::boundary_halfedges_py;
+
+    #[pymodule_export]
+    use super::exposed_halfedges_py;
+
+    #[pymodule_export]
+    use super::trace_loops_py;
+
+    #[pymodule_export]
+    use super::triangulate_rings_py;
 
     #[pymodule_export]
     use super::connected_components_graph_py;

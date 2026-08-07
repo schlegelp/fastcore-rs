@@ -76,7 +76,7 @@ fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 }
 
 #[inline]
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+pub(crate) fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
         a[2] * b[0] - a[0] * b[2],
@@ -85,7 +85,7 @@ fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 }
 
 #[inline]
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+pub(crate) fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
@@ -96,7 +96,7 @@ fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
 /// rejection test because comparisons against it are false. Making "no direction"
 /// unrepresentable forces each caller to say what it wants to happen instead.
 #[inline]
-fn normalize(v: [f64; 3]) -> Option<[f64; 3]> {
+pub(crate) fn normalize(v: [f64; 3]) -> Option<[f64; 3]> {
     let len = dot(v, v).sqrt();
     // Not an epsilon: anything with a finite, non-zero length has a well-defined
     // direction, and picking a threshold here would reject slender-but-real

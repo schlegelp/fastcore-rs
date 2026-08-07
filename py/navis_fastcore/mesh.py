@@ -153,18 +153,10 @@ def unique_edges(
     array([1.   , 1.   , 1.414, 1.   , 1.   ])
 
     """
-    faces = np.asarray(faces, dtype=np.uint32, order="C")
-    if faces.ndim != 2 or faces.shape[1] != 3:
-        raise ValueError(
-            f"`faces` must be a 2-D array of shape (F, 3), got {faces.shape}"
-        )
+    faces = _prep_faces(faces)
 
     if vertices is not None:
-        vertices = np.asarray(vertices, dtype=np.float64, order="C")
-        if vertices.ndim != 2 or vertices.shape[1] != 3:
-            raise ValueError(
-                f"`vertices` must be a 2-D array of shape (V, 3), got {vertices.shape}"
-            )
+        vertices = _prep_vertices(vertices)
         if len(faces) and faces.max() >= len(vertices):
             raise ValueError(
                 f"`faces` references vertex {faces.max()} but there are only "
@@ -815,20 +807,36 @@ def geodesic_mst_graph(
     )
 
 
-def _prep_mesh(faces, vertices, n_vertices):
-    """Validate and coerce the shared (faces, vertices, n_vertices) arguments."""
+def _prep_faces(faces):
+    """Coerce an (F, 3) face array to contiguous uint32.
+
+    Split out of `_prep_mesh` because `unique_edges` and the `caps` functions want
+    faces without the `n_vertices` bookkeeping that surrounds them there.
+    """
     faces = np.asarray(faces, dtype=np.uint32, order="C")
     if faces.ndim != 2 or faces.shape[1] != 3:
         raise ValueError(
             f"`faces` must be a 2-D array of shape (F, 3), got {faces.shape}"
         )
+    return faces
+
+
+def _prep_vertices(vertices):
+    """Coerce a (V, 3) coordinate array to contiguous float64."""
+    vertices = np.asarray(vertices, dtype=np.float64, order="C")
+    if vertices.ndim != 2 or vertices.shape[1] != 3:
+        raise ValueError(
+            f"`vertices` must be a 2-D array of shape (V, 3), got {vertices.shape}"
+        )
+    return vertices
+
+
+def _prep_mesh(faces, vertices, n_vertices):
+    """Validate and coerce the shared (faces, vertices, n_vertices) arguments."""
+    faces = _prep_faces(faces)
 
     if vertices is not None:
-        vertices = np.asarray(vertices, dtype=np.float64, order="C")
-        if vertices.ndim != 2 or vertices.shape[1] != 3:
-            raise ValueError(
-                f"`vertices` must be a 2-D array of shape (V, 3), got {vertices.shape}"
-            )
+        vertices = _prep_vertices(vertices)
         if n_vertices is None:
             n_vertices = len(vertices)
         elif int(n_vertices) != len(vertices):

@@ -238,10 +238,34 @@ pub fn mesh_connected_components(faces: ArrayView2<u32>, n_vertices: usize) -> V
 /// high 32 bits, smaller in the low 32. Ascending key order is therefore
 /// (max, min) — the exact order trimesh's `edges_unique` produces, since its
 /// row hash `((b + 2^31) << 32) | (a + 2^31)` only differs by a monotone offset.
+///
+/// `pub(crate)` for [`crate::caps`], which looks up individual edges against a sorted key
+/// set; the bulk build is [`sorted_edge_keys`].
 #[inline]
-fn edge_key(u: u32, v: u32) -> u64 {
+pub(crate) fn edge_key(u: u32, v: u32) -> u64 {
     let (lo, hi) = if u <= v { (u, v) } else { (v, u) };
     ((hi as u64) << 32) | (lo as u64)
+}
+
+/// The `3F` edges a face array names, as undirected keys, sorted ascending.
+///
+/// The one place the `3F` edge-list convention and the [`edge_key`] packing are turned into
+/// a buffer, so the two consumers that group edges — [`unique_edges`]' fast path, which
+/// keeps the first of each run, and [`crate::caps::boundary_halfedges`], which keeps the
+/// runs of length one — cannot drift on either.
+///
+/// Runs on the ambient rayon pool; callers wrap it in [`with_pool`].
+pub(crate) fn sorted_edge_keys(faces: &[u32]) -> Vec<u64> {
+    let mut keys = vec![0u64; faces.len()];
+    keys.par_chunks_exact_mut(3)
+        .zip(faces.par_chunks_exact(3))
+        .for_each(|(out, f)| {
+            out[0] = edge_key(f[0], f[1]);
+            out[1] = edge_key(f[1], f[2]);
+            out[2] = edge_key(f[2], f[0]);
+        });
+    keys.par_sort_unstable();
+    keys
 }
 
 /// Unique undirected edges of a triangle mesh — a drop-in for trimesh's
@@ -293,15 +317,7 @@ pub fn unique_edges(
     with_pool(threads, || {
         let (edges, index, inverse) = if !return_index && !return_inverse {
             // Fast path: sort bare keys, dedup in one scan.
-            let mut keys = vec![0u64; n_edges];
-            keys.par_chunks_exact_mut(3)
-                .zip(s.par_chunks_exact(3))
-                .for_each(|(out, f)| {
-                    out[0] = edge_key(f[0], f[1]);
-                    out[1] = edge_key(f[1], f[2]);
-                    out[2] = edge_key(f[2], f[0]);
-                });
-            keys.par_sort_unstable();
+            let keys = sorted_edge_keys(s);
 
             let n_unique =
                 keys.windows(2).filter(|w| w[0] != w[1]).count() + usize::from(!keys.is_empty());

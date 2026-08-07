@@ -37,7 +37,10 @@ type Float64 = bool;
 ///
 /// The borrow has to be bound to a local by the caller: `x.as_ref().map(|a| a.as_slice())`
 /// chained off a temporary would not live long enough for the slice we hand to the core.
-fn as_slice<'a, T: numpy::Element>(a: &'a PyReadonlyArray1<T>, what: &str) -> PyResult<&'a [T]> {
+pub(crate) fn as_slice<'a, T: numpy::Element>(
+    a: &'a PyReadonlyArray1<T>,
+    what: &str,
+) -> PyResult<&'a [T]> {
     a.as_slice()
         .map_err(|_| PyValueError::new_err(format!("`{what}` must be C-contiguous")))
 }

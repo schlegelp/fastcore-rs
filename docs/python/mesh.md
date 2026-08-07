@@ -778,3 +778,142 @@ depended on how rayon split the work would change the last bit of the scale fact
 runs.
 
 ::: navis_fastcore.smooth_mesh
+
+## Capping holes
+
+Subsetting a mesh drops every face that loses a corner, which leaves the cut cross-sections
+standing open. These four functions find those openings and triangulate them shut. They are
+separate rather than one `fill_holes` because the two ways in enter at different points:
+you either have a mesh and want every hole in it closed, or you are about to cut one and
+want only the holes the cut itself makes.
+
+Only faces are ever added, never vertices. Every vertex index a caller already holds — in
+its own face array, in per-vertex data, in a connector table — still points at what it
+pointed at before, which is what lets the cap be applied *after* the subset rather than
+during it.
+
+### Every hole in a mesh
+
+```python
+import navis_fastcore as fastcore
+import numpy as np
+
+halfedges = fastcore.boundary_halfedges(faces)
+rings, offsets = fastcore.trace_loops(halfedges)
+caps = fastcore.triangulate_rings(rings, offsets, vertices)
+
+faces = np.vstack((faces, caps))
+```
+
+### Only the holes a cut makes
+
+Worked out on the *original* faces, before the subset, and applied after it — capping only
+adds faces, so every index handed out by the subset still stands.
+
+```python
+exposed = fastcore.exposed_halfedges(faces, dropped)
+
+# ... subset the mesh, then remap `exposed` onto the surviving vertices ...
+renumber = np.full(len(vertices), -1, dtype=np.int64)
+renumber[kept] = np.arange(len(kept))
+exposed = renumber[exposed].astype(np.uint32)
+
+rings, offsets = fastcore.trace_loops(exposed)
+caps = fastcore.triangulate_rings(rings, offsets, new_vertices)
+```
+
+`exposed_halfedges` deliberately leaves out edges that were boundary *already*: those belong
+to openings the mesh came with — a neurite truncated at the edge of the dataset, say — and
+sealing those is `boundary_halfedges`' job. One consequence is worth knowing: where a cut
+runs into an opening the mesh came with, what it exposes is an open chain rather than a
+ring, and `trace_loops` abandons it. That hole stays open.
+
+### Why these are here
+
+Almost all of it is `boundary_halfedges`. Grouping the `3F` edges a face array names is the
+whole cost of finding a boundary, and the obvious numpy spelling —
+`np.unique(keys, return_inverse=True, return_counts=True)` — is a stable argsort: **75 ms of
+an 84 ms call** on a 578k-face mesh. That is not a formulation problem. The bare `np.sort` of
+the same keys is already 51 ms, so no rearrangement in numpy can win. Sorting bare `u64`
+keys in parallel and taking a second pass over the faces to recover each boundary edge's
+direction brings the call to 8 ms.
+
+On a 578k-face mesh with ~23k holes punched into it, against the equivalent numpy
+implementation:
+
+| | numpy | fastcore | |
+|---|---|---|---|
+| `boundary_halfedges` | 89 ms | 9.1 ms | 10x |
+| `trace_loops` | 38 ms | 0.67 ms | 56x |
+| `triangulate_rings` | 89 ms | 0.67 ms | 132x |
+| **end to end** | **224 ms** | **11 ms** | **21x** |
+
+And the same mesh on the subset path, 400 twig cuts exposing 4.3k half-edges:
+
+| | numpy | fastcore | |
+|---|---|---|---|
+| `exposed_halfedges` | 6.4 ms | 0.80 ms | 8x |
+| `trace_loops` | 0.97 ms | 0.15 ms | 7x |
+| `triangulate_rings` | 2.9 ms | 0.18 ms | 16x |
+| **end to end** | **10.7 ms** | **0.87 ms** | **12x** |
+
+One of those numbers deserves a caveat: `triangulate_rings`' 132x is not faster ear-clipping —
+the C++ it replaces is the same algorithm — it is the disappearance of a 23,000-iteration
+Python loop around it, and most of those rings are three vertices and never reach the
+ear-clipper at all.
+
+`trace_loops` is worth a word too, in the other direction. It is a sequential walk and does
+not scale with cores at all; what makes it cheap is that it is proportional to the *boundary*
+rather than to the mesh, and that its adjacency is a CSR keyed by vertex id rather than a hash
+map of per-vertex lists. That is the difference between 0.67 ms and about 5.
+
+### Non-manifold boundaries, and why not a cycle basis
+
+At a non-manifold boundary vertex several half-edges leave at once. `trace_loops` is greedy:
+it takes whichever is still free, so every half-edge lands in exactly one ring and the whole
+boundary is covered. A cycle basis — `networkx.cycle_basis`, which is what
+`trimesh.repair.fill_holes` uses — quietly drops the edges that are not part of a simple
+cycle, and those holes stay open.
+
+Being greedy means the decomposition depends on the order the half-edges arrive in, which is
+why `boundary_halfedges` and `exposed_halfedges` both return theirs in `3F` edge-list order:
+that is the one order that does not depend on how the parallel work happened to be split, so
+the same mesh gives the same rings at every `threads` setting.
+
+### How a ring is closed
+
+`triangulate_rings` flattens each ring onto a plane and ear-clips it, trying three things in
+order:
+
+1. The ring's area-weighted (Newell) normal. Cheaper than a best-fit plane and, on the rings
+   a cut actually produces, it fails slightly less often too.
+2. The best-fit plane, from the eigenvectors of the ring's 3x3 scatter matrix.
+3. A triangle fan from the ring's first vertex — wonky on a non-convex opening, but always
+   closed and always correctly wound.
+
+A ring only gets past step 1 if the flattening self-intersects, which is what makes
+ear-clipping run out of ears part way through and yield fewer than the `n - 2` triangles a
+simple polygon always does.
+
+The cap winds *against* its ring. The ring runs the way the faces it still has wind it, so a
+cap that agreed would have the two disagreeing about which side is out.
+
+The ear-clipping is a Rust port of mapbox's earcut rather than a binding to it, so it needs
+no extension module of its own. Against `mapbox_earcut` on the same rings it picks the same
+triangles about 93% of the time and an equally valid alternative otherwise — same triangle
+count, same total oriented area, same winding — so do not depend on the exact triangles, only
+on the hole being closed the right way round.
+
+One case is worth knowing about. Greedy tracing can walk back through a non-manifold boundary
+vertex, which leaves a ring that names the same vertex twice — a polygon touching itself.
+Neither ear-clipping attempt can find `n - 2` ears there, so the fan takes over. On a punched
+neuron mesh roughly 10% of rings are like this, and `mapbox_earcut` can loop **forever** on
+the best-fit-plane retry one of them provokes; this implementation returns the fan.
+
+::: navis_fastcore.boundary_halfedges
+
+::: navis_fastcore.exposed_halfedges
+
+::: navis_fastcore.trace_loops
+
+::: navis_fastcore.triangulate_rings

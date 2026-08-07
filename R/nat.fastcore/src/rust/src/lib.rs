@@ -1075,11 +1075,23 @@ fn robj_to_mask(mask: &Robj, n: usize) -> Option<Array1<bool>> {
     if mask.is_null() {
         return None;
     }
-    let values = mask
-        .as_logical_slice()
-        .expect("`mask` must be a logical vector or NULL");
+    let values = robj_to_flags(mask, "mask");
     assert_eq!(values.len(), n, "`mask` must have one entry per node");
-    Some(values.iter().map(|b| b.is_true()).collect())
+    Some(values.into_iter().collect())
+}
+
+/// An R logical vector as a `Vec<bool>`.
+///
+/// The coercion on its own, without [`robj_to_mask`]'s NULL branch or its fixed-length
+/// assert: `caps::exposed_halfedges` takes any mask long enough to cover the faces, so it
+/// has a bound to check rather than a length to match.
+fn robj_to_flags(flags: &Robj, what: &str) -> Vec<bool> {
+    flags
+        .as_logical_slice()
+        .unwrap_or_else(|| panic!("`{what}` must be a logical vector"))
+        .iter()
+        .map(|b| b.is_true())
+        .collect()
 }
 
 /// Interpret R's `use_radius` (`NULL` / `FALSE` / `TRUE` / a number) as a weight.
@@ -1381,7 +1393,10 @@ fn robj_to_coords(vertices: Option<Robj>) -> Option<Array2<f64>> {
 }
 
 /// Convert an R `(E, 2)` numeric/integer matrix of edges.
-fn robj_to_edges(edges: &Robj) -> Array2<u32> {
+///
+/// `what` names the argument in the error, as the Python side's `as_slice(a, what)` does:
+/// not every caller's is called `edges` (`trace_loops` takes `halfedges`).
+fn robj_to_edges(edges: &Robj, what: &str) -> Array2<u32> {
     if let Ok(m) = <RMatrix<i32>>::try_from(edges.clone()) {
         let nr = m.nrows();
         let d = m.data();
@@ -1391,7 +1406,7 @@ fn robj_to_edges(edges: &Robj) -> Array2<u32> {
         let d = m.data();
         Array2::from_shape_fn((nr, 2), |(i, j)| d[j * nr + i] as u32)
     } else {
-        panic!("`edges` must be a numeric (E, 2) matrix");
+        panic!("`{what}` must be a numeric (E, 2) matrix");
     }
 }
 
@@ -1542,7 +1557,7 @@ pub fn geodesic_matrix_graph(
     #[default = "32"]
     precision: i32,
 ) -> Robj {
-    let edges = robj_to_edges(&edges);
+    let edges = robj_to_edges(&edges, "edges");
     let sources = to_u32(sources);
     let targets = to_u32(targets);
 
@@ -1726,6 +1741,153 @@ pub fn geodesic_farthest_mesh(
 }
 
 // ---------------------------------------------------------------------------
+// Capping holes
+// ---------------------------------------------------------------------------
+//
+// Finding where a mesh is open and triangulating it shut. Only faces are ever added,
+// never vertices, so every vertex index a caller already holds still means what it
+// meant. Vertex references are 0-based, as elsewhere.
+
+/// Every edge of a mesh that has only one face on it.
+///
+/// An interior edge has two faces on it and a boundary edge has one, so this is a
+/// grouping of the `3F` edges the faces name — and that grouping is the whole cost.
+/// Use `exposed_halfedges` instead where you already know which vertices are going
+/// away: that one never looks at the mesh as a whole.
+///
+/// The half-edges come back **directed**, wound the way the one face they have left
+/// winds them. That is what makes `trace_loops` a walk rather than a search, and what
+/// tells `triangulate_rings` which way round to wind the cap.
+///
+/// @param faces Integer or numeric `(F, 3)` matrix of triangle vertex indices
+///   (0-based).
+/// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @return Integer `(K, 2)` matrix of directed half-edges, in the order they appear
+///   in the `3F` edge list.
+/// @export
+#[extendr]
+pub fn boundary_halfedges(faces: Robj, #[default = "NULL"] threads: Option<i32>) -> Robj {
+    let faces = robj_to_faces(&faces);
+    let out = fastcore::caps::boundary_halfedges(faces.view(), to_threads(threads));
+    array2_to_r(&out, |x| x as i32)
+}
+
+/// The edges a subset is about to expose. Takes the faces *before* subsetting.
+///
+/// A face survives only if all three of its corners do, so an edge ends up on a new
+/// boundary exactly when it loses a face to the cut but keeps one. Both halves of that
+/// test are local to the cut, so — unlike `boundary_halfedges` — this never groups the
+/// edges of the whole mesh.
+///
+/// Edges that were boundary *already* are left out: they belong to openings the mesh
+/// came with, and sealing those is `boundary_halfedges`' job. One consequence is worth
+/// knowing: where a cut runs into an opening the mesh came with, what it exposes is an
+/// open chain rather than a ring, and `trace_loops` abandons it.
+///
+/// @param faces Integer or numeric `(F, 3)` matrix of faces *before* subsetting
+///   (0-based vertex indices).
+/// @param dropped Logical vector of length `V`: for each vertex, whether the subset
+///   drops it.
+/// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @return Integer `(K, 2)` matrix of directed half-edges, with indices into the
+///   *original* vertices. Remap them onto the surviving vertices before capping.
+/// @export
+#[extendr]
+pub fn exposed_halfedges(
+    faces: Robj,
+    dropped: Robj,
+    #[default = "NULL"] threads: Option<i32>,
+) -> Robj {
+    let faces = robj_to_faces(&faces);
+    let mask = robj_to_flags(&dropped, "dropped");
+    // The core indexes `mask` by vertex id, so a mask that does not cover every vertex
+    // the faces name would be an out-of-bounds panic rather than a wrong answer.
+    assert!(
+        faces.iter().all(|&v| (v as usize) < mask.len()),
+        "`faces` references a vertex beyond the end of `dropped`"
+    );
+    let out = fastcore::caps::exposed_halfedges(faces.view(), &mask, to_threads(threads));
+    array2_to_r(&out, |x| x as i32)
+}
+
+/// Walk directed half-edges into closed rings.
+///
+/// Greedy: at a non-manifold boundary vertex several half-edges leave at once, so this
+/// takes whichever is still free. Every half-edge lands in exactly one ring, which is
+/// what makes this cover the whole boundary — a cycle basis quietly drops the edges
+/// that are not part of a simple cycle, and those holes stay open.
+///
+/// A walk that runs into a dead end is abandoned, and so is a ring of fewer than three
+/// vertices, so the rings need not account for every half-edge handed in.
+///
+/// @param halfedges Integer or numeric `(K, 2)` matrix of directed half-edges, as
+///   returned by `boundary_halfedges` or `exposed_halfedges`.
+/// @return List with `rings` (integer vector: every ring's vertices, end to end) and
+///   `offsets` (integer vector, one longer than there are rings). Ring `i` is
+///   `rings[(offsets[i] + 1):offsets[i + 1]]` — the offsets are 0-based bounds, as
+///   the vertex indices are.
+/// @export
+#[extendr]
+pub fn trace_loops(halfedges: Robj) -> Robj {
+    let halfedges = robj_to_edges(&halfedges, "halfedges");
+    let (rings, offsets) = fastcore::caps::trace_loops(halfedges.view());
+    list!(
+        rings = rings.iter().map(|&x| x as i32).collect::<Vec<i32>>(),
+        offsets = offsets.iter().map(|&x| x as i32).collect::<Vec<i32>>()
+    )
+    .into()
+}
+
+/// Triangulate boundary rings, wound against the direction they run in.
+///
+/// Each ring is flattened onto a plane and ear-clipped, trying three things in order:
+/// the ring's area-weighted (Newell) normal, then its best-fit plane, then a plain
+/// triangle fan — wonky on a non-convex opening, but always closed and always correctly
+/// wound. A ring only gets past the first attempt if the flattening self-intersects.
+///
+/// The cap winds *against* its ring, because the ring runs the way the faces it still
+/// has wind it: a cap that agreed would have the two disagreeing about which side is
+/// out.
+///
+/// @param rings Integer vector of ring vertices, end to end (`trace_loops`' `rings`).
+/// @param offsets Integer vector of 0-based ring bounds (`trace_loops`' `offsets`).
+///   Must be non-decreasing and run from `0` to `length(rings)`.
+/// @param vertices Numeric `(V, 3)` matrix of vertex coordinates.
+/// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @return Integer `(M, 3)` matrix of new faces (0-based vertex indices), ring by
+///   ring. A ring of `k` vertices always caps to `k - 2` triangles.
+/// @export
+#[extendr]
+pub fn triangulate_rings(
+    rings: Vec<i32>,
+    offsets: Vec<i32>,
+    vertices: Robj,
+    #[default = "NULL"] threads: Option<i32>,
+) -> Robj {
+    let verts = robj_to_coords(Some(vertices)).expect("`vertices` must be a numeric (V, 3) matrix");
+
+    assert!(
+        rings.iter().all(|&v| (v as usize) < verts.nrows()),
+        "`rings` references a vertex beyond the end of `vertices`"
+    );
+
+    let ring_u32 = as_u32(&rings);
+    let offsets_i64: Vec<i64> = offsets.iter().map(|&x| x as i64).collect();
+    // The pair's internal consistency is the core's to define, so this binding and the
+    // Python one cannot drift on what counts as a malformed CSR.
+    if let Err(e) = fastcore::caps::check_rings(&ring_u32, &offsets_i64) {
+        panic!("{e}");
+    }
+    let out = fastcore::caps::triangulate_rings(
+        &ring_u32,
+        &offsets_i64,
+        verts.view(),
+        to_threads(threads),
+    );
+    array2_to_r(&out, |x| x as i32)
+}
+
+// ---------------------------------------------------------------------------
 // Graph primitives
 // ---------------------------------------------------------------------------
 //
@@ -1789,7 +1951,7 @@ pub fn unique_edges(
 /// @export
 #[extendr]
 pub fn connected_components_graph(edges: Robj, n_nodes: i32) -> Vec<i32> {
-    let edges = robj_to_edges(&edges);
+    let edges = robj_to_edges(&edges, "edges");
     fastcore::mesh::connected_components_graph(edges.view(), n_nodes as usize)
         .iter()
         .map(|&x| x as i32)
@@ -1820,7 +1982,7 @@ pub fn connected_components_graph(edges: Robj, n_nodes: i32) -> Vec<i32> {
 /// @export
 #[extendr]
 pub fn level_set_components(edges: Robj, n_nodes: i32, labels: Vec<i32>) -> Robj {
-    let edges = robj_to_edges(&edges);
+    let edges = robj_to_edges(&edges, "edges");
     let labels: Array1<i64> = labels.into_iter().map(i64::from).collect();
     let (ids, n) =
         fastcore::mesh::level_set_components(edges.view(), n_nodes as usize, labels.view());
@@ -1842,7 +2004,7 @@ pub fn level_set_components(edges: Robj, n_nodes: i32, labels: Vec<i32>) -> Robj
 /// @export
 #[extendr]
 pub fn contract_vertices(edges: Robj, mapping: Vec<i32>, #[default = "NULL"] threads: Option<i32>) -> Robj {
-    let edges = robj_to_edges(&edges);
+    let edges = robj_to_edges(&edges, "edges");
     let mapping: Array1<u32> = Array1::from_vec(as_u32(&mapping));
     let out = fastcore::mesh::contract_vertices(edges.view(), mapping.view(), to_threads(threads));
     array2_to_r(&out, |x| x as i32)
@@ -1882,7 +2044,7 @@ pub fn minimum_spanning_tree(
     #[default = "32"]
     precision: i32,
 ) -> Vec<i32> {
-    let edges = robj_to_edges(&edges);
+    let edges = robj_to_edges(&edges, "edges");
 
     fn run<W: Weight>(
         edges: ArrayView2<u32>,
@@ -1951,7 +2113,7 @@ pub fn parents_from_edges(
     #[default = "32"]
     precision: i32,
 ) -> Robj {
-    let edges = robj_to_edges(&edges);
+    let edges = robj_to_edges(&edges, "edges");
     let roots = to_u32(roots);
 
     fn run<W: Weight>(
@@ -1999,7 +2161,7 @@ pub fn parents_from_edges(
 /// @export
 #[extendr]
 pub fn bridges(edges: Robj, n_nodes: i32) -> Vec<bool> {
-    let edges = robj_to_edges(&edges);
+    let edges = robj_to_edges(&edges, "edges");
     fastcore::mesh::bridges(edges.view(), n_nodes as usize).to_vec()
 }
 
@@ -2122,7 +2284,7 @@ pub fn geodesic_mst_graph(
     #[default = "32"]
     precision: i32,
 ) -> Robj {
-    let edges = robj_to_edges(&edges);
+    let edges = robj_to_edges(&edges, "edges");
     let nodes = as_u32(&nodes);
 
     fn run<W: Weight + Into<f64>>(
@@ -2199,7 +2361,7 @@ pub fn geodesic_predecessors(
     #[default = "32"]
     precision: i32,
 ) -> Robj {
-    let edges = robj_to_edges(&edges);
+    let edges = robj_to_edges(&edges, "edges");
     let sources = to_u32(sources);
 
     fn run<W: Weight + Into<f64>>(
@@ -2261,7 +2423,7 @@ pub fn geodesic_path(
     #[default = "32"]
     precision: i32,
 ) -> Robj {
-    let edges = robj_to_edges(&edges);
+    let edges = robj_to_edges(&edges, "edges");
     let targets = as_u32(&targets);
 
     fn run<W: Weight>(
@@ -2337,7 +2499,7 @@ pub fn geodesic_clusters(
     #[default = "32"]
     precision: i32,
 ) -> Robj {
-    let edges = robj_to_edges(&edges);
+    let edges = robj_to_edges(&edges, "edges");
     let seeds = to_u32(seeds);
 
     fn run<W: Weight>(
@@ -4203,6 +4365,10 @@ extendr_module! {
     fn geodesic_nearest_mesh;
     fn geodesic_farthest_mesh;
     fn unique_edges;
+    fn boundary_halfedges;
+    fn exposed_halfedges;
+    fn trace_loops;
+    fn triangulate_rings;
     fn connected_components_graph;
     fn level_set_components;
     fn contract_vertices;

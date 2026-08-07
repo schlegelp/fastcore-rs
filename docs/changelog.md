@@ -41,6 +41,52 @@ no-code-change equivalent.
 entry points without one. See [Threads](python/threads.md), and
 `scripts/profile-heal-parallel.py` for measuring where your own workload sits.
 
+**Capping the holes a cut leaves in a mesh.** Four functions, in Python and in R:
+`boundary_halfedges` finds every edge of a mesh with only one face on it,
+`exposed_halfedges` finds only the ones a subset is about to open (given the faces
+*before* the cut), `trace_loops` walks either into closed rings, and
+`triangulate_rings` ear-clips those shut. Only faces are ever added, never vertices, so
+every vertex index a caller already holds still means what it meant — which is what lets
+the cap be applied *after* a subset rather than during it.
+
+```python
+halfedges = fastcore.boundary_halfedges(faces)
+rings, offsets = fastcore.trace_loops(halfedges)
+faces = np.vstack((faces, fastcore.triangulate_rings(rings, offsets, vertices)))
+```
+
+Almost all of the win is in the first one. Grouping the `3F` edges a face array names is
+the whole cost of finding a boundary, and the obvious numpy spelling —
+`np.unique(keys, return_inverse=True, return_counts=True)` — is a stable argsort: **75 ms
+of an 84 ms call** on a 578k-face mesh. That is not a formulation problem, which is worth
+saying because it is the kind that usually is: the bare `np.sort` of the same keys is
+already 51 ms, so no rearrangement inside numpy can win. Sorting bare `u64` keys in
+parallel and taking a second pass over the faces to recover each boundary edge's
+direction brings the call to 8 ms. On the same mesh with ~23k holes punched into it,
+end to end: **224 ms of numpy becomes 11 ms**. On the subset path — 400 twig cuts
+exposing 4.3k half-edges — 10.7 ms becomes 0.87 ms.
+
+There is one caveat worth stating rather than burying: `boundary_halfedges`,
+`exposed_halfedges` and `trace_loops` reproduce the numpy implementation's output
+half-edge for half-edge and ring for ring, but `triangulate_rings` does not. It agrees on
+about 93% of rings and returns an equally valid alternative on the rest — same triangle
+count, same total oriented area, same winding. Depend on the hole being closed the right
+way round, not on the exact triangles.
+
+`trace_loops` is greedy rather than a cycle basis, and that is deliberate. At a
+non-manifold boundary vertex several half-edges leave at once; taking whichever is still
+free puts every half-edge in exactly one ring, so the whole boundary is covered.
+`networkx.cycle_basis` — what `trimesh.repair.fill_holes` uses — quietly drops the edges
+that are not part of a simple cycle, and those holes stay open.
+
+The ear-clipping is a Rust port of mapbox's earcut rather than a binding to it, which
+means the triangulation no longer needs the `mapbox_earcut` extension module at all —
+and that turns out to fix a hang as well as remove a dependency. Greedy tracing can walk
+back through a non-manifold boundary vertex, leaving a ring that names the same vertex
+twice; on a punched neuron mesh roughly 10% of rings are like that, and `mapbox_earcut`
+loops **forever** on the best-fit-plane retry one of them provokes. This implementation
+falls back to a fan, which is the right answer for a polygon that touches itself.
+
 **Mesh smoothing, without the shrinkage and without the translation.** `smooth_mesh`
 moves a triangle mesh's vertices to take the noise out of its surface, leaving the face
 array, the vertex count and the vertex order untouched — so anything indexed by vertex

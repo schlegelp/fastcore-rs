@@ -724,6 +724,87 @@ geodesic_farthest_mesh <- function(faces, n_vertices, vertices, sources, targets
 #' @export
 unique_edges <- function(faces, vertices = NULL, threads = NULL) .Call(wrap__unique_edges, faces, vertices, threads)
 
+#' Every edge of a mesh that has only one face on it.
+#'
+#' An interior edge has two faces on it and a boundary edge has one, so this is a
+#' grouping of the `3F` edges the faces name — and that grouping is the whole cost.
+#' Use `exposed_halfedges` instead where you already know which vertices are going
+#' away: that one never looks at the mesh as a whole.
+#'
+#' The half-edges come back **directed**, wound the way the one face they have left
+#' winds them. That is what makes `trace_loops` a walk rather than a search, and what
+#' tells `triangulate_rings` which way round to wind the cap.
+#'
+#' @param faces Integer or numeric `(F, 3)` matrix of triangle vertex indices
+#'   (0-based).
+#' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @return Integer `(K, 2)` matrix of directed half-edges, in the order they appear
+#'   in the `3F` edge list.
+#' @export
+boundary_halfedges <- function(faces, threads = NULL) .Call(wrap__boundary_halfedges, faces, threads)
+
+#' The edges a subset is about to expose. Takes the faces *before* subsetting.
+#'
+#' A face survives only if all three of its corners do, so an edge ends up on a new
+#' boundary exactly when it loses a face to the cut but keeps one. Both halves of that
+#' test are local to the cut, so — unlike `boundary_halfedges` — this never groups the
+#' edges of the whole mesh.
+#'
+#' Edges that were boundary *already* are left out: they belong to openings the mesh
+#' came with, and sealing those is `boundary_halfedges`' job. One consequence is worth
+#' knowing: where a cut runs into an opening the mesh came with, what it exposes is an
+#' open chain rather than a ring, and `trace_loops` abandons it.
+#'
+#' @param faces Integer or numeric `(F, 3)` matrix of faces *before* subsetting
+#'   (0-based vertex indices).
+#' @param dropped Logical vector of length `V`: for each vertex, whether the subset
+#'   drops it.
+#' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @return Integer `(K, 2)` matrix of directed half-edges, with indices into the
+#'   *original* vertices. Remap them onto the surviving vertices before capping.
+#' @export
+exposed_halfedges <- function(faces, dropped, threads = NULL) .Call(wrap__exposed_halfedges, faces, dropped, threads)
+
+#' Walk directed half-edges into closed rings.
+#'
+#' Greedy: at a non-manifold boundary vertex several half-edges leave at once, so this
+#' takes whichever is still free. Every half-edge lands in exactly one ring, which is
+#' what makes this cover the whole boundary — a cycle basis quietly drops the edges
+#' that are not part of a simple cycle, and those holes stay open.
+#'
+#' A walk that runs into a dead end is abandoned, and so is a ring of fewer than three
+#' vertices, so the rings need not account for every half-edge handed in.
+#'
+#' @param halfedges Integer or numeric `(K, 2)` matrix of directed half-edges, as
+#'   returned by `boundary_halfedges` or `exposed_halfedges`.
+#' @return List with `rings` (integer vector: every ring's vertices, end to end) and
+#'   `offsets` (integer vector, one longer than there are rings). Ring `i` is
+#'   `rings[(offsets[i] + 1):offsets[i + 1]]` — the offsets are 0-based bounds, as
+#'   the vertex indices are.
+#' @export
+trace_loops <- function(halfedges) .Call(wrap__trace_loops, halfedges)
+
+#' Triangulate boundary rings, wound against the direction they run in.
+#'
+#' Each ring is flattened onto a plane and ear-clipped, trying three things in order:
+#' the ring's area-weighted (Newell) normal, then its best-fit plane, then a plain
+#' triangle fan — wonky on a non-convex opening, but always closed and always correctly
+#' wound. A ring only gets past the first attempt if the flattening self-intersects.
+#'
+#' The cap winds *against* its ring, because the ring runs the way the faces it still
+#' has wind it: a cap that agreed would have the two disagreeing about which side is
+#' out.
+#'
+#' @param rings Integer vector of ring vertices, end to end (`trace_loops`' `rings`).
+#' @param offsets Integer vector of 0-based ring bounds (`trace_loops`' `offsets`).
+#'   Must be non-decreasing and run from `0` to `length(rings)`.
+#' @param vertices Numeric `(V, 3)` matrix of vertex coordinates.
+#' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @return Integer `(M, 3)` matrix of new faces (0-based vertex indices), ring by
+#'   ring. A ring of `k` vertices always caps to `k - 2` triangles.
+#' @export
+triangulate_rings <- function(rings, offsets, vertices, threads = NULL) .Call(wrap__triangulate_rings, rings, offsets, vertices, threads)
+
 #' Connected components of a graph given as an edge list.
 #'
 #' The edge-list counterpart of `mesh_connected_components`, using the same

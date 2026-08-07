@@ -3,6 +3,7 @@ import sys
 from .__version__ import __version__, __version_vector__
 
 from navis_fastcore import _fastcore
+from .caps import *
 from .cmtk import *
 from .dag import *
 from .downsample import *
@@ -29,6 +30,7 @@ from .warp import *
 # drops `__version__` for starting with an underscore.
 __all__ = ["__version__", "__version_vector__"]
 for _sub in (
+    "caps",
     "cmtk",
     "dag",
     "downsample",

@@ -24,7 +24,10 @@ use rayon::prelude::*;
 /// eigenvalues nearly coincide and the eigenvector is what we are after. Jacobi is
 /// unconditionally stable, and on a 3x3 it converges in a handful of sweeps, which is noise next
 /// to the k-NN that produced the matrix.
-fn eigh3(mut a: [[f64; 3]; 3]) -> ([f64; 3], [[f64; 3]; 3]) {
+///
+/// `pub(crate)` for [`crate::caps`], whose best-fit-plane fallback wants the same
+/// decomposition of a ring's scatter matrix.
+pub(crate) fn eigh3(mut a: [[f64; 3]; 3]) -> ([f64; 3], [[f64; 3]; 3]) {
     let mut v = [[0.0f64; 3]; 3];
     for (i, row) in v.iter_mut().enumerate() {
         row[i] = 1.0;
