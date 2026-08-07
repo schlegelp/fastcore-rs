@@ -1052,6 +1052,31 @@ simplify_mesh <- function(faces, vertices, ratio = NULL, n_faces = NULL, aggress
 #' @export
 simplify_mesh_lossless <- function(faces, vertices, epsilon = 1e-3, max_iterations = 9999, preserve_border = FALSE, lock = NULL) .Call(wrap__simplify_mesh_lossless, faces, vertices, epsilon, max_iterations, preserve_border, lock)
 
+#' Smooth a triangle mesh. The compute half of `smooth_mesh()`.
+#'
+#' Everything a caller sees - the argument matching, the defaults, the warning when
+#' the volume correction cannot be made, and the documentation - lives in the R
+#' wrapper, as it does for `nblast_knn_raw()`. This returns the *undecidable* volume
+#' pair rather than warning here because a warning raised from inside `.Call` through
+#' `R_tryEval` opens a new top-level context, so `tryCatch` and `withCallingHandlers`
+#' in the caller's frame never see it: it prints, but cannot be caught or muffled.
+#'
+#' @param faces Integer or numeric `(F, 3)` matrix of triangle vertex indices.
+#' @param vertices Numeric `(V, 3)` matrix of vertex coordinates.
+#' @param method One of `"taubin"`, `"laplacian"` or `"humphrey"`.
+#' @param iterations Integer number of passes.
+#' @param lambda,mu,alpha,beta Method parameters; `NULL` takes the method's default.
+#' @param weights One of `"uniform"`, `"inverse_distance"` or `"cotangent"`.
+#' @param preserve_border Logical; pin every vertex on a mesh boundary.
+#' @param lock Optional logical vector, one entry per vertex.
+#' @param volume_correction Logical; rescale about the centroid to restore the volume.
+#' @param threads Integer thread cap, or `NULL`.
+#' @return List with `vertices`, the numeric `(V, 3)` matrix of new coordinates, and
+#'   `volumes`, `NULL` unless a requested correction was undecidable, in which case
+#'   the signed volumes before and after.
+#' @noRd
+smooth_mesh_raw <- function(faces, vertices, method, iterations, lambda, mu, alpha, beta, weights, preserve_border, lock, volume_correction, threads) .Call(wrap__smooth_mesh_raw, faces, vertices, method, iterations, lambda, mu, alpha, beta, weights, preserve_border, lock, volume_correction, threads)
+
 #' The `limit_dist="auto"` value for a scoring matrix.
 #'
 #' @param smat_values Numeric scoring matrix, or `NULL` for the built-in FCWB

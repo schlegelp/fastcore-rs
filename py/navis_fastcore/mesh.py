@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 
 from . import _fastcore
@@ -22,6 +24,7 @@ __all__ = [
     "geodesic_clusters",
     "simplify_mesh",
     "simplify_mesh_lossless",
+    "smooth_mesh",
     "GeodesicGraph",
 ]
 
@@ -1624,8 +1627,13 @@ def geodesic_clusters(edges, n_nodes, max_dist, weights=None, seeds=None):
     )
 
 
-def _prep_simplify(faces, vertices, lock):
-    """Validate the arguments the two simplification entry points share."""
+def _prep_mesh_edit(faces, vertices, lock):
+    """Validate the arguments every mesh-editing entry point shares.
+
+    ``simplify_mesh``, ``simplify_mesh_lossless`` and ``smooth_mesh`` all take the
+    same triple and want the same three things done to it, including the ``lock``
+    mask both families spell the same way.
+    """
     faces, vertices, n_vertices = _prep_mesh(faces, vertices, None)
     if not np.isfinite(vertices).all():
         # A non-finite coordinate would reach the collapse guards, and every
@@ -1786,7 +1794,7 @@ def simplify_mesh(
     True
 
     """
-    faces, vertices, lock = _prep_simplify(faces, vertices, lock)
+    faces, vertices, lock = _prep_mesh_edit(faces, vertices, lock)
     ratio, n_faces = _prep_target(ratio, n_faces)
     return _fastcore.simplify_mesh(
         faces,
@@ -1884,7 +1892,7 @@ def simplify_mesh_lossless(
     array([7, 7, 7, 7], dtype=int32)
 
     """
-    faces, vertices, lock = _prep_simplify(faces, vertices, lock)
+    faces, vertices, lock = _prep_mesh_edit(faces, vertices, lock)
     epsilon = float(epsilon)
     if not np.isfinite(epsilon) or epsilon < 0:
         raise ValueError(f"`epsilon` must be finite and non-negative, got {epsilon}")
@@ -1896,6 +1904,211 @@ def simplify_mesh_lossless(
         bool(preserve_border),
         lock,
     )
+
+
+def smooth_mesh(
+    faces,
+    vertices,
+    method="taubin",
+    iterations=10,
+    lamb=None,
+    mu=None,
+    alpha=None,
+    beta=None,
+    weights="uniform",
+    preserve_border=False,
+    lock=None,
+    volume_correction=False,
+    threads=None,
+):
+    """Smooth a triangle mesh.
+
+    Moves vertices and touches nothing else: the face array, the vertex count and the
+    vertex order all come back unchanged, so anything you have indexed by vertex —
+    synapses, radii, labels — is still attached to the vertex it was attached to.
+
+    Three methods, chosen with ``method``:
+
+    ``"taubin"`` (the default)
+        Alternating shrink and inflate passes, tuned so the two cancel below a
+        cut-off frequency. Removes noise without removing the shape, and is the
+        default for that reason.
+    ``"laplacian"``
+        The plain diffusion step: simple, effective, and it **shrinks**. At
+        ``lamb=0.5`` and five iterations — what ``navis.smooth_mesh`` ships — a
+        neuron mesh loses 88% of its enclosed volume. Reach for it when the mesh is
+        a means to an end rather than when its volume means something, or pair it
+        with ``volume_correction``.
+    ``"humphrey"``
+        The HC filter of Vollmer et al., which fights shrinkage by pulling each
+        vertex back towards where it started rather than towards a lower frequency.
+        The gentler of the two on fine detail worth keeping.
+
+    Parameters
+    ----------
+    faces :             (F, 3) array
+                        Triangular faces given as rows of three vertex indices.
+                        Must be convertible to ``uint32``.
+    vertices :          (V, 3) array
+                        Vertex positions. Must be finite.
+    method :            "taubin" | "laplacian" | "humphrey"
+                        Which filter to run. See above.
+    iterations :        int
+                        Passes to run. For ``"taubin"`` one pass is a full
+                        ``lamb``-then-``mu`` pair, i.e. two sweeps over the mesh —
+                        not one, as ``trimesh.smoothing.filter_taubin`` counts them.
+                        Counting half-steps lets an odd ``iterations`` end on a
+                        shrink that nothing undoes.
+    lamb :              float, optional
+                        Diffusion speed for ``"laplacian"`` and ``"taubin"``, in
+                        ``[0, 1]``. Larger is more aggressive. Defaults to 0.5.
+    mu :                float, optional
+                        Inflating pass for ``"taubin"``. Must be negative and larger
+                        in magnitude than ``lamb``. Defaults to -0.53.
+    alpha :             float, optional
+                        For ``"humphrey"``: how hard vertices are pulled back
+                        towards their original positions, in ``[0, 1]``. Defaults
+                        to 0.1.
+    beta :              float, optional
+                        For ``"humphrey"``: how much of that pull-back lands on the
+                        vertex itself rather than on its one-ring, in ``[0, 1]``.
+                        Defaults to 0.5.
+    weights :           "uniform" | "inverse_distance" | "cotangent"
+                        How each vertex's one-ring is weighted. ``"uniform"`` counts
+                        every neighbour equally and also regularises the *sampling*,
+                        which means it slides vertices along the surface where the
+                        tessellation is uneven. ``"cotangent"`` is the discrete
+                        Laplace-Beltrami operator: it depends on the shape rather
+                        than on the triangulation, so it moves vertices along the
+                        normal and leaves them alone within the surface. That is
+                        usually what you want on meshes out of EM segmentation,
+                        whose triangles vary wildly in size and aspect.
+    preserve_border :   bool
+                        Pin every vertex on a mesh boundary — an endpoint of an edge
+                        used by exactly one face. Without this an open mesh's rim
+                        rolls inwards under any of these filters, because a boundary
+                        vertex's one-ring lies entirely to one side of it.
+    lock :              (V, ) bool array, optional
+                        Vertices that must not move; they come back at bitwise the
+                        same coordinates. Unioned with ``preserve_border``, not an
+                        alternative to it. A locked vertex still pulls on its
+                        neighbours, which is what makes it a boundary condition
+                        rather than a hole. Same name and same meaning as
+                        :func:`simplify_mesh`'s ``lock``.
+    volume_correction : bool
+                        Rescale the result about its centroid so the enclosed volume
+                        matches the input's. Warns and leaves the mesh unscaled if
+                        the mesh has no usable volume — see Notes.
+    threads :           int, optional
+                        Number of threads to use. ``None`` uses all available cores.
+
+    Returns
+    -------
+    vertices :          (V, 3) float64 array
+                        New positions, in the same order as the input.
+
+    Notes
+    -----
+    **The volume correction scales about the centroid, not the origin.** This is the
+    one place where the result deliberately differs from
+    ``trimesh.smoothing.filter_laplacian``, which is what ``navis.smooth_mesh``
+    calls today. Upstream rescales by ``(vol_before / vol_after) ** (1/3)`` about the
+    origin, which is not a shape operation: on the 722817260 test neuron at navis'
+    own defaults it displaces the mesh by 41 um, and the mesh is 19-26 um across. It
+    is also not translation invariant — the same mesh smoothed at two different
+    offsets comes out two different shapes, and far enough from the origin the volume
+    ratio goes negative and the cube root returns NaN. Scaling about the mesh's own
+    centroid is the same size change with none of that.
+
+    The correction also runs **once, at the end**, which is not an approximation of
+    running it every iteration but exactly equal to it: every filter here is an
+    affine combination of a vertex and a normalised average of its neighbours, and
+    those commute with a uniform scaling. Upstream pays a full pass over the faces
+    per iteration — 40% of its runtime — for a result it could have had at the end.
+
+    **When the volume is undefined.** On a closed mesh the correction is exactly what
+    it says. A mesh that is *not* closed still usually gets one, and deliberately:
+    both measurements cone every face back to the same anchor, so their ratio stays a
+    consistent measure of how much the surface shrank even where neither number is an
+    enclosed volume on its own. That matters because meshes worth smoothing are almost
+    never watertight — the 722817260 test neuron is not — and refusing on that basis
+    would refuse on nearly every mesh this exists for.
+
+    What is left is the genuinely undecidable case: the ratio of the two signed
+    volumes is zero, infinite, NaN or negative, so it has no cube root worth taking. A
+    flat sheet is the clean example, with both volumes exactly zero. There the
+    vertices come back smoothed but unscaled and a ``RuntimeWarning`` says so.
+    Consistently inverted winding is *not* in that set — both volumes come out
+    negative, the ratio is positive, and the correction is as valid as ever.
+
+    **Non-manifold input is fine**, as for :func:`simplify_mesh`. An edge shared by
+    three faces, a face naming the same vertex twice, a duplicated face and a vertex
+    no face mentions are all merely data; nothing here reads more topology than
+    "which vertices are adjacent to which". A vertex in no face never moves.
+
+    Examples
+    --------
+    >>> import navis_fastcore as fastcore
+    >>> import numpy as np
+    >>> # A 5x5 grid with its middle vertex lifted out of the plane.
+    >>> faces = np.array([[i * 5 + j, (i + 1) * 5 + j, (i + 1) * 5 + j + 1]
+    ...                   for i in range(4) for j in range(4)]
+    ...                  + [[i * 5 + j, (i + 1) * 5 + j + 1, i * 5 + j + 1]
+    ...                     for i in range(4) for j in range(4)], dtype=np.uint32)
+    >>> vertices = np.array([[i, j, 0.] for i in range(5) for j in range(5)])
+    >>> vertices[12, 2] = 1.0
+    >>> v = fastcore.smooth_mesh(faces, vertices, method="laplacian", lamb=1.0,
+    ...                          iterations=1)
+    >>> float(v[12, 2])  # back in the plane its six neighbours span
+    0.0
+
+    Pin the rim so an open mesh does not roll inwards:
+
+    >>> v = fastcore.smooth_mesh(faces, vertices, preserve_border=True)
+    >>> bool(np.array_equal(v[0], vertices[0]))
+    True
+
+    """
+    faces, vertices, lock = _prep_mesh_edit(faces, vertices, lock)
+
+    iterations = int(iterations)
+    if iterations < 0:
+        raise ValueError(f"`iterations` must be non-negative, got {iterations}")
+
+    # `method`, `weights`, which parameters belong to which method, and the ranges are
+    # all checked one layer down, against the tables in the Rust core that own them —
+    # so there is one copy of each rule rather than one per binding surface. They come
+    # back as ``ValueError`` either way.
+    verts, volumes = _fastcore.smooth_mesh(
+        faces,
+        vertices,
+        method,
+        iterations,
+        None if lamb is None else float(lamb),
+        None if mu is None else float(mu),
+        None if alpha is None else float(alpha),
+        None if beta is None else float(beta),
+        weights,
+        bool(preserve_border),
+        lock,
+        bool(volume_correction),
+        threads=threads,
+    )
+    # `volumes` is only ever set when a correction was asked for and could not be
+    # made, so this is the whole of the "undefined" branch. Silence here would be
+    # the failure mode worth avoiding: the caller asked for a volume-preserving
+    # smooth and got a plain one.
+    if volumes is not None:
+        before, after = volumes
+        warnings.warn(
+            f"`volume_correction` was requested but the mesh has no usable enclosed "
+            f"volume (signed volume {before:.6g} before smoothing, {after:.6g} "
+            f"after), so the vertices were returned unscaled. This is expected for a "
+            f"mesh that is not closed.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    return verts
 
 
 def _prep_mask(mask, n, what):

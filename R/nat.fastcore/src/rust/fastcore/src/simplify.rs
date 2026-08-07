@@ -1001,42 +1001,13 @@ mod tests {
     use super::*;
     use ndarray::array;
 
-    /// A UV sphere with `n_lat * n_lon` vertices — closed, valence ~6, edge lengths in a
-    /// narrow band. The same generator `examples/profile_mesh.rs` uses, and the shape a
-    /// decimated connectomics mesh has.
-    fn uv_sphere(n_lat: usize, n_lon: usize) -> (Array2<u32>, Array2<f64>) {
-        let mut coords = Vec::with_capacity(n_lat * n_lon * 3);
-        for i in 0..n_lat {
-            // Avoid the exact poles so no ring degenerates to a point.
-            let theta = std::f64::consts::PI * (i as f64 + 0.5) / n_lat as f64;
-            for j in 0..n_lon {
-                let phi = 2.0 * std::f64::consts::PI * j as f64 / n_lon as f64;
-                coords.push(theta.sin() * phi.cos());
-                coords.push(theta.sin() * phi.sin());
-                coords.push(theta.cos());
-            }
-        }
-        let id = |i: usize, j: usize| (i * n_lon + j % n_lon) as u32;
-        let mut faces = Vec::new();
-        for i in 0..n_lat - 1 {
-            for j in 0..n_lon {
-                faces.extend_from_slice(&[id(i, j), id(i + 1, j), id(i + 1, j + 1)]);
-                faces.extend_from_slice(&[id(i, j), id(i + 1, j + 1), id(i, j + 1)]);
-            }
-        }
-        let n_faces = faces.len() / 3;
-        (
-            Array2::from_shape_vec((n_faces, 3), faces).unwrap(),
-            Array2::from_shape_vec((n_lat * n_lon, 3), coords).unwrap(),
-        )
-    }
-
-    /// A flat `n x n` grid, split along the (0,0)->(1,1) diagonal of each cell.
+    /// The two shared mesh fixtures, from `mesh` rather than copied.
     ///
-    /// Shared with `mesh`'s own suite rather than copied: every interior vertex is
-    /// exactly coplanar with its ring, so its collapse error is 0, which is what
-    /// makes it the natural fixture for lossless mode.
-    use crate::mesh::tests_support::grid;
+    /// `grid` is a flat `n x n` grid split along each cell's (0,0)->(1,1) diagonal: every
+    /// interior vertex is exactly coplanar with its ring, so its collapse error is 0,
+    /// which is what makes it the natural fixture for lossless mode. `uv_sphere` is the
+    /// closed counterpart, and the shape a decimated connectomics mesh has.
+    use crate::mesh::tests_support::{grid, uv_sphere};
 
     /// The invariants every result must satisfy, whatever the input.
     fn check_invariants(out: &Simplified, n_in: usize) {

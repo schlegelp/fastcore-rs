@@ -608,3 +608,173 @@ a determinism failure.
 ::: navis_fastcore.simplify_mesh
 
 ::: navis_fastcore.simplify_mesh_lossless
+
+## Smoothing
+
+The other half of mesh cleanup: moving vertices to take the noise out of a surface,
+without changing how many there are or which faces they form. The face array and the
+vertex order come back untouched, so anything you have indexed by vertex is still
+attached to the vertex it was attached to.
+
+```python
+smoothed = fastcore.smooth_mesh(faces, vertices)
+```
+
+That default is Taubin's λ|μ filter, and it is the default because the obvious
+alternative is a trap.
+
+### Why not plain Laplacian
+
+The plain Laplacian step — average each vertex with its neighbours, take a fraction of
+the way — removes high frequencies quickly and low ones slowly. A closed surface's
+enclosed volume *is* a low frequency, so it removes that too. At `lamb=0.5` and five
+iterations, which is what `navis.smooth_mesh` ships today, a neuron mesh comes out having
+lost **88% of its volume**.
+
+Taubin alternates a shrinking λ pass with an inflating μ pass, tuned so the two cancel
+below a cut-off frequency and reinforce above it. Same fixture, twenty iterations: it
+holds its volume to within 5%.
+
+```python
+# Explicitly, if you want the Laplacian anyway
+smoothed = fastcore.smooth_mesh(faces, vertices, method="laplacian", lamb=0.5,
+                                iterations=5)
+```
+
+!!! warning "One Taubin iteration is a full λ/μ pair"
+
+    Two sweeps over the mesh, not one — `trimesh.smoothing.filter_taubin` counts
+    half-steps. Counting half-steps lets an odd `iterations` end on a λ pass, which is a
+    shrink that nothing undoes, and the whole point of the filter is that the passes come
+    in pairs. `iterations=10` here equals `iterations=20` there, and the two agree to
+    ~1e-11.
+
+`method="humphrey"` is the third option — the HC filter of Vollmer et al., which fights
+shrinkage by pulling each vertex back towards where it started rather than towards a
+lower frequency. It is the gentler of the two on fine detail worth keeping.
+
+### Weights
+
+`weights` chooses how a vertex's one-ring is averaged. The default `"uniform"` counts
+every neighbour equally, which also regularises the *sampling*: where the tessellation is
+uneven it slides vertices along the surface towards even spacing. Sometimes that is what
+you want; often it is drift you did not ask for.
+
+`"cotangent"` is the discrete Laplace–Beltrami operator — each edge weighted by the
+cotangents of the two angles opposite it. It is a function of the surface rather than of
+the triangulation, so it moves vertices along the normal and leaves them alone within the
+surface. On a UV sphere, whose rings crowd together at the poles, it drifts less than half
+as far as the uniform umbrella for the same amount of smoothing.
+
+```python
+smoothed = fastcore.smooth_mesh(faces, vertices, weights="cotangent")
+```
+
+Cotangents go negative on obtuse triangles, and a negative weight pushes a vertex *away*
+from its neighbour, so those contributions are clamped to zero — the usual remedy. A
+vertex whose weights all vanish that way falls back to the uniform umbrella. The cost is
+that on a surface of mostly-obtuse triangles cotangent weighting degrades towards uniform,
+which is the right way to fail.
+
+Unlike `trimesh`, which builds its operator once from the input geometry and reuses it,
+the geometry-dependent weightings here are recomputed from the current positions every
+pass — the flow they are supposed to discretise rather than a snapshot taken before the
+first step. It costs nothing, because the weights are never materialised at all: each is
+derived as the one-ring is walked, which is about what reading it back from an array would
+have cost anyway.
+
+### Boundaries and pinning
+
+A boundary vertex's one-ring lies entirely to one side of it, so an open mesh's rim rolls
+inwards under any of these filters. `preserve_border=True` pins it — a boundary vertex
+being an endpoint of an edge used by exactly one face:
+
+```python
+smoothed = fastcore.smooth_mesh(faces, vertices, preserve_border=True)
+```
+
+`lock` freezes an arbitrary set on top of that — the same name and the same meaning as
+[`simplify_mesh`](#navis_fastcore.simplify_mesh)'s. A locked vertex comes back at bitwise
+the same coordinates but still pulls on its neighbours, which is what makes it a boundary
+condition rather than a hole:
+
+```python
+lock = np.zeros(len(vertices), dtype=bool)
+lock[synapse_vertices] = True
+
+smoothed = fastcore.smooth_mesh(faces, vertices, lock=lock, preserve_border=True)
+assert np.array_equal(smoothed[lock], vertices[lock])
+```
+
+### Volume correction
+
+`volume_correction=True` rescales the result **about its centroid** so the enclosed volume
+matches the input's:
+
+```python
+smoothed = fastcore.smooth_mesh(faces, vertices, method="laplacian",
+                                volume_correction=True)
+```
+
+About the centroid is the one place this deliberately differs from
+`trimesh.smoothing.filter_laplacian`, and the difference is not cosmetic. Upstream
+rescales by `(vol_before / vol_after) ** (1/3)` about the **origin**, which is not a shape
+operation:
+
+- **It translates the mesh.** On the 722817260 test neuron at navis' own defaults, the
+  constraint displaces the result by 41 µm. The mesh is 19–26 µm across.
+- **It is not translation invariant.** The same mesh smoothed at two different offsets
+  comes out two different shapes; far enough from the origin the volume ratio goes
+  negative and the cube root returns `NaN`.
+- **It divides by the smoothed volume**, so a mesh with a hole big enough to make that
+  zero is a `ZeroDivisionError` rather than a diagnostic.
+
+The correction here also runs **once, at the end** — which is not an approximation of
+running it every iteration but exactly equal to it. Every filter is an affine combination
+of a vertex and a normalised average of its neighbours, and those commute with a uniform
+scaling, so scaling first and smoothing lands on the same vertices as smoothing and
+scaling afterwards. Upstream pays a full pass over the faces and a `(F, 3, 3)` gather per
+iteration — 40% of its runtime — for a result it could have had at the end for one pass.
+
+!!! note "When the volume is undefined"
+
+    On a closed mesh the correction is exactly what it says. A mesh that is *not* closed
+    still usually gets one, and deliberately: both measurements cone every face back to
+    the same anchor, so their ratio stays a consistent measure of how much the surface
+    shrank even where neither number is an enclosed volume on its own. That matters
+    because meshes worth smoothing are almost never watertight — the 722817260 neuron is
+    not.
+
+    What is left is the genuinely undecidable case: the ratio of the two signed volumes is
+    zero, infinite, `NaN` or negative, a flat sheet being the clean example. There the
+    vertices come back smoothed but unscaled and a `RuntimeWarning` says so. Consistently
+    inverted winding is *not* in that set — both volumes come out negative, the ratio is
+    positive, and the correction is as valid as ever.
+
+### Notes
+
+**Speed.** On a 421k-vertex / 881k-face mesh, ten iterations with the volume correction:
+
+| | |
+|---|---|
+| `trimesh.smoothing.filter_laplacian` | 5.42 s |
+| `fastcore.smooth_mesh`, uniform | 0.03 s |
+| `fastcore.smooth_mesh`, cotangent | 0.06 s |
+
+The arithmetic was never the cost. Upstream spends 57% of its time building the operator —
+`vertex_neighbors` is a list of 421k Python lists, 636 MB of heap for 10 MB of vertices —
+and another 40% in the volume constraint's per-iteration `vertices[faces]` gather. The
+sparse matrix–vector product itself is 42 ms of the 5.4 s.
+
+**Non-manifold input is fine**, as for simplification. An edge shared by three faces, a
+face naming the same vertex twice, a duplicated face and a vertex no face mentions are all
+merely data; nothing here reads more topology than "which vertices are adjacent to which".
+A vertex in no face never moves.
+
+**Determinism.** Same input, same output, every run and at every `threads` setting. The
+volume and centroid reductions are folded in fixed-size chunks and summed in order for
+exactly that reason — floating-point addition is not associative, so a reduction tree that
+depended on how rayon split the work would change the last bit of the scale factor between
+runs.
+
+::: navis_fastcore.smooth_mesh

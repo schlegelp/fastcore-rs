@@ -30,6 +30,9 @@ use mesh::*;
 mod simplify;
 use simplify::*;
 
+mod smoothing;
+use smoothing::*;
+
 mod points;
 use points::*;
 
@@ -200,6 +203,9 @@ mod fastcore {
 
     #[pymodule_export]
     use super::simplify_mesh_lossless_py;
+
+    #[pymodule_export]
+    use super::smooth_mesh_py;
 
     #[pymodule_export]
     use super::dotprops_py;

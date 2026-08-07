@@ -159,6 +159,9 @@ def test_every_integer_returning_mesh_function_is_classified():
         "geodesic_matrix_graph",
         "geodesic_farthest_mesh",
         "geodesic_mst_mesh",
+        # Moves vertices and returns only their new coordinates; the face array and
+        # the vertex order are the caller's own, untouched.
+        "smooth_mesh",
         "GeodesicGraph",
     }
     from navis_fastcore import mesh

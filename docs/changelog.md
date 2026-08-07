@@ -41,6 +41,73 @@ no-code-change equivalent.
 entry points without one. See [Threads](python/threads.md), and
 `scripts/profile-heal-parallel.py` for measuring where your own workload sits.
 
+**Mesh smoothing, without the shrinkage and without the translation.** `smooth_mesh`
+moves a triangle mesh's vertices to take the noise out of its surface, leaving the face
+array, the vertex count and the vertex order untouched — so anything indexed by vertex
+is still attached to the vertex it was attached to.
+
+```python
+smoothed = fastcore.smooth_mesh(faces, vertices)
+```
+
+That default is Taubin's λ|μ filter rather than the plain Laplacian, and it is worth
+saying why. The Laplacian step removes high frequencies quickly and low ones slowly, and
+a closed surface's enclosed volume *is* a low frequency: at `lamb=0.5` and five
+iterations — what `navis.smooth_mesh` ships today — a neuron mesh comes out having lost
+**88% of its volume**. Taubin alternates a shrinking λ pass with an inflating μ pass tuned
+so the two cancel below a cut-off frequency; on the same fixture it holds its volume to
+within 5%. `method="laplacian"` and `method="humphrey"` (the HC filter of Vollmer et al.)
+are there when you want them.
+
+`weights="cotangent"` is the discrete Laplace–Beltrami operator, and the reason to reach
+for it is that the uniform umbrella cannot tell "this vertex is off the surface" from
+"this vertex has closer neighbours on one side", so on uneven tessellation it slides
+vertices *along* the surface. Cotangent weights are a function of the shape rather than of
+the triangulation, so they move vertices along the normal instead — on a UV sphere they
+drift less than half as far for the same amount of smoothing. `trimesh` builds its
+operator once from the input geometry and reuses it; here the geometry-dependent
+weightings are recomputed from the current positions every pass, which is the flow they
+are supposed to discretise rather than a snapshot taken before the first step. That is
+free, because the weights are never materialised at all.
+
+**The volume correction scales about the mesh's centroid, not about the origin.** This is
+the one place the result deliberately differs from `trimesh.smoothing.filter_laplacian`,
+which is what `navis.smooth_mesh` calls, and the difference is not cosmetic. Upstream
+rescales by `(vol_before / vol_after) ** (1/3)` about the origin, which is not a shape
+operation: on the 722817260 test neuron at navis' own defaults it displaces the result by
+**41 µm**, and the mesh is 19–26 µm across. It is also not translation invariant — the
+same mesh smoothed at two different offsets comes out two different shapes, and far enough
+from the origin the volume ratio goes negative and the cube root returns `NaN` — and it
+divides by the smoothed volume, so a mesh with a hole big enough to make that zero is a
+`ZeroDivisionError` rather than a diagnostic. Scaling about the centroid is the same size
+change with none of that, and where the ratio is genuinely undecidable (a flat sheet, both
+volumes exactly zero) the mesh comes back unscaled with a warning rather than silently
+wrong.
+
+The correction also runs once, at the end, which is not an approximation of running it
+every iteration but exactly equal to it: every filter here is an affine combination of a
+vertex and a normalised average of its neighbours, and those commute with a uniform
+scaling.
+
+`preserve_border` pins the rim of an open mesh — a boundary vertex's one-ring lies
+entirely to one side of it, so without this the rim rolls inwards under any of these
+filters — and `lock` freezes an arbitrary set on top of that, bitwise, while still
+letting those vertices pull on their neighbours. Same name and same meaning as
+`simplify_mesh`'s `lock`, since it is the same concept.
+
+Ten iterations with the volume correction on a 421k-vertex / 881k-face mesh: **5.42 s
+with `trimesh`, 0.03 s here** (0.06 s on cotangent weights). The arithmetic was never the
+cost — the sparse matrix–vector product is 42 ms of upstream's 5.4 s. What it spends is
+57% building the operator, where `vertex_neighbors` is a list of 421k Python lists costing
+636 MB of heap for 10 MB of vertices, and another 40% in the volume constraint's
+per-iteration `vertices[faces]` gather. Against `trimesh` on the uniform umbrella all
+three filters agree to ~1e-11 on coordinates spanning 25,880 units, which is what the test
+suite checks; the deliberate divergences are the volume correction, the per-pass weight
+recomputation, and that one Taubin iteration here is a full λ/μ pair rather than a
+half-step.
+
+Available in Python and in R. See [Meshes](python/mesh.md#smoothing).
+
 **Mesh simplification that remembers where every vertex went.** `simplify_mesh`
 decimates a triangle mesh by quadric-error edge collapse and returns, alongside the
 smaller mesh, a `vertex_map`: for each vertex of the original, the index of the vertex

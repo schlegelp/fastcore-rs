@@ -335,7 +335,11 @@ pub fn unique_edges(
 
             let mut edges: Vec<u32> = Vec::new();
             let mut index: Vec<i64> = Vec::new();
-            let mut inverse: Vec<i64> = if return_inverse { vec![0; n_edges] } else { Vec::new() };
+            let mut inverse: Vec<i64> = if return_inverse {
+                vec![0; n_edges]
+            } else {
+                Vec::new()
+            };
             let mut prev: Option<u64> = None;
             let mut slot: i64 = -1;
             for &p in &packed {
@@ -2583,8 +2587,8 @@ fn geodesic_mst_impl<W: Weight>(
 
     // --- Kruskal, on the candidates rather than on a matrix. An empty candidate list needs no
     // special case: Kruskal keeps nothing and the gather below yields the empty tree.
-    let cand = Array2::from_shape_vec((cand_w.len(), 2), cand)
-        .expect("two entries pushed per candidate");
+    let cand =
+        Array2::from_shape_vec((cand_w.len(), 2), cand).expect("two entries pushed per candidate");
     let cand_w = Array1::from_vec(cand_w);
     let keep = minimum_spanning_tree(
         cand.view(),
@@ -3587,7 +3591,7 @@ impl GeodesicGraph {
 
 #[cfg(test)]
 pub(crate) mod tests_support {
-    pub(crate) use super::tests::grid;
+    pub(crate) use super::tests::{grid, uv_sphere};
 }
 
 #[cfg(test)]
@@ -3632,6 +3636,40 @@ mod tests {
         }
         let coords = Array2::from_shape_vec((n * n, 3), coords).unwrap();
         (faces, coords)
+    }
+
+    /// A UV sphere with `n_lat * n_lon` vertices — closed, valence ~6, edge lengths in a
+    /// narrow band. The same generator `examples/profile_mesh.rs` uses, and the shape a
+    /// decimated connectomics mesh has.
+    ///
+    /// Here next to `grid` rather than in whichever module first wanted it, because it is
+    /// a mesh fixture and not a fact about any one algorithm: `simplify` and `smoothing`
+    /// both take it from here.
+    pub(crate) fn uv_sphere(n_lat: usize, n_lon: usize) -> (Array2<u32>, Array2<f64>) {
+        let mut coords = Vec::with_capacity(n_lat * n_lon * 3);
+        for i in 0..n_lat {
+            // Avoid the exact poles so no ring degenerates to a point.
+            let theta = std::f64::consts::PI * (i as f64 + 0.5) / n_lat as f64;
+            for j in 0..n_lon {
+                let phi = 2.0 * std::f64::consts::PI * j as f64 / n_lon as f64;
+                coords.push(theta.sin() * phi.cos());
+                coords.push(theta.sin() * phi.sin());
+                coords.push(theta.cos());
+            }
+        }
+        let id = |i: usize, j: usize| (i * n_lon + j % n_lon) as u32;
+        let mut faces = Vec::new();
+        for i in 0..n_lat - 1 {
+            for j in 0..n_lon {
+                faces.extend_from_slice(&[id(i, j), id(i + 1, j), id(i + 1, j + 1)]);
+                faces.extend_from_slice(&[id(i, j), id(i + 1, j + 1), id(i, j + 1)]);
+            }
+        }
+        let n_faces = faces.len() / 3;
+        (
+            Array2::from_shape_vec((n_faces, 3), faces).unwrap(),
+            Array2::from_shape_vec((n_lat * n_lon, 3), coords).unwrap(),
+        )
     }
 
     #[test]
@@ -4362,7 +4400,10 @@ mod tests {
         // arc and then quite correctly call that one arc a bridge.
         let edges = array![[0u32, 1], [0, 1]];
         assert_eq!(bridges(edges.view(), 2).to_vec(), vec![false, false]);
-        assert_eq!(bridges(edges.view(), 2).to_vec(), bridges_oracle(edges.view(), 2));
+        assert_eq!(
+            bridges(edges.view(), 2).to_vec(),
+            bridges_oracle(edges.view(), 2)
+        );
 
         // One copy on its own *is* a bridge, so the doubling is what changed the answer.
         let single = array![[0u32, 1]];
@@ -4377,7 +4418,10 @@ mod tests {
     fn self_loops_and_isolated_nodes_are_never_bridges() {
         let edges = array![[0u32, 0], [0, 1], [2, 2]];
         assert_eq!(bridges(edges.view(), 4).to_vec(), vec![false, true, false]);
-        assert_eq!(bridges(edges.view(), 4).to_vec(), bridges_oracle(edges.view(), 4));
+        assert_eq!(
+            bridges(edges.view(), 4).to_vec(),
+            bridges_oracle(edges.view(), 4)
+        );
     }
 
     #[test]
@@ -4427,7 +4471,11 @@ mod tests {
             }
         }
 
-        assert_eq!(order.len(), n_nodes, "`order` must list every node exactly once");
+        assert_eq!(
+            order.len(),
+            n_nodes,
+            "`order` must list every node exactly once"
+        );
         let mut seen = vec![false; n_nodes];
         for &v in order {
             let v = v as usize;
@@ -4458,7 +4506,12 @@ mod tests {
         let (parents, order) = parents_from_edges(edges.view(), 4, NO_W, None);
         assert_eq!(parents.to_vec(), vec![-1, 0, 1, 2]);
         assert_eq!(order.to_vec(), vec![0u32, 1, 2, 3]);
-        check_forest(edges.view(), 4, parents.as_slice().unwrap(), order.as_slice().unwrap());
+        check_forest(
+            edges.view(),
+            4,
+            parents.as_slice().unwrap(),
+            order.as_slice().unwrap(),
+        );
     }
 
     #[test]
@@ -4466,7 +4519,12 @@ mod tests {
         // A 4-ring. Any spanning tree drops exactly one edge; BFS from 0 drops the far one.
         let edges = array![[0u32, 1], [1, 2], [2, 3], [3, 0]];
         let (parents, order) = parents_from_edges(edges.view(), 4, NO_W, None);
-        check_forest(edges.view(), 4, parents.as_slice().unwrap(), order.as_slice().unwrap());
+        check_forest(
+            edges.view(),
+            4,
+            parents.as_slice().unwrap(),
+            order.as_slice().unwrap(),
+        );
         assert_eq!(parents[0], -1);
         // 1 and 3 are one hop from the root, 2 is two hops via either.
         assert_eq!((parents[1], parents[3]), (0, 0));
@@ -4482,7 +4540,12 @@ mod tests {
         assert_eq!(parents.to_vec(), vec![-1, 0, 1, -1, -1, 4, -1]);
         // Components are swept in ascending order of their lowest node.
         assert_eq!(order.to_vec(), vec![0u32, 1, 2, 3, 4, 5, 6]);
-        check_forest(edges.view(), 7, parents.as_slice().unwrap(), order.as_slice().unwrap());
+        check_forest(
+            edges.view(),
+            7,
+            parents.as_slice().unwrap(),
+            order.as_slice().unwrap(),
+        );
     }
 
     #[test]
@@ -4497,7 +4560,12 @@ mod tests {
         let edges = array![[0u32, 1], [1, 2], [5, 6]];
         let (parents, order) = parents_from_edges(edges.view(), 7, NO_W, Some(&[2]));
         assert_eq!(parents.to_vec(), vec![1, 2, -1, -1, -1, -1, 5]);
-        check_forest(edges.view(), 7, parents.as_slice().unwrap(), order.as_slice().unwrap());
+        check_forest(
+            edges.view(),
+            7,
+            parents.as_slice().unwrap(),
+            order.as_slice().unwrap(),
+        );
 
         // Two roots inside one component split it — each node goes to the nearer.
         let edges = array![[0u32, 1], [1, 2], [2, 3]];

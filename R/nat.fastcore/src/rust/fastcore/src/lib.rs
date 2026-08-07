@@ -29,6 +29,12 @@
 //!   the reason it is here rather than in a dependency — reporting which vertex of the
 //!   simplified mesh every vertex of the original ended up in, so per-vertex data
 //!   (synapses, radii, labels) survives the simplification.
+//! - [`smoothing`] — the other half of mesh cleanup: moving vertices to take the noise
+//!   out of a surface, by Laplacian, Taubin or HC filtering over a uniform,
+//!   inverse-distance or cotangent one-ring. Face array, vertex count and vertex order
+//!   all come out untouched, and the volume correction scales about the mesh's own
+//!   centroid rather than about the origin — which is what `trimesh` does, and why it
+//!   translates a neuron by twice its own diameter.
 //! - [`points`] — raw 3D point clouds: [`points::dotprops`] derives the unit tangent
 //!   vector and `alpha` of every point's local neighbourhood, which is what [`nblast`]
 //!   consumes and what callers previously had to produce with scipy.
@@ -87,6 +93,8 @@ pub mod downsample;
 pub mod mesh;
 
 pub mod simplify;
+
+pub mod smoothing;
 
 pub mod points;
 

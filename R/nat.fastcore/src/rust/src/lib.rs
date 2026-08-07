@@ -2528,6 +2528,101 @@ pub fn simplify_mesh_lossless(
     simplified_to_r(out)
 }
 
+/// Select the smoothing filter, filling in each method's own defaults.
+///
+/// The names, the defaults and the parameter ranges all live in `fastcore::smoothing`,
+/// which is what keeps them from drifting against the Python binding's copy — see
+/// `Filter::from_parts`. `smooth_mesh()` in `R/mesh.R` has already matched `method` and
+/// rejected any parameter belonging to a different one, and it does that rather than
+/// leaving it here because a panic reaches R as "User function panicked" with the message
+/// dropped; these two are the backstop for a caller reaching past the wrapper.
+fn to_smooth_filter(
+    method: &str,
+    lambda: Option<f64>,
+    mu: Option<f64>,
+    alpha: Option<f64>,
+    beta: Option<f64>,
+) -> fastcore::smoothing::Filter {
+    let filter = fastcore::smoothing::Filter::from_parts(method, lambda, mu, alpha, beta)
+        .unwrap_or_else(|| panic!("unknown smoothing method \"{method}\""));
+    if let Err(msg) = filter.check("lambda") {
+        panic!("{msg}");
+    }
+    filter
+}
+
+fn to_smooth_weights(weights: &str) -> fastcore::smoothing::Weights {
+    fastcore::smoothing::Weights::from_name(weights)
+        .unwrap_or_else(|| panic!("unknown smoothing weights \"{weights}\""))
+}
+
+/// Smooth a triangle mesh. The compute half of `smooth_mesh()`.
+///
+/// Everything a caller sees - the argument matching, the defaults, the warning when
+/// the volume correction cannot be made, and the documentation - lives in the R
+/// wrapper, as it does for `nblast_knn_raw()`. This returns the *undecidable* volume
+/// pair rather than warning here because a warning raised from inside `.Call` through
+/// `R_tryEval` opens a new top-level context, so `tryCatch` and `withCallingHandlers`
+/// in the caller's frame never see it: it prints, but cannot be caught or muffled.
+///
+/// @param faces Integer or numeric `(F, 3)` matrix of triangle vertex indices.
+/// @param vertices Numeric `(V, 3)` matrix of vertex coordinates.
+/// @param method One of `"taubin"`, `"laplacian"` or `"humphrey"`.
+/// @param iterations Integer number of passes.
+/// @param lambda,mu,alpha,beta Method parameters; `NULL` takes the method's default.
+/// @param weights One of `"uniform"`, `"inverse_distance"` or `"cotangent"`.
+/// @param preserve_border Logical; pin every vertex on a mesh boundary.
+/// @param lock Optional logical vector, one entry per vertex.
+/// @param volume_correction Logical; rescale about the centroid to restore the volume.
+/// @param threads Integer thread cap, or `NULL`.
+/// @return List with `vertices`, the numeric `(V, 3)` matrix of new coordinates, and
+///   `volumes`, `NULL` unless a requested correction was undecidable, in which case
+///   the signed volumes before and after.
+/// @noRd
+#[extendr]
+#[allow(clippy::too_many_arguments)]
+pub fn smooth_mesh_raw(
+    faces: Robj,
+    vertices: Robj,
+    method: &str,
+    iterations: i32,
+    lambda: Option<f64>,
+    mu: Option<f64>,
+    alpha: Option<f64>,
+    beta: Option<f64>,
+    weights: &str,
+    preserve_border: bool,
+    lock: Robj,
+    volume_correction: bool,
+    threads: Option<i32>,
+) -> Robj {
+    let (faces, coords, mask) = simplify_inputs(&faces, &vertices, &lock);
+    assert!(
+        iterations >= 0,
+        "`iterations` must be non-negative, got {iterations}"
+    );
+
+    let out = fastcore::smoothing::smooth_mesh(
+        faces.view(),
+        coords.view(),
+        to_smooth_filter(method, lambda, mu, alpha, beta),
+        to_smooth_weights(weights),
+        iterations as usize,
+        preserve_border,
+        mask.as_ref().map(|m| m.as_slice().expect("mask is contiguous")),
+        volume_correction,
+        to_threads(threads),
+    );
+
+    let volumes = match out.volume {
+        fastcore::smoothing::Volume::Undefined { before, after } => {
+            Robj::from(vec![before, after])
+        }
+        _ => Robj::from(()),
+    };
+    list!(vertices = array2_to_r(&out.vertices, |x| x), volumes = volumes).into()
+}
+
 // ---------------------------------------------------------------------------
 // NBLAST / synBLAST
 // ---------------------------------------------------------------------------
@@ -4121,6 +4216,7 @@ extendr_module! {
     fn geodesic_clusters;
     fn simplify_mesh;
     fn simplify_mesh_lossless;
+    fn smooth_mesh_raw;
     fn smat_auto_limit;
     fn nblast_allbyall;
     fn nblast;
