@@ -112,6 +112,8 @@ def downsample_skeleton(node_ids, parent_ids, factor, preserve=None, weights=Non
     factor = int(factor)
     if factor < 1:
         raise ValueError(f"`factor` must be >= 1, got {factor}")
+    elif factor == np.inf:
+        raise ValueError(f"`factor` must be finite, got {factor}")
 
     parent_ix = _ids_to_indices(node_ids, parent_ids)
     weights = _prep_weights(weights, node_ids)
@@ -201,6 +203,8 @@ def simplify_rdp(
     array([0, 4])
 
     """
+    assert epsilon >= 0, f"`epsilon` must be non-negative, got {epsilon}"
+
     parent_ix = _ids_to_indices(node_ids, parent_ids)
     coords = _prep_coords(coords, node_ids)
     weights = _prep_weights(weights, node_ids)
@@ -285,6 +289,8 @@ def simplify_vw(
     array([0, 2, 3, 4])
 
     """
+    assert min_area >= 0, f"`min_area` must be non-negative, got {min_area}"
+
     parent_ix = _ids_to_indices(node_ids, parent_ids)
     coords = _prep_coords(coords, node_ids)
     weights = _prep_weights(weights, node_ids)
