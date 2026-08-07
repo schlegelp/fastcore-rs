@@ -84,6 +84,7 @@ _GRAPH = fastcore.GeodesicGraph(EDGES, 4)
 _TETRA = np.eye(4, 3, dtype=np.float64)
 _, _SIMP_F, _SIMP_MAP = fastcore.simplify_mesh(FACES, _TETRA, ratio=1.0)
 _, _LOSSLESS_F, _LOSSLESS_MAP = fastcore.simplify_mesh_lossless(FACES, _TETRA)
+_, _, _PROJ_IX, _, _ = fastcore.project_mesh_2d(_TETRA, FACES)
 
 # A node id — an index into the graph.
 NODE_IDS = {
@@ -126,6 +127,7 @@ POSITIONS = {
     "unique_edges[inverse]": _INVERSE,
     "minimum_spanning_tree": _MST_ROWS,
     "geodesic_mst_graph[edges]": _MST_EDGES,
+    "project_mesh_2d[ix]": _PROJ_IX,
 }
 
 

@@ -10,6 +10,40 @@ Tags, source archives and the original announcements are on
 
 ## Unreleased
 
+**Drawing a mesh flat, in one pass instead of six.** `project_mesh_2d` takes a mesh and
+a view and hands back the polygons a 2-D renderer draws: projected onto the view plane,
+back faces dropped, sorted furthest-first so that painting them gives correct occlusion,
+and laid out as closed rings — plus the bounding box, reduced on the way past.
+
+```python
+rings, bbox, ix, depth, normals = fastcore.project_mesh_2d(
+    vertices, faces, xy_ix=(0, 1), depth_ix=2, front=1
+)
+```
+
+Written the obvious vectorised way in numpy those are six passes over hundreds of
+megabytes, four of which exist only to feed the next one — 1.27 s and ~900 MB of
+intermediates on an 8.4M-vertex, 16.9M-face neuron. Fused and parallel: **133 ms**, same
+faces, same geometry, same box.
+
+The cull is the interesting part. Whether a face points at the viewer is the sign of its
+normal's depth component, and that component is a 2x2 determinant of the two columns
+being projected onto — so it never forms the other two components of the cross product
+and never reads the depth column, while applying exactly the test the full cross product
+would.
+
+`order=False` skips the sort and the depths, for a caller filling the whole mesh as one
+path in one colour: a nonzero-winding fill is blind to the order its subpaths arrive in.
+`normals=False` skips the face normals, for a caller that is not shading. Smooth shading
+is the one thing this does not do — averaged vertex normals need every face, back-facing
+ones included, so they cannot come from the survivors alone.
+
+In `navis.plot2d` this is most of a 17M-face mesh's plotting time: 3.32 s to 0.19 s, and
+the peak memory from 4.75 GB to 1.76 GB, for a byte-identical PNG. Python only for now;
+`nat.fastcore` does not have it.
+
+See [Meshes](python/mesh.md#projecting-for-a-2-d-renderer).
+
 **You can stop fastcore from taking every core.** `set_num_threads` sizes the thread
 pool for the whole process, and `get_num_threads` reads it back — in Python and in R.
 The default is still every core the process can see, which is right for one call in

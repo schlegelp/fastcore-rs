@@ -48,7 +48,7 @@ the dtype tells you which:
 | `uint32` | A **node id** — an index into the graph. | `connected_components_graph`, `mesh_connected_components`, `unique_edges`'s `edges`, `contract_vertices`, `parents_from_edges`'s `order`, `geodesic_path`, `GeodesicGraph.components` / `.parent_nodes`, `boundary_halfedges`, `exposed_halfedges`, `trace_loops`'s `rings`, `triangulate_rings` |
 | `int32` | An id that needs a **`-1` sentinel** for "none" — into the graph you passed in, or into a mesh the function itself returns. | `parents_from_edges`'s `parents`, `geodesic_predecessors`, `geodesic_nearest_mesh`, `simplify_mesh`'s `vertex_map` |
 | `int32` | A dense **label** — a cluster or level-set id, not a node id. Contiguous from 0, negative where a node is excluded. | `geodesic_clusters`, `level_set_components`, `GeodesicGraph.clusters` |
-| `int64` | A **position in an array you passed in** — not a node id. | `minimum_spanning_tree` (rows of `edges`), `geodesic_mst_*` (positions in `nodes`), `unique_edges`'s `index` / `inverse`, `trace_loops`'s `offsets` |
+| `int64` | A **position in an array you passed in** — not a node id. | `minimum_spanning_tree` (rows of `edges`), `geodesic_mst_*` (positions in `nodes`), `unique_edges`'s `index` / `inverse`, `trace_loops`'s `offsets`, `project_mesh_2d`'s `ix` |
 
 The distinction that matters is the last one: `int64` means the values index
 *your* array, so `nodes[out]` is the node-id form and `out` alone is not.

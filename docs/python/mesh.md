@@ -917,3 +917,64 @@ the best-fit-plane retry one of them provokes; this implementation returns the f
 ::: navis_fastcore.trace_loops
 
 ::: navis_fastcore.triangulate_rings
+
+## Projecting for a 2-D renderer
+
+Drawing a mesh flat — what `navis.plot2d` does — takes four steps before a rasteriser
+sees anything: project the vertices onto the view plane, drop the faces pointing away
+from the viewer, sort what is left along the view axis so that painting it gives correct
+occlusion, and lay the survivors out as polygons. `project_mesh_2d` does all four in one
+parallel pass.
+
+```python
+rings, bbox, ix, depth, normals = fastcore.project_mesh_2d(
+    vertices, faces, xy_ix=(0, 1), depth_ix=2, front=1
+)
+```
+
+The view is axis-aligned and named by column: `xy_ix` are the two coordinate columns that
+make up the picture, `depth_ix` is the remaining, into-the-screen one, and `front` says
+which end of that axis the viewer is on — coordinates are never flipped, so a
+right-to-left view is the caller's business, not the projection's.
+
+Fusing the steps is the whole point. Each one written the obvious vectorised way in numpy,
+on an 8.4M-vertex, 16.9M-face neuron:
+
+| step | cost |
+|---|---|
+| project to `(V, 2)` | 76 ms |
+| cull | 226 ms |
+| gather the kept faces | 72 ms |
+| gather the kept corners into `(K, 3, 2)` | 191 ms |
+| close each triangle into a ring | 173 ms |
+| bounding box of the result | 534 ms |
+| **total** | **1.27 s** |
+
+None of that is arithmetic-bound: they are single-threaded walks over arrays far larger
+than any cache, and the two gathers plus the ring layout write 900 MB between them to say
+something the mesh already said. Fused, it is **133 ms**, and the bounding box comes out
+of the same pass that wrote the rings.
+
+The cull is the part worth explaining. Whether a face points at the viewer is the sign of
+its normal's depth component, and that component is a 2x2 determinant of the two *other*
+columns of the edge vectors — which, for an axis-aligned view, are exactly the columns
+being projected onto. So it never forms the other two components of the cross product and
+never reads the depth column. It is the same test the full cross product applies, to the
+bit.
+
+Faces come back as **rings**: four points each, the first repeated at the end. That is what
+a path fill wants — a closed subpath, no separate close-path instruction — and `rings[:, :3]`
+is a view of the plain triangles, not a copy. Emitting triangles and closing them afterwards
+is the 173 ms row above plus a second buffer the size of the first.
+
+Two things are optional because most callers do not read them. `order=False` skips the sort
+and the depths: a mesh filled as one path in one colour is drawn under the nonzero winding
+rule, which is blind to the order its subpaths arrive in, so the sort cannot change a pixel.
+`normals=False` skips the per-face normals, which only a caller that is shading has any use
+for.
+
+Smooth shading is the one thing this does not do. Averaged vertex normals take a
+contribution from every face, back-facing ones included, so they cannot be computed from the
+survivors alone; a caller that wants them has to accumulate them itself.
+
+::: navis_fastcore.project_mesh_2d
