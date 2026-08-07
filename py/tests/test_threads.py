@@ -9,6 +9,7 @@ that leave the pool alone can run in-process.
 import os
 import subprocess
 import sys
+import tempfile
 import textwrap
 
 import numpy as np
@@ -28,12 +29,20 @@ needs_subprocess = pytest.mark.skipif(
 )
 
 
-def run_snippet(body):
-    """Run `body` in a fresh interpreter; return its completed process."""
+def run_snippet(body, env=None):
+    """Run `body` in a fresh interpreter; return its completed process.
+
+    Runs from a scratch directory rather than inheriting pytest's: `python -c`
+    puts the working directory first on `sys.path`, and pytest's is the source
+    tree, whose `navis_fastcore/` shadows the installed package but carries no
+    compiled `_fastcore` unless it happens to have been built in place.
+    """
     return subprocess.run(
         [sys.executable, "-c", textwrap.dedent(body)],
         capture_output=True,
         text=True,
+        cwd=tempfile.gettempdir(),
+        env=env,
     )
 
 
@@ -142,10 +151,8 @@ def test_set_num_threads_rejects_zero():
 @needs_subprocess
 def test_respects_rayon_env_var():
     """`RAYON_NUM_THREADS` is the no-code-change version of the same lever."""
-    proc = subprocess.run(
-        [sys.executable, "-c", "import navis_fastcore as f; print(f.get_num_threads())"],
-        capture_output=True,
-        text=True,
+    proc = run_snippet(
+        "import navis_fastcore as f; print(f.get_num_threads())",
         env={**os.environ, "RAYON_NUM_THREADS": "3"},
     )
     assert proc.returncode == 0, proc.stderr
