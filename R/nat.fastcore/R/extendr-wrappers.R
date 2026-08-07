@@ -278,6 +278,137 @@ contract_nodes <- function(parents, mapping) .Call(wrap__contract_nodes, parents
 #' @export
 simplify_skeleton <- function(parents, weights = NULL) .Call(wrap__simplify_skeleton, parents, weights)
 
+#' Keep every `factor`-th node of every segment, dropping the rest.
+#'
+#' The plain "make this skeleton smaller" operation: it pays no attention to geometry,
+#' so reach for it when the skeleton is already evenly sampled and you just want fewer
+#' nodes. Roots, branch points and leafs always survive, so the result is still the same
+#' neuron — only its unbranched stretches are sampled `factor` times more coarsely. See
+#' `simplify_rdp()` and `simplify_vw()` for the geometry-aware alternatives.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param factor Integer; keep one node in every `factor`, counting from each segment's
+#'   distal end. `1` keeps everything; the useful range starts at 2.
+#' @param preserve Optional logical vector, one entry per node, marking extra nodes that
+#'   must survive; `NULL` for none.
+#' @param weights Optional numeric vector of child-to-parent edge weights; `NULL`
+#'   returns no `weights`.
+#' @return List with `nodes` (0-based indices of the surviving nodes, in their original
+#'   relative order), `parents` (their new 0-based parent indices, `-1` for roots,
+#'   indexing *into* `nodes`) and `weights` (length of each node's edge to its new
+#'   parent, i.e. the summed length of the chain it replaces; `NULL` exactly when
+#'   `weights` was `NULL`). Total cable length is preserved.
+#' @export
+downsample_skeleton <- function(parents, factor, preserve = NULL, weights = NULL) .Call(wrap__downsample_skeleton, parents, factor, preserve, weights)
+
+#' Drop the nodes that do not bend a neurite, by Ramer-Douglas-Peucker.
+#'
+#' Where `downsample_skeleton()` thins by counting, this thins by *shape*: a node
+#' survives only if removing it would move the traced path by more than `epsilon`. Long
+#' straight stretches collapse to their two ends while a tight curve keeps every node it
+#' needs, so the same tolerance buys a much better skeleton per node than a fixed factor
+#' does.
+#'
+#' Each replacement edge carries the length of the chain it stands in for, so geodesic
+#' distances stay right even where the geometry has been cut across.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param x,y,z Numeric vectors of node coordinates, one entry per node.
+#' @param epsilon Numeric; how far the simplified path may stray from the original, in
+#'   the units of the coordinates. `0` still drops nodes that are *exactly* collinear,
+#'   and nothing else.
+#' @param preserve Optional logical vector, one entry per node, marking extra nodes that
+#'   must survive; `NULL` for none.
+#' @param weights Optional numeric vector of child-to-parent edge weights; `NULL`
+#'   returns no `weights`.
+#' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @return List with `nodes`, `parents` and `weights`, as `downsample_skeleton()`.
+#' @export
+simplify_rdp <- function(parents, x, y, z, epsilon, preserve = NULL, weights = NULL, threads = NULL) .Call(wrap__simplify_rdp, parents, x, y, z, epsilon, preserve, weights, threads)
+
+#' Drop the nodes that contribute least area, by Visvalingam-Whyatt.
+#'
+#' The other geometry-aware thinning. Where `simplify_rdp()` asks how far the path
+#' *moves*, this asks how much area each node adds to it and repeatedly removes whichever
+#' node adds least. The difference shows under aggressive simplification: RDP will
+#' happily keep one spike and flatten everything around it, while Visvalingam-Whyatt
+#' sheds detail evenly and so keeps a neurite looking like itself.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param x,y,z Numeric vectors of node coordinates, one entry per node.
+#' @param min_area Numeric; remove a node while the triangle it forms with its two
+#'   surviving neighbours is smaller than this, in the *squared* units of the
+#'   coordinates. `0` or less is a no-op.
+#' @param preserve Optional logical vector, one entry per node, marking extra nodes that
+#'   must survive; `NULL` for none.
+#' @param weights Optional numeric vector of child-to-parent edge weights; `NULL`
+#'   returns no `weights`.
+#' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @return List with `nodes`, `parents` and `weights`, as `downsample_skeleton()`.
+#' @export
+simplify_vw <- function(parents, x, y, z, min_area, preserve = NULL, weights = NULL, threads = NULL) .Call(wrap__simplify_vw, parents, x, y, z, min_area, preserve, weights, threads)
+
+#' Place nodes at a fixed spacing along every neurite.
+#'
+#' The inverse problem to `downsample_skeleton()`: rather than thinning what is there,
+#' this re-samples each segment from scratch, so a skeleton whose node density varies
+#' tenfold between neurites comes out evenly sampled throughout. Each segment is divided
+#' into `round(length / spacing)` equal parts (at least one), so both of its endpoints
+#' land exactly and no runt edge is left over; a segment shorter than `spacing / 2`
+#' collapses to a single straight edge.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param x,y,z Numeric vectors of node coordinates, one entry per node.
+#' @param spacing Numeric; target distance between adjacent nodes.
+#' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @return List with `parents` (0-based parent index per output node, `-1` for roots),
+#'   `x`, `y`, `z` (their coordinates), `source_from` and `source_to` (the 0-based
+#'   *input* node indices of the edge each output node sits on, child then parent) and
+#'   `alpha` (how far along that edge it lies, from the child end). The input's roots,
+#'   branch points and leafs come first, in input order and unmoved; they carry their own
+#'   index in both `source_` columns and an `alpha` of 0, so
+#'   `attr[source_from + 1] * (1 - alpha) + attr[source_to + 1] * alpha` interpolates any
+#'   per-node quantity over the whole output.
+#' @export
+resample_skeleton <- function(parents, x, y, z, spacing, threads = NULL) .Call(wrap__resample_skeleton, parents, x, y, z, spacing, threads)
+
+#' Smooth a skeleton with a moving average along each neurite.
+#'
+#' Takes the tracing jitter out of a skeleton without touching its topology or its node
+#' count: every node keeps its identity and its parent, and only its coordinates move.
+#' Roots, branch points and leafs are pinned — a branch point that drifted would drag
+#' three neurites apart — so this is safe to run before measuring angles, tortuosity or
+#' tangent vectors, all of which a raw traced skeleton overstates.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param x,y,z Numeric vectors of node coordinates, one entry per node.
+#' @param window Integer; nodes in the window, counting the node itself. Even values
+#'   round down to the odd value below, since the window is symmetric. `0` and `1` are
+#'   no-ops.
+#' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @return List with `x`, `y` and `z`: the new coordinates, in the input's node order.
+#' @export
+smooth_skeleton <- function(parents, x, y, z, window = 5, threads = NULL) .Call(wrap__smooth_skeleton, parents, x, y, z, window, threads)
+
+#' Smooth a skeleton with a Gaussian kernel along each neurite.
+#'
+#' The same operation as `smooth_skeleton()` with a softer, scale-based kernel: `sigma`
+#' is a distance in the units of the coordinates rather than a count of nodes, so the
+#' amount of smoothing does not change when the skeleton is resampled. The kernel
+#' measures distance *along* the neurite rather than between the points, which would
+#' otherwise let the far arm of a hairpin pull on the near one. Segment ends are pinned
+#' by reflecting the neurite about them.
+#'
+#' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+#' @param x,y,z Numeric vectors of node coordinates, one entry per node.
+#' @param sigma Numeric; kernel width, as a distance along the neurite.
+#' @param truncate Numeric; how many `sigma` out to keep summing. 4 covers all but 1e-4
+#'   of the kernel's mass.
+#' @param threads Optional integer; number of threads. `NULL` uses all cores.
+#' @return List with `x`, `y` and `z`: the new coordinates, in the input's node order.
+#' @export
+smooth_skeleton_gaussian <- function(parents, x, y, z, sigma, truncate = 4.0, threads = NULL) .Call(wrap__smooth_skeleton_gaussian, parents, x, y, z, sigma, truncate, threads)
+
 #' The skeleton's adjacency matrix, as the three arrays of a CSR matrix.
 #'
 #' Handing back the raw arrays rather than a matrix object keeps this package free of

@@ -98,6 +98,24 @@ fn number_of_children(parents: &ArrayView1<i32>) -> Array1<i32> {
     n_children
 }
 
+/// Which nodes carry topology: roots, leafs and branch points -- everything except the
+/// slabs strung between them.
+///
+/// A slab is the only node type with both a parent and exactly one child, which is
+/// cheaper to test directly than to read out of [`classify_nodes`] -- that would allocate
+/// the child counts *and* a second N-array of type codes, of which we want one bit. Roots
+/// fall out for free: they have no parent, so a root with one child is kept, as
+/// `classify_nodes` also ranks it.
+///
+/// This is the set every geometric operation in [`crate::downsample`] must leave alone,
+/// and the set [`simplify_skeleton`] reduces to.
+pub(crate) fn topology_nodes(parents: &ArrayView1<i32>) -> Vec<bool> {
+    let n_children = number_of_children(parents);
+    (0..parents.len())
+        .map(|idx| parents[idx] < 0 || n_children[idx] != 1)
+        .collect()
+}
+
 /// Extract roots from parents.
 ///
 /// Arguments:
@@ -2559,16 +2577,38 @@ pub fn simplify_skeleton<T>(
 where
     T: Float + AddAssign,
 {
-    let n = parents.len();
+    rewire_kept(parents, &topology_nodes(parents), weights)
+}
 
-    // Keep everything that is not a slab. A slab is the only node type with both a parent
-    // and exactly one child, which is cheaper to test directly than to read out of
-    // `classify_nodes` -- that would allocate the child counts *and* a second N-array of
-    // type codes, of which we want one bit. Roots fall out for free: they have no parent,
-    // so a root with one child is kept, as `classify_nodes` also ranks it.
-    let n_children = number_of_children(parents);
-    let is_slab = |idx: usize| parents[idx] >= 0 && n_children[idx] == 1;
-    let (kept, position) = compact(n, |idx| !is_slab(idx));
+/// Drop every node not flagged in `keep` and re-attach what is left, summing the weights
+/// of each dropped chain into the edge that replaces it.
+///
+/// The shared half of [`simplify_skeleton`] and of everything in [`crate::downsample`]:
+/// those differ only in *which* nodes they mark for keeping, and all of them then owe the
+/// caller the same rewired forest with cable length preserved.
+///
+/// Arguments:
+///
+/// - `parents`: array of parent indices (roots are negative)
+/// - `keep`: length-`N` mask of the nodes to survive. Callers are expected to keep every
+///   root -- a kept node whose chain runs into a dropped root becomes a root itself
+///   rather than an error.
+/// - `weights`: optional per-node length of the child->parent edge; `None` counts edges
+///
+/// Returns:
+///
+/// `(kept, new_parents, new_weights)`, with `kept` in ascending order and `new_parents`
+/// indexing into `kept` (negative for roots) -- the same convention as [`contract_nodes`].
+pub(crate) fn rewire_kept<T>(
+    parents: &ArrayView1<i32>,
+    keep: &[bool],
+    weights: &Option<Array1<T>>,
+) -> (Vec<i32>, Array1<i32>, Option<Vec<T>>)
+where
+    T: Float + AddAssign,
+{
+    let n = parents.len();
+    let (kept, position) = compact(n, |idx| keep[idx]);
 
     let mut new_parents: Array1<i32> = Array::from_elem(kept.len(), -1);
     let mut new_weights: Option<Vec<T>> = weights.as_ref().map(|_| vec![T::zero(); kept.len()]);
@@ -2577,9 +2617,9 @@ where
         let mut current = node;
         let mut total = T::zero();
 
-        // Walk up through the slabs to the next kept node, accumulating as we go.
-        // Bounded by the node count: a cycle of slabs with a branch point hanging off it
-        // would otherwise spin here forever.
+        // Walk up through the dropped nodes to the next kept one, accumulating as we go.
+        // Bounded by the node count: a cycle of dropped nodes with a kept node hanging off
+        // it would otherwise spin here forever.
         for _ in 0..=n {
             let parent = parents[current as usize];
             if parent < 0 {
@@ -2590,7 +2630,7 @@ where
             } else {
                 total += T::one();
             }
-            if !is_slab(parent as usize) {
+            if keep[parent as usize] {
                 new_parents[slot] = position[parent as usize];
                 break;
             }
@@ -2687,7 +2727,7 @@ where
 /// `position[node]` is that node's slot in `kept` (`-1` for the dropped ones). Both
 /// [`contract_nodes`] and [`simplify_skeleton`] return parents indexed into their own
 /// `kept`, so stating that convention once is what keeps the two from drifting.
-fn compact(n: usize, keep: impl Fn(usize) -> bool) -> (Vec<i32>, Vec<i32>) {
+pub(crate) fn compact(n: usize, keep: impl Fn(usize) -> bool) -> (Vec<i32>, Vec<i32>) {
     let mut kept: Vec<i32> = Vec::with_capacity(n);
     let mut position: Vec<i32> = vec![-1; n];
     for idx in 0..n {

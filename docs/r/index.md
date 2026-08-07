@@ -105,6 +105,13 @@ healed = heal_skeleton(parents, s$d$X, s$d$Y, s$d$Z, method="ALL",
 - `reroot`: re-orient a forest at given nodes, reversing only what has to move
 - `contract_nodes`: collapse groups of nodes onto a representative and rewire
 - `simplify_skeleton`: keep only roots, leafs and branch points, preserving cable length
+- `downsample_skeleton`: keep every Nth node of each segment, preserving cable length
+- `simplify_rdp` / `simplify_vw`: drop the nodes that carry no shape — by how far the
+  path would move (Ramer-Douglas-Peucker) or by how much area each node adds
+  (Visvalingam-Whyatt)
+- `resample_skeleton`: place interpolated nodes at a fixed spacing along every neurite
+- `smooth_skeleton` / `smooth_skeleton_gaussian`: take the tracing jitter out of the
+  coordinates, with branch points pinned
 - `adjacency`: the skeleton's adjacency matrix, as the three arrays of a CSR matrix
 - `longest_path` / `longest_paths`: the longest path to a root, and the `n` longest in turn
 - `betweenness`: betweenness centrality in `O(N)` rather than Brandes' `O(V*E)`

@@ -24,6 +24,17 @@ def topo(request):
     return request.param
 
 
+@pytest.fixture(scope="session")
+def real_topo():
+    """The real traced skeleton on its own, for tests that need real geometry.
+
+    Session-scoped for the same reason `SMALL` is built at import: this reads a CSV,
+    and the tests that want realistic branch statistics or true lattice coordinates
+    should not each pay for it again.
+    """
+    return topologies.load_swc()
+
+
 def pytest_addoption(parser):
     parser.addoption(
         "--baseline",

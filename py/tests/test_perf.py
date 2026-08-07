@@ -76,6 +76,11 @@ def cases(topo):
     # Collapse every node onto its component's root: an O(N) contraction that
     # actually removes nodes, rather than an identity mapping that does nothing.
     to_roots = fastcore.connected_components(nid, pid)
+    # A coordinate per node for the geometric cases. `Topology.coords` builds a
+    # cloud in a 100-unit box, so the parameters below are in those units: a typical
+    # edge is ~60 long, which is what makes `spacing=100` and `sigma=200` roughly one
+    # and three edges respectively.
+    xyz = topo.coords
     return {
         "classify_nodes": lambda: fastcore.classify_nodes(nid, pid),
         "connected_components": lambda: fastcore.connected_components(nid, pid),
@@ -95,6 +100,21 @@ def cases(topo):
         "reroot": lambda: fastcore.reroot(nid, pid, nid[-1:]),
         "contract_nodes": lambda: fastcore.contract_nodes(nid, pid, to_roots),
         "simplify_skeleton": lambda: fastcore.simplify_skeleton(nid, pid, weights=w),
+        "downsample_skeleton": lambda: fastcore.downsample_skeleton(
+            nid, pid, 5, weights=w
+        ),
+        # `simplify_rdp` is deliberately absent. RDP is quadratic in the worst case,
+        # and its worst case is exactly this fixture: a 333k-node backbone whose
+        # coordinates are a random cloud, so almost every node has to be kept and each
+        # split peels off one. Gating that under `MAX_SCALING_RATIO` would be gating a
+        # property the algorithm genuinely has. `simplify_vw` has no such case - its
+        # heap is O(n log n) whatever the geometry - so it stands in here.
+        "simplify_vw": lambda: fastcore.simplify_vw(nid, pid, xyz, 500.0, weights=w),
+        "resample_skeleton": lambda: fastcore.resample_skeleton(nid, pid, xyz, 100.0),
+        "smooth_skeleton": lambda: fastcore.smooth_skeleton(nid, pid, xyz, window=5),
+        "smooth_skeleton_gaussian": lambda: fastcore.smooth_skeleton_gaussian(
+            nid, pid, xyz, 200.0
+        ),
         "adjacency": lambda: fastcore.adjacency(nid, pid, weights=w, directed=False),
         "longest_path": lambda: fastcore.longest_path(nid, pid, weights=w),
         # 5 paths, which is the scale `split_into_fragments` works at. Each round

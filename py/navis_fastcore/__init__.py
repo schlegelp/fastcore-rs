@@ -5,6 +5,7 @@ from .__version__ import __version__, __version_vector__
 from navis_fastcore import _fastcore
 from .cmtk import *
 from .dag import *
+from .downsample import *
 from .elastix import *
 from .linkage import *
 from .matches import *
@@ -30,6 +31,7 @@ __all__ = ["__version__", "__version_vector__"]
 for _sub in (
     "cmtk",
     "dag",
+    "downsample",
     "elastix",
     "linkage",
     "matches",

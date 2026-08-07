@@ -18,6 +18,13 @@
 //!   mesh algorithms need ([`mesh::level_set_components`], [`mesh::contract_vertices`],
 //!   [`mesh::minimum_spanning_tree`], [`mesh::geodesic_clusters`]) without building a
 //!   graph object first.
+//! - [`downsample`] — changing how densely a skeleton is sampled without changing what it
+//!   is: dropping nodes ([`downsample::downsample_skeleton`], and the geometry-aware
+//!   [`downsample::simplify_rdp`] / [`downsample::simplify_vw`]), adding interpolated ones
+//!   at a fixed spacing ([`downsample::resample_skeleton`]), or moving them to take out
+//!   the tracing jitter ([`downsample::smooth_skeleton`]). All of it works on the linear
+//!   segments between roots, branch points and leafs and leaves those fixed, so the
+//!   topology comes out untouched.
 //! - [`simplify`] — decimating a triangle mesh by quadric-error edge collapse, and —
 //!   the reason it is here rather than in a dependency — reporting which vertex of the
 //!   simplified mesh every vertex of the original ended up in, so per-vertex data
@@ -74,6 +81,8 @@ pub mod tps;
 pub mod mls;
 
 pub mod dag;
+
+pub mod downsample;
 
 pub mod mesh;
 

@@ -23,7 +23,13 @@ from hypothesis import given, strategies as st  # noqa: E402
 
 import navis_fastcore as fastcore  # noqa: E402
 from meshes import check_simplify_invariants  # noqa: E402
-from topologies import ancestors, parent_map  # noqa: E402
+from topologies import (  # noqa: E402
+    ancestors,
+    check_dropping_invariants,
+    check_is_forest,
+    check_topology_preserved,
+    parent_map,
+)
 
 # Settings profiles ("fastcore" by default, "thorough" for the nightly job) are
 # registered in `conftest.py`: pytest resolves `--hypothesis-profile` before it
@@ -737,3 +743,103 @@ def test_locked_vertices_are_never_moved(mesh, ratio, seed):
     # survives owns its output slot outright.
     survivors = vmap[lock & (vmap >= 0)]
     assert len(set(survivors.tolist())) == len(survivors)
+
+
+# ---------------------------------------------------------------- downsampling
+
+
+@st.composite
+def forest_and_coords(draw):
+    """A forest plus a coordinate for every node.
+
+    Coordinates are drawn on a coarse grid rather than as arbitrary floats. Two
+    reasons: exact ties and exactly-collinear runs then actually occur, which is
+    where the geometric methods have to make a *choice* and where an
+    order-dependent one would show; and no test below has to reason about what
+    happens when a distance is 1e300.
+    """
+    forest = draw(forests())
+    n = len(forest[0])
+    coords = np.array(
+        draw(
+            st.lists(
+                st.tuples(*(st.integers(-20, 20),) * 3), min_size=n, max_size=n
+            )
+        ),
+        dtype=np.float64,
+    )
+    return forest, coords
+
+
+#: The three methods that drop nodes, as callables over `(forest, coords)`.
+DROP_METHODS = [
+    lambda ids, parents, xyz, w: fastcore.downsample_skeleton(
+        ids, parents, 3, weights=w
+    ),
+    lambda ids, parents, xyz, w: fastcore.simplify_rdp(ids, parents, xyz, 2.0, weights=w),
+    lambda ids, parents, xyz, w: fastcore.simplify_vw(ids, parents, xyz, 5.0, weights=w),
+]
+
+
+@given(forest_and_coords(), st.integers(0, len(DROP_METHODS) - 1))
+def test_dropping_preserves_topology_and_cable(forest_coords, which):
+    """The invariant all three share: the tree that comes out is the tree that went
+    in, at a different sampling density, with the same total cable length."""
+    (node_ids, parent_ids, weights), coords = forest_coords
+
+    ids, parents, new_weights = DROP_METHODS[which](
+        node_ids, parent_ids, coords, weights
+    )
+
+    # The same checker the example-based suite runs, over arbitrary forests.
+    check_dropping_invariants(
+        (node_ids, parent_ids),
+        (ids, parents),
+        weights=weights,
+        new_weights=new_weights,
+    )
+
+
+@given(forest_and_coords())
+def test_resample_is_a_forest_with_the_same_shape(forest_coords):
+    (node_ids, parent_ids, _), coords = forest_coords
+    spacing = 3.0
+
+    ids, parents, xyz, source, alpha = fastcore.resample_skeleton(
+        node_ids, parent_ids, coords, spacing
+    )
+
+    check_is_forest(ids, parents)
+    # Resampling mints new IDs, so only the counts per class can be compared.
+    check_topology_preserved(
+        (node_ids, parent_ids), (ids, parents), same_nodes=False
+    )
+
+    # The documented interpolation reproduces the coordinates the function chose, so
+    # a caller interpolating a radius the same way gets something consistent.
+    want = (
+        coords[source[:, 0]] * (1 - alpha)[:, None]
+        + coords[source[:, 1]] * alpha[:, None]
+    )
+    np.testing.assert_allclose(xyz, want, atol=1e-9)
+
+    # No edge longer than the even-division rule allows.
+    lengths = fastcore.parent_dist(ids, parents, xyz, root_dist=0)
+    assert (lengths[parents >= 0] <= spacing * 1.5 + 1e-6).all()
+
+
+@given(forest_and_coords(), st.booleans())
+def test_smoothing_moves_only_slab_nodes(forest_coords, gaussian):
+    (node_ids, parent_ids, _), coords = forest_coords
+
+    if gaussian:
+        out = fastcore.smooth_skeleton_gaussian(node_ids, parent_ids, coords, 3.0)
+    else:
+        out = fastcore.smooth_skeleton(node_ids, parent_ids, coords, window=5)
+
+    assert out.shape == coords.shape
+
+    # Roots, branch points and leafs are pinned, bitwise.
+    codes = fastcore.classify_nodes(node_ids, parent_ids)
+    np.testing.assert_array_equal(out[codes != 3], coords[codes != 3])
+    assert np.isfinite(out).all()

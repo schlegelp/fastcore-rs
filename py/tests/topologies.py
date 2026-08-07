@@ -26,17 +26,61 @@ nodes costs minutes for what the small matrix already establishes:
   checked where it belongs: in the Rust unit tests, against 200k-node versions.
 """
 
-from collections import namedtuple
+import zlib
+from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
-__all__ = ["Topology", "SMALL", "STRESS", "load_swc"]
-
-Topology = namedtuple("Topology", ["name", "node_ids", "parent_ids", "weights"])
+__all__ = [
+    "Topology",
+    "SMALL",
+    "STRESS",
+    "load_swc",
+    "topology_nodes",
+    "check_is_forest",
+    "check_topology_preserved",
+    "check_dropping_invariants",
+]
 
 DATA = Path(__file__).parent
+
+
+@dataclass
+class Topology:
+    """The crate's tree representation as the bindings take it."""
+
+    name: str
+    node_ids: np.ndarray
+    parent_ids: np.ndarray
+    weights: np.ndarray
+    #: Real coordinates, where the fixture has them. `None` means "invent some".
+    _coords: np.ndarray = field(default=None, repr=False)
+
+    @cached_property
+    def coords(self):
+        """Node coordinates, built on first use.
+
+        A property rather than a plain field so the million-node performance fixtures
+        do not each materialise a 24 MB `(N, 3)` array that only the geometric cases
+        read - and cached on the instance rather than in a module-level dict, so it
+        cannot go stale, cannot depend on two fixtures sharing a name, and cannot be
+        corrupted for every later test by whichever one mutates it first.
+
+        Real skeletons keep their real coordinates. Everything else gets a seeded
+        random cloud, which is the *harder* input for geometric code than a plausible
+        neurite would be: nothing is collinear, nothing is evenly spaced, and no
+        simplification is a no-op by accident. Seeded off the name rather than a
+        counter, so a topology's coordinates do not move when another is added to the
+        matrix.
+        """
+        if self._coords is not None:
+            return self._coords
+        rng = np.random.default_rng(zlib.crc32(self.name.encode()))
+        return rng.uniform(0, 100, size=(len(self.node_ids), 3))
 
 
 def _weights(n, seed, zeros=(), roots=None):
@@ -205,17 +249,19 @@ def load_swc(file="722817260.swc", name=None):
     swc = pd.read_csv(DATA / file, comment="#", header=None, sep=" ")
     node_ids = swc[0].values.astype(np.int64)
     parent_ids = swc[6].values.astype(np.int64)
-    coords = swc[[2, 3, 4]].values.astype(np.float64)
+    xyz = swc[[2, 3, 4]].values.astype(np.float64)
 
     # Edge length per child. Roots keep 0 - their entry is never read.
     ix = pd.Index(node_ids).get_indexer(parent_ids)
     weights = np.zeros(len(node_ids), dtype=np.float32)
     has_parent = ix >= 0
     weights[has_parent] = np.linalg.norm(
-        coords[has_parent] - coords[ix[has_parent]], axis=1
+        xyz[has_parent] - xyz[ix[has_parent]], axis=1
     ).astype(np.float32)
 
-    return Topology(name or file.split(".")[0], node_ids, parent_ids, weights)
+    # The real coordinates come along, so the geometric suites run against real tracing
+    # noise rather than a random cloud.
+    return Topology(name or file.split(".")[0], node_ids, parent_ids, weights, xyz)
 
 
 def real_swc():
@@ -351,3 +397,84 @@ def ancestors(parents, node):
     return out
 
 
+
+
+# ------------------------------------------------------------- shared invariant checks
+#
+# One copy of each, called from both the example-based suite (`test_downsample.py`) and
+# the property suite (`test_properties.py`) - an invariant added to only one of two
+# near-identical checkers is exactly the failure a shared one prevents. Same reason
+# `meshes.check_simplify_invariants` exists.
+
+
+def topology_nodes(node_ids, parent_ids):
+    """The IDs of the roots, branch points and leafs.
+
+    `classify_nodes` codes 0 root, 1 leaf, 2 branch, 3 slab; the first three are the
+    nodes that carry topology, and that nothing in `navis_fastcore.downsample` may
+    drop or move.
+    """
+    import navis_fastcore as fastcore
+
+    codes = fastcore.classify_nodes(node_ids, parent_ids)
+    return set(np.asarray(node_ids)[codes != 3].tolist())
+
+
+def check_is_forest(node_ids, parent_ids):
+    """The result is a rooted forest over its own nodes, and nothing else."""
+    import navis_fastcore as fastcore
+
+    ids = set(np.asarray(node_ids).tolist())
+    assert len(ids) == len(node_ids), "duplicate node IDs"
+    assert not fastcore.has_cycles(node_ids, parent_ids)
+    assert {p for p in np.asarray(parent_ids).tolist() if p != -1} <= ids
+
+
+def check_topology_preserved(before, after, same_nodes=True):
+    """Roots, branch points and leafs come through unchanged.
+
+    `before`/`after` are `(node_ids, parent_ids)` pairs. With `same_nodes` the check is
+    node-for-node, which is what the methods that *drop* nodes owe; resampling mints new
+    IDs, so there only the counts can be compared.
+    """
+    import navis_fastcore as fastcore
+
+    b_ids, b_parents = before
+    a_ids, a_parents = after
+    b_codes = fastcore.classify_nodes(b_ids, b_parents)
+    a_codes = fastcore.classify_nodes(a_ids, a_parents)
+
+    for code in (0, 1, 2):
+        if same_nodes:
+            assert set(np.asarray(b_ids)[b_codes == code].tolist()) == set(
+                np.asarray(a_ids)[a_codes == code].tolist()
+            ), f"class {code} changed"
+        else:
+            assert (b_codes == code).sum() == (a_codes == code).sum(), (
+                f"class {code} count changed"
+            )
+
+
+def check_dropping_invariants(before, after, weights=None, new_weights=None):
+    """Everything that must hold of a node-dropping result, whatever went in.
+
+    Shared by `downsample_skeleton`, `simplify_rdp` and `simplify_vw`: they differ only
+    in which nodes they decide to drop, so the contract they owe is one contract.
+    """
+    b_ids, b_parents = before
+    a_ids, a_parents = after
+
+    # Every node that carries topology survives, and nothing is invented.
+    assert topology_nodes(b_ids, b_parents) <= set(np.asarray(a_ids).tolist())
+    assert set(np.asarray(a_ids).tolist()) <= set(np.asarray(b_ids).tolist())
+
+    check_is_forest(a_ids, a_parents)
+    check_topology_preserved(before, after)
+
+    # The cable the dropped nodes carried moved into the edges that replaced them
+    # rather than disappearing.
+    if weights is not None:
+        assert new_weights is not None
+        got = np.asarray(new_weights, dtype=np.float64)[np.asarray(a_parents) >= 0].sum()
+        want = np.asarray(weights, dtype=np.float64)[np.asarray(b_parents) >= 0].sum()
+        assert got == pytest.approx(want, rel=1e-5, abs=1e-5)

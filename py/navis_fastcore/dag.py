@@ -1,6 +1,7 @@
 import numpy as np
 
 from . import _fastcore
+from ._points import _prep_points
 
 __all__ = [
     "geodesic_matrix",
@@ -1180,6 +1181,42 @@ def _prep_weights(weights, node_ids):
     return weights
 
 
+def _prep_coords(coords, node_ids, name="coords"):
+    """Coerce per-node coordinates to a contiguous float64 (N, 3) array.
+
+    The shape check itself is `_points._prep_points`, which the transform modules
+    already share; this adds the "one row per node" rule, which is what makes a
+    coordinate array a *skeleton's* coordinates rather than a point cloud.
+
+    Lives here rather than beside its first caller for the reason `_prep_weights`
+    gives: the same three lines had been inlined at every call site, half of them
+    raising `AssertionError`, which `python -O` removes.
+    """
+    coords, _ = _prep_points(coords, name=name)
+    if len(coords) != len(node_ids):
+        raise ValueError(
+            f"`{name}` must have one row per node: got {len(coords)} "
+            f"for {len(node_ids)} nodes"
+        )
+    return coords
+
+
+def _dropped_to_ids(node_ids, kept, new_parent_ix, new_weights):
+    """Map a `(kept, new_parents, new_weights)` triple back into ID space.
+
+    Shared by every method that drops nodes and rewires what is left - the four in
+    [`navis_fastcore.downsample`][] plus `simplify_skeleton`. They differ only in
+    which nodes they decide to drop, and all of them then owe the caller the same
+    thing.
+    """
+    new_node_ids = _indices_to_ids(node_ids, kept)
+    return (
+        new_node_ids,
+        _indices_to_ids_sentinel(new_node_ids, new_parent_ix),
+        new_weights,
+    )
+
+
 def _indices_to_ids(node_ids, indices):
     """Map node indices back to node IDs."""
     return np.asarray(node_ids)[indices]
@@ -1475,13 +1512,7 @@ def simplify_skeleton(node_ids, parent_ids, weights=None):
         parent_ix, weights=weights
     )
 
-    new_node_ids = _indices_to_ids(node_ids, kept)
-
-    return (
-        new_node_ids,
-        _indices_to_ids_sentinel(new_node_ids, new_parent_ix),
-        new_weights,
-    )
+    return _dropped_to_ids(node_ids, kept, new_parent_ix, new_weights)
 
 
 def adjacency(node_ids, parent_ids, weights=None, directed=True, transpose=False):

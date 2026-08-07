@@ -21,6 +21,9 @@ use warp::*;
 mod dag;
 use dag::*;
 
+mod downsample;
+use downsample::*;
+
 mod mesh;
 use mesh::*;
 
@@ -221,6 +224,24 @@ mod fastcore {
 
     #[pymodule_export]
     use super::simplify_skeleton_py;
+
+    #[pymodule_export]
+    use super::downsample_skeleton_py;
+
+    #[pymodule_export]
+    use super::simplify_rdp_py;
+
+    #[pymodule_export]
+    use super::simplify_vw_py;
+
+    #[pymodule_export]
+    use super::resample_skeleton_py;
+
+    #[pymodule_export]
+    use super::smooth_skeleton_py;
+
+    #[pymodule_export]
+    use super::smooth_skeleton_gaussian_py;
 
     #[pymodule_export]
     use super::adjacency_py;

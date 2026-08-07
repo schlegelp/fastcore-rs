@@ -18,6 +18,7 @@ nav = [
     { "Geodesic distances" = "python/geodesic.md" },
     { "Connected components" = "python/cc.md" },
     { "Morphology" = "python/morphology.md" },
+    { "Downsampling" = "python/downsampling.md" },
     { "Segments" = "python/segments.md" },
     { "Topology" = "python/topology.md" },
     { "Mesh" = "python/mesh.md" },

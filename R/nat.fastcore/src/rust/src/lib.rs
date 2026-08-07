@@ -587,13 +587,311 @@ pub fn simplify_skeleton(parents: Vec<i32>, #[default = "NULL"] weights: Option<
     let parents = Array1::from_vec(parents);
     let weights = to_weights::<f32>(weights);
 
-    let (nodes, new_parents, new_weights) =
-        fastcore::dag::simplify_skeleton(&parents.view(), &weights);
+    dropped_to_list(fastcore::dag::simplify_skeleton(&parents.view(), &weights))
+}
 
+/// Take the parent vector and the three coordinate vectors every geometric entry point
+/// opens with, checking they describe the same nodes.
+fn parents_and_coords(
+    parents: Vec<i32>,
+    x: &[f64],
+    y: &[f64],
+    z: &[f64],
+) -> (Array1<i32>, Array2<f64>) {
+    let coords = xyz_to_coords(x, y, z);
+    assert_eq!(
+        coords.nrows(),
+        parents.len(),
+        "`x`, `y` and `z` must have one entry per node"
+    );
+    (Array1::from_vec(parents), coords)
+}
+
+/// Pack the triple every node-dropping method returns into an R list.
+fn dropped_to_list(out: (Vec<i32>, Array1<i32>, Option<Vec<f32>>)) -> Robj {
+    let (nodes, new_parents, new_weights) = out;
     list!(
         nodes = nodes,
         parents = new_parents.to_vec(),
         weights = opt_lengths(new_weights)
+    )
+    .into()
+}
+
+/// Keep every `factor`-th node of every segment, dropping the rest.
+///
+/// The plain "make this skeleton smaller" operation: it pays no attention to geometry,
+/// so reach for it when the skeleton is already evenly sampled and you just want fewer
+/// nodes. Roots, branch points and leafs always survive, so the result is still the same
+/// neuron — only its unbranched stretches are sampled `factor` times more coarsely. See
+/// `simplify_rdp()` and `simplify_vw()` for the geometry-aware alternatives.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param factor Integer; keep one node in every `factor`, counting from each segment's
+///   distal end. `1` keeps everything; the useful range starts at 2.
+/// @param preserve Optional logical vector, one entry per node, marking extra nodes that
+///   must survive; `NULL` for none.
+/// @param weights Optional numeric vector of child-to-parent edge weights; `NULL`
+///   returns no `weights`.
+/// @return List with `nodes` (0-based indices of the surviving nodes, in their original
+///   relative order), `parents` (their new 0-based parent indices, `-1` for roots,
+///   indexing *into* `nodes`) and `weights` (length of each node's edge to its new
+///   parent, i.e. the summed length of the chain it replaces; `NULL` exactly when
+///   `weights` was `NULL`). Total cable length is preserved.
+/// @export
+#[extendr]
+pub fn downsample_skeleton(
+    parents: Vec<i32>,
+    factor: i32,
+    #[default = "NULL"] preserve: Robj,
+    #[default = "NULL"] weights: Option<Vec<f64>>,
+) -> Robj {
+    assert!(factor >= 1, "`factor` must be >= 1");
+    let n = parents.len();
+    let parents = Array1::from_vec(parents);
+    let preserve = robj_to_mask(&preserve, n);
+    let weights = to_weights::<f32>(weights);
+
+    dropped_to_list(fastcore::downsample::downsample_skeleton(
+        &parents.view(),
+        factor as usize,
+        &preserve,
+        &weights,
+    ))
+}
+
+/// Drop the nodes that do not bend a neurite, by Ramer-Douglas-Peucker.
+///
+/// Where `downsample_skeleton()` thins by counting, this thins by *shape*: a node
+/// survives only if removing it would move the traced path by more than `epsilon`. Long
+/// straight stretches collapse to their two ends while a tight curve keeps every node it
+/// needs, so the same tolerance buys a much better skeleton per node than a fixed factor
+/// does.
+///
+/// Each replacement edge carries the length of the chain it stands in for, so geodesic
+/// distances stay right even where the geometry has been cut across.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param x,y,z Numeric vectors of node coordinates, one entry per node.
+/// @param epsilon Numeric; how far the simplified path may stray from the original, in
+///   the units of the coordinates. `0` still drops nodes that are *exactly* collinear,
+///   and nothing else.
+/// @param preserve Optional logical vector, one entry per node, marking extra nodes that
+///   must survive; `NULL` for none.
+/// @param weights Optional numeric vector of child-to-parent edge weights; `NULL`
+///   returns no `weights`.
+/// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @return List with `nodes`, `parents` and `weights`, as `downsample_skeleton()`.
+/// @export
+#[extendr]
+pub fn simplify_rdp(
+    parents: Vec<i32>,
+    x: Vec<f64>,
+    y: Vec<f64>,
+    z: Vec<f64>,
+    epsilon: f64,
+    #[default = "NULL"] preserve: Robj,
+    #[default = "NULL"] weights: Option<Vec<f64>>,
+    #[default = "NULL"] threads: Option<i32>,
+) -> Robj {
+    let n = parents.len();
+    let (parents, coords) = parents_and_coords(parents, &x, &y, &z);
+    let preserve = robj_to_mask(&preserve, n);
+    let weights = to_weights::<f32>(weights);
+
+    dropped_to_list(fastcore::downsample::simplify_rdp(
+        &parents.view(),
+        &coords.view(),
+        epsilon,
+        &preserve,
+        &weights,
+        threads.map(|t| t as usize),
+    ))
+}
+
+/// Drop the nodes that contribute least area, by Visvalingam-Whyatt.
+///
+/// The other geometry-aware thinning. Where `simplify_rdp()` asks how far the path
+/// *moves*, this asks how much area each node adds to it and repeatedly removes whichever
+/// node adds least. The difference shows under aggressive simplification: RDP will
+/// happily keep one spike and flatten everything around it, while Visvalingam-Whyatt
+/// sheds detail evenly and so keeps a neurite looking like itself.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param x,y,z Numeric vectors of node coordinates, one entry per node.
+/// @param min_area Numeric; remove a node while the triangle it forms with its two
+///   surviving neighbours is smaller than this, in the *squared* units of the
+///   coordinates. `0` or less is a no-op.
+/// @param preserve Optional logical vector, one entry per node, marking extra nodes that
+///   must survive; `NULL` for none.
+/// @param weights Optional numeric vector of child-to-parent edge weights; `NULL`
+///   returns no `weights`.
+/// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @return List with `nodes`, `parents` and `weights`, as `downsample_skeleton()`.
+/// @export
+#[extendr]
+pub fn simplify_vw(
+    parents: Vec<i32>,
+    x: Vec<f64>,
+    y: Vec<f64>,
+    z: Vec<f64>,
+    min_area: f64,
+    #[default = "NULL"] preserve: Robj,
+    #[default = "NULL"] weights: Option<Vec<f64>>,
+    #[default = "NULL"] threads: Option<i32>,
+) -> Robj {
+    let n = parents.len();
+    let (parents, coords) = parents_and_coords(parents, &x, &y, &z);
+    let preserve = robj_to_mask(&preserve, n);
+    let weights = to_weights::<f32>(weights);
+
+    dropped_to_list(fastcore::downsample::simplify_vw(
+        &parents.view(),
+        &coords.view(),
+        min_area,
+        &preserve,
+        &weights,
+        threads.map(|t| t as usize),
+    ))
+}
+
+/// Place nodes at a fixed spacing along every neurite.
+///
+/// The inverse problem to `downsample_skeleton()`: rather than thinning what is there,
+/// this re-samples each segment from scratch, so a skeleton whose node density varies
+/// tenfold between neurites comes out evenly sampled throughout. Each segment is divided
+/// into `round(length / spacing)` equal parts (at least one), so both of its endpoints
+/// land exactly and no runt edge is left over; a segment shorter than `spacing / 2`
+/// collapses to a single straight edge.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param x,y,z Numeric vectors of node coordinates, one entry per node.
+/// @param spacing Numeric; target distance between adjacent nodes.
+/// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @return List with `parents` (0-based parent index per output node, `-1` for roots),
+///   `x`, `y`, `z` (their coordinates), `source_from` and `source_to` (the 0-based
+///   *input* node indices of the edge each output node sits on, child then parent) and
+///   `alpha` (how far along that edge it lies, from the child end). The input's roots,
+///   branch points and leafs come first, in input order and unmoved; they carry their own
+///   index in both `source_` columns and an `alpha` of 0, so
+///   `attr[source_from + 1] * (1 - alpha) + attr[source_to + 1] * alpha` interpolates any
+///   per-node quantity over the whole output.
+/// @export
+#[extendr]
+pub fn resample_skeleton(
+    parents: Vec<i32>,
+    x: Vec<f64>,
+    y: Vec<f64>,
+    z: Vec<f64>,
+    spacing: f64,
+    #[default = "NULL"] threads: Option<i32>,
+) -> Robj {
+    let (parents, coords) = parents_and_coords(parents, &x, &y, &z);
+
+    let out = fastcore::downsample::resample_skeleton(
+        &parents.view(),
+        &coords.view(),
+        spacing,
+        threads.map(|t| t as usize),
+    );
+
+    list!(
+        parents = out.parents.to_vec(),
+        x = out.coords.column(0).to_vec(),
+        y = out.coords.column(1).to_vec(),
+        z = out.coords.column(2).to_vec(),
+        source_from = out.source.column(0).to_vec(),
+        source_to = out.source.column(1).to_vec(),
+        alpha = out.alpha.to_vec()
+    )
+    .into()
+}
+
+/// Smooth a skeleton with a moving average along each neurite.
+///
+/// Takes the tracing jitter out of a skeleton without touching its topology or its node
+/// count: every node keeps its identity and its parent, and only its coordinates move.
+/// Roots, branch points and leafs are pinned — a branch point that drifted would drag
+/// three neurites apart — so this is safe to run before measuring angles, tortuosity or
+/// tangent vectors, all of which a raw traced skeleton overstates.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param x,y,z Numeric vectors of node coordinates, one entry per node.
+/// @param window Integer; nodes in the window, counting the node itself. Even values
+///   round down to the odd value below, since the window is symmetric. `0` and `1` are
+///   no-ops.
+/// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @return List with `x`, `y` and `z`: the new coordinates, in the input's node order.
+/// @export
+#[extendr]
+pub fn smooth_skeleton(
+    parents: Vec<i32>,
+    x: Vec<f64>,
+    y: Vec<f64>,
+    z: Vec<f64>,
+    #[default = "5"] window: i32,
+    #[default = "NULL"] threads: Option<i32>,
+) -> Robj {
+    // Guards the `as usize` below; a negative window would wrap past the core's check.
+    assert!(window >= 0, "`window` must be non-negative");
+    let (parents, coords) = parents_and_coords(parents, &x, &y, &z);
+
+    let out = fastcore::downsample::smooth_skeleton(
+        &parents.view(),
+        &coords.view(),
+        window as usize,
+        threads.map(|t| t as usize),
+    );
+
+    coords_to_list(&out)
+}
+
+/// Smooth a skeleton with a Gaussian kernel along each neurite.
+///
+/// The same operation as `smooth_skeleton()` with a softer, scale-based kernel: `sigma`
+/// is a distance in the units of the coordinates rather than a count of nodes, so the
+/// amount of smoothing does not change when the skeleton is resampled. The kernel
+/// measures distance *along* the neurite rather than between the points, which would
+/// otherwise let the far arm of a hairpin pull on the near one. Segment ends are pinned
+/// by reflecting the neurite about them.
+///
+/// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
+/// @param x,y,z Numeric vectors of node coordinates, one entry per node.
+/// @param sigma Numeric; kernel width, as a distance along the neurite.
+/// @param truncate Numeric; how many `sigma` out to keep summing. 4 covers all but 1e-4
+///   of the kernel's mass.
+/// @param threads Optional integer; number of threads. `NULL` uses all cores.
+/// @return List with `x`, `y` and `z`: the new coordinates, in the input's node order.
+/// @export
+#[extendr]
+pub fn smooth_skeleton_gaussian(
+    parents: Vec<i32>,
+    x: Vec<f64>,
+    y: Vec<f64>,
+    z: Vec<f64>,
+    sigma: f64,
+    #[default = "4.0"] truncate: f64,
+    #[default = "NULL"] threads: Option<i32>,
+) -> Robj {
+    let (parents, coords) = parents_and_coords(parents, &x, &y, &z);
+
+    let out = fastcore::downsample::smooth_skeleton_gaussian(
+        &parents.view(),
+        &coords.view(),
+        sigma,
+        truncate,
+        threads.map(|t| t as usize),
+    );
+
+    coords_to_list(&out)
+}
+
+/// Split an `(N, 3)` coordinate array back into the `x`/`y`/`z` list R works in.
+fn coords_to_list(coords: &Array2<f64>) -> Robj {
+    list!(
+        x = coords.column(0).to_vec(),
+        y = coords.column(1).to_vec(),
+        z = coords.column(2).to_vec()
     )
     .into()
 }
@@ -3777,6 +4075,12 @@ extendr_module! {
     fn reroot;
     fn contract_nodes;
     fn simplify_skeleton;
+    fn downsample_skeleton;
+    fn simplify_rdp;
+    fn simplify_vw;
+    fn resample_skeleton;
+    fn smooth_skeleton;
+    fn smooth_skeleton_gaussian;
     fn adjacency;
     fn longest_path;
     fn longest_paths;

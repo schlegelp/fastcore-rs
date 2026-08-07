@@ -93,6 +93,42 @@ of this family.
 No new dependencies. Available on all three surfaces as `simplify_mesh` and
 `simplify_mesh_lossless`.
 
+## 0.11.0 (2026-08-06)
+
+**Six ways to change how densely a skeleton is sampled**, in a new `downsample` module
+on all three surfaces. Until now `fastcore` could only reduce a skeleton
+*topologically*, with `simplify_skeleton` dropping every slab node; there was nothing
+that reduced it *geometrically*. See the new [Downsampling](python/downsampling.md)
+page.
+
+- `downsample_skeleton` — keep every Nth node of each segment. This is
+  `navis.downsample_neuron`.
+- `simplify_rdp` / `simplify_vw` — the same job done by *shape* rather than by counting.
+  Ramer-Douglas-Peucker drops a node when removing it would move the path by less than
+  `epsilon`; Visvalingam-Whyatt removes whichever node contributes least area, which
+  sheds detail more evenly when the simplification is aggressive.
+- `resample_skeleton` — the inverse: interpolated nodes at a fixed spacing, so a
+  skeleton whose node density varies tenfold between neurites comes out even. It reports
+  the input edge and fraction each new node came from, so radii (or anything else
+  per-node) interpolate in one expression.
+- `smooth_skeleton` / `smooth_skeleton_gaussian` — move the coordinates and nothing
+  else, over a window of nodes or a distance along the neurite.
+
+All six work on the linear segments between roots, branch points and leafs and never
+touch the nodes at their ends, so the topology is unchanged: same leafs, same branch
+points, same tree. The three that drop nodes return the same triple as
+`simplify_skeleton`, all take a `preserve` list of nodes that must survive whatever the
+rule decides, and all carry each dropped chain's length into the edge that replaces it,
+so total cable length and geodesic distances are preserved exactly.
+
+The three linestring algorithms are ports of Chris L. Barnes'
+[`simples`](https://github.com/clbarnes/simples) (MIT), adapted for skeletons: iterative
+rather than recursive (a 100k-node unbranched neurite would overflow the stack),
+triangle areas from the Gram determinant rather than Heron's formula (which loses most
+of its digits on exactly the sliver triangles Visvalingam-Whyatt searches for), and a
+smoothing kernel over distance *along* the neurite rather than between the points. No
+new dependencies.
+
 ## 0.10.1 (2026-08-03)
 
 **`heal_skeleton` is reproducible again.** Healing the same fragmented neuron twice

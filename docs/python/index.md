@@ -132,6 +132,10 @@ Operations on [rooted trees](../concepts/trees.md):
 - [`reroot`](topology.md#navis_fastcore.reroot): re-root the skeleton, reversing only the edges that have to move
 - [`contract_nodes`](topology.md#navis_fastcore.contract_nodes): collapse groups of nodes onto a representative and rewire
 - [`simplify_skeleton`](topology.md#navis_fastcore.simplify_skeleton): keep only roots, leafs and branch points, preserving cable length
+- [`downsample_skeleton`](downsampling.md#navis_fastcore.downsample_skeleton): keep every Nth node of each segment, preserving cable length
+- [`simplify_rdp`](downsampling.md#navis_fastcore.simplify_rdp) / [`simplify_vw`](downsampling.md#navis_fastcore.simplify_vw): drop the nodes that carry no shape — by how far the path would move (Ramer-Douglas-Peucker) or by how much area each node adds (Visvalingam-Whyatt)
+- [`resample_skeleton`](downsampling.md#navis_fastcore.resample_skeleton): place interpolated nodes at a fixed spacing along every neurite
+- [`smooth_skeleton`](downsampling.md#navis_fastcore.smooth_skeleton) / [`smooth_skeleton_gaussian`](downsampling.md#navis_fastcore.smooth_skeleton_gaussian): take the tracing jitter out of the coordinates, with branch points pinned
 - [`adjacency`](topology.md#navis_fastcore.adjacency): the skeleton's adjacency matrix as a CSR triple
 - [`longest_path`](topology.md#navis_fastcore.longest_path) / [`longest_paths`](topology.md#navis_fastcore.longest_paths): the longest path from a node to its root, and the `n` longest taken in turn
 - [`betweenness`](morphology.md#navis_fastcore.betweenness): betweenness centrality, in O(N) rather than Brandes' O(V*E)
