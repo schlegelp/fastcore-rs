@@ -12,6 +12,7 @@ from .linkage import *
 from .matches import *
 from .mesh import *
 from .nblast import *
+from .packing import *
 from .project import *
 from .threads import *
 from .topo import *
@@ -40,6 +41,7 @@ for _sub in (
     "matches",
     "mesh",
     "nblast",
+    "packing",
     "project",
     "threads",
     "topo",

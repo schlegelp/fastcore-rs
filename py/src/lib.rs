@@ -39,6 +39,9 @@ use smoothing::*;
 mod project;
 use project::*;
 
+mod packing;
+use packing::*;
+
 mod points;
 use points::*;
 
@@ -227,6 +230,15 @@ mod fastcore {
 
     #[pymodule_export]
     use super::project_mesh_2d_py;
+
+    #[pymodule_export]
+    use super::rasterize_segments_py;
+
+    #[pymodule_export]
+    use super::pack_masks_py;
+
+    #[pymodule_export]
+    use super::pack_rectangles_py;
 
     #[pymodule_export]
     use super::dotprops_py;

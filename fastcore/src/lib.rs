@@ -45,6 +45,13 @@
 //!   sort what is left back to front and lay it out as closed rings, in one parallel
 //!   pass. Written as separate steps these are four walks over hundreds of megabytes
 //!   producing intermediates only the next step reads.
+//! - [`raster`] / [`packing`] — arranging shapes on a page. [`raster::rasterize_segments`]
+//!   turns line work — a skeleton's edges, a mesh's face edges — into a bit-packed
+//!   [`raster::Bitmap`]; [`packing::pack_masks`] then lays those out so that no two share a
+//!   pixel, which lets a shape sit inside the loop of another as long as no ink meets.
+//!   [`packing::pack_rectangles`] is the cheap bounding-box alternative. The mask packer
+//!   replaces a cross-correlation per shape per position — see that module for why an
+//!   early-exiting scan over bitsets beats an FFT that scores every position at once.
 //! - [`points`] — raw 3D point clouds: [`points::dotprops`] derives the unit tangent
 //!   vector and `alpha` of every point's local neighbourhood, which is what [`nblast`]
 //!   consumes and what callers previously had to produce with scipy.
@@ -109,6 +116,10 @@ pub mod simplify;
 pub mod smoothing;
 
 pub mod project;
+
+pub mod raster;
+
+pub mod packing;
 
 pub mod points;
 

@@ -8,6 +8,35 @@ it is called out.
 Tags, source archives and the original announcements are on
 [GitHub](https://github.com/schlegelp/fastcore-rs/releases).
 
+## Unreleased
+
+**Packing shapes onto a page.** Three new primitives for laying neurons out as a collage —
+`rasterize_segments` turns line work into binary masks, `pack_masks` arranges those so that
+no two share a pixel, and `pack_rectangles` is the cheaper bounding-box alternative
+(MaxRects).
+
+```python
+masks = fastcore.rasterize_segments(coords, edges, scale=40, pad=1)
+positions, variant, grid = fastcore.pack_masks(masks, (1300, 980))
+```
+
+Packing the shapes rather than their boxes is the point: a bounding box is mostly empty
+for anything branching, and on masks a neuron may reach into another's empty space — even
+sit inside a loop of it — as long as no cable meets.
+
+The way to write this in numpy is a cross correlation, which scores every position at once
+so the free ones are the zeros. It is the wrong computation: an exact overlap *count*
+everywhere, in floating point, when the question is boolean and the answer is wanted at one
+position. Both cost models put a total order on positions that does not depend on the shape,
+so the best free position is the *first* free one — scanned in that order over bit-packed
+rows, 64 pixels per instruction, stopping there. On 200 arbors and a 1300x980 page:
+rasterising **69 ms → 3.9 ms**, packing **1.46 s → 56 ms** bottom-up and **4.40 s → 234 ms**
+under a cost surface. It grows as `O(N² res²)`, so the gap widens with resolution.
+
+Both packers order items largest-first with a *stable* sort where `np.argsort` defaults to
+an unstable one, so ties go in input order; otherwise the results are identical to the
+correlation, bit for bit.
+
 ## 0.11.0 (2026-08-07)
 
 **Drawing a mesh flat, in one pass instead of six.** `project_mesh_2d` takes a mesh and
