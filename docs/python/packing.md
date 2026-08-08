@@ -46,12 +46,12 @@ position: the best one. Measured on 200 synthetic arbors at 100 px per page unit
 
 | step | numpy/scipy | fastcore |
 |---|---|---|
-| rasterise 200 arbors | 69 ms | 3.9 ms |
-| ...with `fill=True` | 89 ms | 4.2 ms |
-| pack, bottom-up, 1 variant | 1.46 s | 56 ms |
-| pack, bottom-up, 2 variants | 4.18 s | 64 ms |
-| pack, under a cost surface | 4.40 s | 234 ms |
-| pack 200 bounding boxes | 19 ms | 3.4 ms |
+| rasterise 200 arbors | 32 ms | 1.8 ms |
+| ...with `fill=True` | 50 ms | 2.1 ms |
+| pack, bottom-up, 1 variant | 1.55 s | 25 ms |
+| pack, bottom-up, 2 variants | 3.07 s | 38 ms |
+| pack, under a cost surface | 4.39 s | 69 ms |
+| pack 200 bounding boxes | 14 ms | 2.0 ms |
 
 The correlation is about 70% of the layout, and it grows as `O(N² res²)` — doubling the
 resolution quadruples it. What replaces it:
@@ -67,12 +67,17 @@ resolution quadruples it. What replaces it:
   shape's heaviest row, so most rejections cost one or two words.
 - **Provably empty space is skipped.** Everything above the highest occupied row is free,
   so a bottom-up scan is bounded by the fill line rather than by the page.
+- **The search runs on every core**, and so do the variants of a shape against each other.
+  Placement itself does not, and cannot: each shape goes down against the page the one
+  before it left behind, which is what the packing means.
 
 Rasterising is the same story on a smaller scale. Interpolating every edge and scattering
 the result materialises one element per *pixel-step of every edge*: on a mesh with 300k
 edges averaging five pixels each that is a 1.5M-element index array, plus the same again
 for the parameter and both coordinates, to set a few tens of thousands of distinct pixels.
-Here the walk writes straight into the mask and allocates nothing.
+Here the walk writes straight into the mask — on every core at once for a shape with
+enough edges to be worth splitting, so that one outsized mesh in a neuron list does not
+set the pace for all of it.
 
 ## Cost surfaces and masks
 

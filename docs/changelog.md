@@ -30,8 +30,13 @@ everywhere, in floating point, when the question is boolean and the answer is wa
 position. Both cost models put a total order on positions that does not depend on the shape,
 so the best free position is the *first* free one — scanned in that order over bit-packed
 rows, 64 pixels per instruction, stopping there. On 200 arbors and a 1300x980 page:
-rasterising **69 ms → 3.9 ms**, packing **1.46 s → 56 ms** bottom-up and **4.40 s → 234 ms**
+rasterising **32 ms → 1.8 ms**, packing **1.55 s → 25 ms** bottom-up and **4.39 s → 69 ms**
 under a cost surface. It grows as `O(N² res²)`, so the gap widens with resolution.
+
+The search for a position runs on every core, and so do the variants of a shape against
+each other; a shape with enough edges splits its own walk, so one outsized mesh in a neuron
+list does not set the pace for the whole batch. Placement itself is sequential and stays
+that way — each shape goes down against the page the one before it left behind.
 
 Both packers order items largest-first with a *stable* sort where `np.argsort` defaults to
 an unstable one, so ties go in input order; otherwise the results are identical to the

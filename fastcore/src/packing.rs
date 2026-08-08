@@ -39,8 +39,10 @@
 //! - **Skip what is provably empty.** Everything above the highest occupied row is free, so
 //!   a bottom-up scan is bounded by the fill line rather than by the page.
 //!
-//! Positions are scanned in growing blocks — small at first so an early hit costs almost
-//! nothing, larger as the search goes on so a hopeless one still uses every core.
+//! The scan runs on every core, and so do the variants of a shape against each other — see
+//! [`first_matching`] for why the whole range goes to rayon in one piece. Placement itself
+//! is sequential and stays that way: each shape goes down against the page the last one
+//! left behind, which is what the packing *means*.
 
 use rayon::prelude::*;
 
@@ -137,39 +139,31 @@ pub struct Packing {
 
 /// Scan `0..n` for the first index `test` accepts.
 ///
-/// In blocks that quadruple in size: the first hit is usually close by, so a search that
-/// finds one early should not have paid for a whole page of parallel tests — but one that
-/// really does have to cover the page should not crawl there in tiny steps.
+/// `find_first` and not `find_any`, because here the order *is* the cost model: the first
+/// hit is the best position, not merely a workable one. Rayon keeps a shared bound on the
+/// lowest match found so far and drops any split lying entirely above it, so stopping early
+/// costs a few extra tests on the threads that had started further up — not a scan of the
+/// page.
 ///
-/// The first block is sized from `n` rather than fixed, because the two callers differ by
-/// three orders of magnitude in how much they may have to search — page rows against page
-/// pixels — and per-item cost varies by ~800x within a single scan, since a free row exits
-/// on its first candidate while a crowded one tries every column. A block that is merely
-/// "small" therefore leaves most cores with nothing to steal. Measured on 200 arbors and a
-/// 1300x980 page, packing bottom-up and under a cost surface (best of five, ms):
+/// That bound is also why this hands rayon the whole range at once. It used to walk it in
+/// blocks that quadrupled in size, on the theory that a scan hitting something early should
+/// not pay for a page of parallel tests. Measured, the blocks only cost: each is a barrier,
+/// so the slowest worker in one holds up every other, and on a machine whose cores are not
+/// all the same speed that compounds into a cliff. Packing 120 arbors onto a 1300x980 page
+/// under a cost surface, on 10 performance cores plus 4 efficiency ones (ms):
 ///
-/// | first block | bottom-up | under a cost surface |
-/// |---|---|---|
-/// | 256 | 36.2 | 254.4 |
-/// | 1024 | **27.5** | 248.2 |
-/// | 4096 | 29.3 | **242.9** |
+/// | threads | 8 | 10 | 12 | 14 |
+/// |---|---|---|---|---|
+/// | in blocks | 426 | 383 | 663 | 685 |
+/// | whole range | 372 | 311 | 310 | **300** |
 ///
-/// `n / 256` lands on each of those optima in turn. Block size cannot change the answer:
-/// `find_first` returns the lowest matching index whatever order the work is done in.
+/// Bottom-up the two are the same code: that scan is over page *rows*, so `n` never
+/// reached even the smallest first block and the loop always ran exactly once.
 fn first_matching<F>(n: usize, test: F) -> Option<usize>
 where
     F: Fn(usize) -> bool + Sync,
 {
-    let (mut start, mut block) = (0usize, (n / 256).clamp(1024, 1 << 16));
-    while start < n {
-        let end = (start + block).min(n);
-        if let Some(i) = (start..end).into_par_iter().find_first(|&i| test(i)) {
-            return Some(i);
-        }
-        start = end;
-        block = (block * 4).min(1 << 16);
-    }
-    None
+    (0..n).into_par_iter().find_first(|&i| test(i))
 }
 
 /// The best position found for one variant: `(cost, y, x)`, compared lexicographically.
@@ -184,6 +178,10 @@ fn best_bottom_left(page: &Bitmap, shape: &Shape, ceiling: usize) -> Option<Cand
     let (h, w) = (shape.map.height(), shape.map.width());
     let (y_max, x_max) = (page.height().checked_sub(h)?, page.width().checked_sub(w)?);
 
+    // A row at a time, the columns within it serially. Flattening the two into one parallel
+    // scan over every `(y, x)` would balance the work perfectly and is 1.7x *slower*: the
+    // inner walk shares one page row and stops at its first free column, and neither
+    // survives handing every position to the scheduler separately.
     let first_x = |y: usize| (0..=x_max).find(|&x| !shape.collides(page, y, x));
     // Above the fill line the page is empty by definition, so the scan is bounded by it
     // rather than by the page - and is guaranteed to succeed at `ceiling` if not before.
@@ -301,22 +299,36 @@ pub fn pack_masks(
         let mut ceiling = (0..height).rev().find(|&y| !grid.row_is_empty(y)).map_or(0, |y| y + 1);
 
         for i in order {
-            let mut best: Option<(Candidate, usize)> = None;
-            for (k, map) in masks[i].iter().enumerate() {
-                if map.height() == 0 || map.width() == 0 {
-                    continue;
-                }
-                let shape = Shape::new(map);
-                let found = match (cost, &cost_order) {
-                    (Some(c), Some(o)) => best_by_cost(&grid, &shape, c, o),
-                    _ => best_bottom_left(&grid, &shape, ceiling),
-                };
-                if let Some(cand) = found {
-                    if best.is_none_or(|(b, _)| cand < b) {
-                        best = Some((cand, k));
+            // Every variant is scanned against the same untouched page, so they go at once.
+            // Worth doing even though each scan is itself parallel: a scan stops at its
+            // first hit and its rows cost anything from one word to a full page-width
+            // probe, so it never fills the machine on its own — running the variants
+            // together lets each cover the other's stalls. Measured on 120 arbors and two
+            // variants, 14 threads: 88 -> 73 ms bottom-up, 300 -> 275 ms under a cost
+            // surface.
+            let found: Vec<Option<Candidate>> = masks[i]
+                .par_iter()
+                .map(|map| {
+                    if map.height() == 0 || map.width() == 0 {
+                        return None;
                     }
-                }
-            }
+                    let shape = Shape::new(map);
+                    match (cost, &cost_order) {
+                        (Some(c), Some(o)) => best_by_cost(&grid, &shape, c, o),
+                        _ => best_bottom_left(&grid, &shape, ceiling),
+                    }
+                })
+                .collect();
+
+            // Collected first and compared here rather than reduced in parallel: rayon's
+            // `min_by` leaves the order it combines in unspecified, and a strict `<` in
+            // input order is what keeps ties going to the earliest variant however the
+            // scans interleaved.
+            let best = found
+                .into_iter()
+                .enumerate()
+                .filter_map(|(k, cand)| Some((cand?, k)))
+                .reduce(|best, next| if next.0 < best.0 { next } else { best });
 
             let Some(((_, y, x), k)) = best else {
                 if optional {
@@ -642,6 +654,38 @@ mod tests {
         assert!(p.positions.iter().all(|q| q.is_some()));
         assert_disjoint(&masks, &p, (30, 210));
         assert_eq!(p.grid.count_ones(), 6 * 10 * 70);
+    }
+
+    /// Nothing about the answer may depend on how wide the search ran — not the scan over
+    /// positions, and not the variants of a shape racing each other.
+    #[test]
+    fn the_packing_does_not_depend_on_the_thread_count() {
+        let (h, w) = (61, 83);
+        let cost: Vec<f64> = (0..h * w)
+            .map(|c| {
+                let (y, x) = ((c / w) as f64, (c % w) as f64);
+                (y - 30.0).hypot(x - 41.0)
+            })
+            .collect();
+        // Variants that are *not* congruent, so which one wins is a real decision, and
+        // enough of them to leave ties for the ordering to break.
+        let masks: Vec<Vec<Bitmap>> = (0..14)
+            .map(|i| vec![solid(3 + i % 4, 5 + i % 3), solid(5 + i % 3, 3 + i % 4), ring(6)])
+            .collect();
+
+        for cost in [None, Some(cost.as_slice())] {
+            let one = pack_masks(&masks, (h, w), None, cost, true, Some(1)).unwrap();
+            assert!(
+                one.positions.iter().all(|p| p.is_some()),
+                "nothing to compare if the shapes did not go down"
+            );
+            for n in [2, 4, 8] {
+                let many = pack_masks(&masks, (h, w), None, cost, true, Some(n)).unwrap();
+                assert_eq!(one.positions, many.positions, "positions differ on {n} threads");
+                assert_eq!(one.variant, many.variant, "variants differ on {n} threads");
+                assert_eq!(one.grid, many.grid, "pages differ on {n} threads");
+            }
+        }
     }
 
     #[test]

@@ -13,7 +13,8 @@
 //! materialises one element per *pixel-step of every edge*: on a mesh with 300k edges
 //! averaging five pixels each that is a 1.5M-element index array, plus the same again for
 //! the parameter and both coordinates, to set a few tens of thousands of distinct pixels.
-//! Here the walk writes straight into the bitmap and allocates nothing.
+//! Here the walk writes straight into the bitmap, and a long enough one does so on every
+//! core at once (see [`MIN_EDGES_PER_CHUNK`]).
 
 use ndarray::ArrayView2;
 use rayon::prelude::*;
@@ -22,6 +23,28 @@ use crate::threads::with_pool;
 
 /// Pixels per storage word.
 const BITS: usize = u64::BITS as usize;
+
+/// Fewest edges [`rasterize_segments`] will give a core of its own.
+///
+/// The split itself is one chunk per worker, as everywhere else in this crate. This says
+/// only how fine that may get — and, at twice this, when a walk is long enough to be worth
+/// cutting up at all.
+///
+/// [`rasterize_segments_batch`] parallelises over shapes, which is enough when there are
+/// many — but the biggest shape is then a floor on the whole batch however many cores
+/// there are, and a neuron list is not uniform: one projection neuron's mesh can carry a
+/// hundred times the edges of a local interneuron's. Splitting the walk puts that floor
+/// back under the machine's control, and because the split is a nested `par_iter` the
+/// chunks are simply stolen by whichever threads finished their own shapes first.
+///
+/// A chunk costs a bitmap of the *whole shape* to draw into and an OR of it to fold back
+/// in, so the floor is really about the bitmap and not about the edges: split a sparse
+/// shape too finely and the empty bitmaps cost more than the walk they save. Measured at
+/// 14 threads on a 30k-edge arbor whose bitmap is 7.4 MB, forced to split: 8.6 ms in one
+/// piece, 11.8 ms in chunks of 2048. That shape does not reach two chunks at this value
+/// and so is left alone. What does reach them pays off — a 300k-edge mesh outline goes
+/// 4.18 -> 1.9 ms, and a batch of 4 of those among 20 small shapes 4.46 -> 2.83 ms.
+const MIN_EDGES_PER_CHUNK: usize = 16_384;
 
 /// A 1-bit-per-pixel image, packed into `u64` words row by row.
 ///
@@ -261,6 +284,28 @@ impl Bitmap {
         }
     }
 
+    /// OR `other` into `self`, which must be the same size.
+    ///
+    /// Both sides hold the padding invariant and OR cannot set a bit neither had, so the
+    /// result holds it too — no `clear_tails` needed.
+    ///
+    /// This is `paint(other, 0, 0)` with the aligned case written out: one flat pass the
+    /// compiler can vectorise, against `paint`'s row-major walk with a zero-word test and a
+    /// tail mask per row. Worth the duplication only because it folds whole shape-sized
+    /// bitmaps together in [`rasterize_segments`]; anything at an offset should use `paint`.
+    fn union(&mut self, other: &Bitmap) {
+        // `zip` would otherwise silently stop at the shorter of the two and quietly drop
+        // half the drawing.
+        debug_assert_eq!(
+            (self.height, self.width),
+            (other.height, other.width),
+            "union needs matching sizes"
+        );
+        for (a, b) in self.bits.iter_mut().zip(&other.bits) {
+            *a |= b;
+        }
+    }
+
     /// Grow every set pixel into a disk of radius `r`, returning a new bitmap.
     ///
     /// Matches `scipy.ndimage.binary_dilation` with a `dy^2 + dx^2 <= r^2` structuring
@@ -430,6 +475,12 @@ impl Default for RasterOptions {
 /// if there are no edges at all, every vertex is marked, so a bare point cloud still
 /// rasterises to something.
 ///
+/// Past [`MIN_EDGES_PER_CHUNK`] edges the walk runs on the ambient rayon pool; callers who
+/// need to cap it wrap it in [`with_pool`], which is what [`rasterize_segments_batch`]
+/// does. Unlike this crate's other entry points there is no `threads` argument, because
+/// the batch is the one that owns the pool — building one per shape would spawn a pool per
+/// neuron.
+///
 /// # Panics
 ///
 /// If `edges` names a vertex that is not in `coords`.
@@ -449,14 +500,17 @@ pub fn rasterize_segments(
     let mut pts: Vec<(f64, f64)> = Vec::with_capacity(n);
     let mut lo = (f64::INFINITY, f64::INFINITY);
     let mut hi = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    let mut bad = false;
     for i in 0..n {
         let (u, v) = (coords[[i, 0]], coords[[i, 1]]);
-        // Explicitly, rather than leaning on the bounds: `f64::min` *ignores* a NaN and
+        // Tracked explicitly rather than left to the bounds: `f64::min` *ignores* a NaN and
         // returns the other operand, so a NaN coordinate would leave `lo`/`hi` looking
-        // perfectly finite and rasterise to a quietly wrong shape.
-        if !u.is_finite() || !v.is_finite() {
-            return Bitmap::new(0, 0);
-        }
+        // perfectly finite and rasterise to a quietly wrong shape. Accumulated and checked
+        // after the loop rather than returned from inside it — an early return out of the
+        // middle of this is a loop-carried branch that stops the min/max reduction
+        // vectorising, and it costs the good path about half the pass (0.46 -> 0.24 ms on
+        // 300k points) to hurry along the one that is about to throw everything away.
+        bad |= !u.is_finite() || !v.is_finite();
         let p = match opts.turn % 4 {
             1 => (-v, u),
             2 => (-u, -v),
@@ -467,8 +521,9 @@ pub fn rasterize_segments(
         hi = (hi.0.max(p.0), hi.1.max(p.1));
         pts.push(p);
     }
-    // No points at all: there is no extent to size a bitmap from.
-    if !lo.0.is_finite() || !hi.0.is_finite() {
+    // Either a coordinate was not finite, or there were no points at all and there is no
+    // extent to size a bitmap from.
+    if bad || !lo.0.is_finite() || !hi.0.is_finite() {
         return Bitmap::new(0, 0);
     }
 
@@ -483,34 +538,76 @@ pub fn rasterize_segments(
 
     let width = ((hi.0 - lo.0) * opts.scale + pad).ceil() as usize + opts.pad + 1;
     let height = ((hi.1 - lo.1) * opts.scale + pad).ceil() as usize + opts.pad + 1;
-    let mut out = Bitmap::new(height, width);
 
     if edges.nrows() == 0 {
+        let mut out = Bitmap::new(height, width);
         for &(x, y) in &pts {
             out.set(round(y), round(x));
         }
         return finish(out, opts);
     }
 
-    for e in 0..edges.nrows() {
-        let (a, b) = (edges[[e, 0]] as usize, edges[[e, 1]] as usize);
-        assert!(
-            a < n && b < n,
-            "`edges` names vertex {}, but there are only {n} vertices",
-            a.max(b)
-        );
-        let ((x0, y0), (x1, y1)) = (pts[a], pts[b]);
-        let (dx, dy) = (x1 - x0, y1 - y0);
+    // Drawing a range of edges into a bitmap: the whole walk when it is short, one chunk of
+    // it per worker when it is not.
+    let draw = |out: &mut Bitmap, range: std::ops::Range<usize>| {
+        for e in range {
+            let (a, b) = (edges[[e, 0]] as usize, edges[[e, 1]] as usize);
+            assert!(
+                a < n && b < n,
+                "`edges` names vertex {}, but there are only {n} vertices",
+                a.max(b)
+            );
+            let ((x0, y0), (x1, y1)) = (pts[a], pts[b]);
+            let (dx, dy) = (x1 - x0, y1 - y0);
 
-        // One step per pixel of the longer axis, both ends included - a coarser walk
-        // would leave gaps wherever the shape is sampled more sparsely than the grid.
-        let steps = dx.abs().max(dy.abs()).ceil().max(1.0) as usize;
-        for k in 0..=steps {
-            let t = k as f64 / steps as f64;
-            let (x, y) = (x0 + t * dx, y0 + t * dy);
-            out.set(round(y), round(x));
+            // One step per pixel of the longer axis, both ends included - a coarser walk
+            // would leave gaps wherever the shape is sampled more sparsely than the grid.
+            let steps = dx.abs().max(dy.abs()).ceil().max(1.0) as usize;
+            for k in 0..=steps {
+                let t = k as f64 / steps as f64;
+                let (x, y) = (x0 + t * dx, y0 + t * dy);
+                out.set(round(y), round(x));
+            }
         }
-    }
+    };
+
+    let n_edges = edges.nrows();
+    let out = if n_edges < 2 * MIN_EDGES_PER_CHUNK {
+        // Too short to be worth cutting up - and kept away from rayon altogether rather
+        // than merely handed to it as a single chunk, because *asking* rayon anything,
+        // `current_num_threads` included, builds the global pool as a side effect and
+        // [`crate::threads::set_num_threads`] can never resize it afterwards. Most shapes
+        // in a collage take this path, so it is the one that decides whether a caller can
+        // still size the pool.
+        let mut out = Bitmap::new(height, width);
+        draw(&mut out, 0..n_edges);
+        out
+    } else {
+        // One chunk per worker of the pool actually in force — under `with_pool(Some(1))`,
+        // or on emscripten where nothing can spawn, that is one. Sizing by worker rather
+        // than by a fixed edge count is what bounds the chunk bitmaps: a 3M-edge mesh would
+        // otherwise build 183 of them on any machine, each the size of the whole shape.
+        let n_chunks = rayon::current_num_threads().min(n_edges / MIN_EDGES_PER_CHUNK);
+        let chunk = n_edges.div_ceil(n_chunks.max(1));
+
+        // Each chunk draws into its own bitmap and they are OR-ed together. Setting a pixel
+        // is idempotent and OR is associative, so the result is bit-identical to one serial
+        // walk whatever order the chunks finish in. `reduce_with` and not `reduce`: rayon
+        // calls a `reduce` identity once per sequential job, which would build and fold in
+        // a second empty bitmap per chunk for nothing.
+        (0..n_edges.div_ceil(chunk))
+            .into_par_iter()
+            .map(|c| {
+                let mut part = Bitmap::new(height, width);
+                draw(&mut part, c * chunk..((c + 1) * chunk).min(n_edges));
+                part
+            })
+            .reduce_with(|mut a, b| {
+                a.union(&b);
+                a
+            })
+            .expect("there is at least one chunk")
+    };
 
     finish(out, opts)
 }
@@ -541,7 +638,9 @@ fn finish(mut out: Bitmap, opts: &RasterOptions) -> Bitmap {
 ///
 /// Worth the batching: a collage re-rasterises every shape at every step of its scale
 /// search, and the shapes are independent, so this is the one place in the layout where
-/// parallelism is free.
+/// parallelism is free. Shapes long enough to split their own walk (see
+/// [`MIN_EDGES_PER_CHUNK`]) do that too, on the same pool — which is what keeps one outsized
+/// mesh in the list from setting the pace for all of it.
 ///
 /// `fill`, when given, overrides [`RasterOptions::fill`] for each shape. Unlike `scale`
 /// and `pad`, which are properties of the *page* and so are necessarily shared, whether a
@@ -585,7 +684,7 @@ pub fn rasterize_segments_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::array;
+    use ndarray::{array, Array2};
 
     fn bm(rows: &[&str]) -> Bitmap {
         let h = rows.len();
@@ -846,5 +945,46 @@ mod tests {
         let coords = array![[0.0, 0.0], [1.0, 1.0]];
         let edges = array![[0u32, 5u32]];
         rasterize_segments(coords.view(), edges.view(), &RasterOptions::default());
+    }
+
+    /// A long walk is cut into one chunk per worker and the chunks are OR-ed back together,
+    /// which must land on exactly the same pixels as walking it in one piece.
+    ///
+    /// All three draws here are of the same figure — repeating an edge cannot set a pixel
+    /// the first pass did not — so the only thing that differs is how many chunks the walk
+    /// was cut into, which is what the pool size decides.
+    #[test]
+    fn a_split_walk_matches_a_serial_one() {
+        let n = 240;
+        let coords: Vec<f64> = (0..n)
+            .flat_map(|i| {
+                let a = std::f64::consts::TAU * i as f64 / n as f64;
+                // Not a circle: a wobble puts edges at every angle and length.
+                let r = 1.0 + 0.4 * (7.0 * a).sin();
+                [r * a.cos(), r * a.sin()]
+            })
+            .collect();
+        let coords = Array2::from_shape_vec((n, 2), coords).unwrap();
+
+        let ring: Vec<u32> = (0..n)
+            .flat_map(|i| [i as u32, ((i + 1) % n) as u32])
+            .collect();
+        let once = Array2::from_shape_vec((n, 2), ring.clone()).unwrap();
+
+        // Long enough that four workers really do take a chunk each.
+        let reps = 4 * MIN_EDGES_PER_CHUNK / n + 1;
+        let many = Array2::from_shape_vec((n * reps, 2), ring.repeat(reps)).unwrap();
+
+        let opts = RasterOptions { scale: 40.0, ..Default::default() };
+        let draw = |edges: &Array2<u32>, threads: usize| {
+            with_pool(Some(threads), || {
+                rasterize_segments(coords.view(), edges.view(), &opts)
+            })
+        };
+
+        let serial = draw(&once, 1);
+        assert!(serial.count_ones() > 0);
+        assert_eq!(draw(&many, 1), serial, "one worker should not split at all");
+        assert_eq!(draw(&many, 4), serial, "the split walk drew something else");
     }
 }
