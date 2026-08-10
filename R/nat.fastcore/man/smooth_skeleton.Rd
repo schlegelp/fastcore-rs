@@ -4,7 +4,7 @@
 \alias{smooth_skeleton}
 \title{Smooth a skeleton with a moving average along each neurite.}
 \usage{
-smooth_skeleton(parents, x, y, z, window = 5, threads = NULL)
+smooth_skeleton(parents, x, y, z, window = 5, values = NULL, threads = NULL)
 }
 \arguments{
 \item{parents}{Integer vector of 0-based parent indices (roots are \verb{< 0}).}
@@ -15,10 +15,15 @@ smooth_skeleton(parents, x, y, z, window = 5, threads = NULL)
 round down to the odd value below, since the window is symmetric. \code{0} and \code{1} are
 no-ops.}
 
+\item{values}{Optional numeric vector or \verb{(N, K)} matrix: a per-node field to smooth
+\emph{instead of} the coordinates.}
+
 \item{threads}{Optional integer; number of threads. \code{NULL} uses all cores.}
 }
 \value{
-List with \code{x}, \code{y} and \code{z}: the new coordinates, in the input's node order.
+With \code{values = NULL}, a list with \code{x}, \code{y} and \code{z}: the new coordinates, in the
+input's node order. With \code{values} given, the new values in the shape they came in —
+a numeric vector for a vector, an \verb{(N, K)} matrix for a matrix.
 }
 \description{
 Takes the tracing jitter out of a skeleton without touching its topology or its node
@@ -26,4 +31,10 @@ count: every node keeps its identity and its parent, and only its coordinates mo
 Roots, branch points and leafs are pinned — a branch point that drifted would drag
 three neurites apart — so this is safe to run before measuring angles, tortuosity or
 tangent vectors, all of which a raw traced skeleton overstates.
+}
+\details{
+Pass \code{values} to smooth some other per-node field instead — a width, say. The window is
+a count of \emph{nodes}, so nothing here reads a geometric meaning into what it is handed and
+a width smooths by the same code as an \code{x}; \code{x}, \code{y} and \code{z} are then only checked for
+length, not read.
 }

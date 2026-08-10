@@ -434,6 +434,75 @@ def test_gaussian_is_monotone_in_sigma(real_topo):
     assert lengths[0] > lengths[1] > lengths[2]
 
 
+@pytest.mark.parametrize("method", list(SMOOTHERS))
+def test_smoothing_any_column_matches_smoothing_it_alone(real_topo, method):
+    """The navis `to_smooth` case: a radius smooths the same way an `x` does, columns are
+    independent, and stacking them is exactly equivalent to one call per column."""
+    topo = real_topo
+    xyz = topo.coords
+    ids, parents = topo.node_ids, topo.parent_ids
+    # A field with nothing geometric about it, so that a kernel measured over the values
+    # rather than the geometry would give a different answer.
+    radius = np.abs(np.sin(np.arange(len(ids)) * 0.7)) * 100 + 1
+
+    stacked = np.column_stack([xyz, radius])
+    if method == "moving_average":
+        both = fastcore.smooth_skeleton(ids, parents, stacked, window=5)
+        alone = fastcore.smooth_skeleton(ids, parents, radius, window=5)
+        just_xyz = fastcore.smooth_skeleton(ids, parents, xyz, window=5)
+    else:
+        both = fastcore.smooth_skeleton_gaussian(
+            ids, parents, xyz, sigma=500.0, values=stacked
+        )
+        alone = fastcore.smooth_skeleton_gaussian(
+            ids, parents, xyz, sigma=500.0, values=radius
+        )
+        just_xyz = fastcore.smooth_skeleton_gaussian(ids, parents, xyz, sigma=500.0)
+
+    assert both.shape == (len(ids), 4)
+    assert alone.shape == (len(ids),)  # a (N, ) field in, a (N, ) field out
+    np.testing.assert_array_equal(both[:, 3], alone)
+    np.testing.assert_array_equal(both[:, :3], just_xyz)
+
+    # It did something, and it left the pinned nodes alone.
+    assert not np.array_equal(alone, radius)
+    pinned = fastcore.simplify_skeleton(ids, parents)[0]
+    index = {int(n): i for i, n in enumerate(np.asarray(ids).tolist())}
+    rows = [index[int(n)] for n in np.asarray(pinned).tolist()]
+    np.testing.assert_array_equal(alone[rows], radius[rows])
+
+
+def test_gaussian_values_defaults_to_the_coordinates(real_topo):
+    """Passing the coordinates as `values` must reproduce the no-`values` call bit for
+    bit: `values` changes what is smoothed, never what the kernel is measured over."""
+    topo = real_topo
+    xyz = topo.coords
+    ids, parents = topo.node_ids, topo.parent_ids
+    np.testing.assert_array_equal(
+        fastcore.smooth_skeleton_gaussian(ids, parents, xyz, 500.0),
+        fastcore.smooth_skeleton_gaussian(ids, parents, xyz, 500.0, values=xyz),
+    )
+
+
+def test_gaussian_kernel_follows_the_geometry_not_the_field(real_topo):
+    """The reason `coords` and `values` are separate arguments: the same field over a
+    ten-times-coarser geometry carries the same sigma over ten times fewer nodes, so it
+    smooths less. A kernel measured over the field would not notice the difference."""
+    topo = real_topo
+    ids, parents = topo.node_ids, topo.parent_ids
+    xyz = topo.coords
+    radius = np.abs(np.sin(np.arange(len(ids)) * 0.7)) * 100 + 1
+
+    tight = fastcore.smooth_skeleton_gaussian(
+        ids, parents, xyz, 500.0, values=radius
+    )
+    spread = fastcore.smooth_skeleton_gaussian(
+        ids, parents, xyz * 10, 500.0, values=radius
+    )
+    # Residual roughness, measured against the input.
+    assert np.abs(tight - radius).sum() > np.abs(spread - radius).sum()
+
+
 def test_smoothing_rejects_bad_parameters():
     ids, parents = np.arange(3), np.array([-1, 0, 1])
     xyz = np.zeros((3, 3))
@@ -452,7 +521,6 @@ def test_smoothing_rejects_bad_parameters():
         lambda ids, parents, xyz: fastcore.simplify_rdp(ids, parents, xyz, 1.0),
         lambda ids, parents, xyz: fastcore.simplify_vw(ids, parents, xyz, 1.0),
         lambda ids, parents, xyz: fastcore.resample_skeleton(ids, parents, xyz, 1.0),
-        lambda ids, parents, xyz: fastcore.smooth_skeleton(ids, parents, xyz),
         lambda ids, parents, xyz: fastcore.smooth_skeleton_gaussian(
             ids, parents, xyz, 1.0
         ),
@@ -464,6 +532,32 @@ def test_coords_are_validated(call):
         call(ids, parents, np.zeros((3, 2)))  # not 3D
     with pytest.raises(ValueError, match="coords"):
         call(ids, parents, np.zeros((2, 3)))  # wrong length
+
+
+def test_moving_average_takes_any_width():
+    """`smooth_skeleton` is the one method here whose array is *not* a coordinate array:
+    its window is a node count, so any number of columns is meaningful. It still owes the
+    one-row-per-node rule, and still has to reject a field with no columns at all."""
+    ids, parents = np.arange(3), np.array([-1, 0, 1])
+    for width in (1, 2, 3, 7):
+        out = fastcore.smooth_skeleton(ids, parents, np.zeros((3, width)))
+        assert out.shape == (3, width)
+
+    with pytest.raises(ValueError, match="coords"):
+        fastcore.smooth_skeleton(ids, parents, np.zeros((2, 3)))  # wrong length
+    with pytest.raises(ValueError, match="at least one column"):
+        fastcore.smooth_skeleton(ids, parents, np.zeros((3, 0)))
+
+
+def test_gaussian_values_are_validated():
+    ids, parents = np.arange(3), np.array([-1, 0, 1])
+    xyz = np.zeros((3, 3))
+    with pytest.raises(ValueError, match="values"):
+        fastcore.smooth_skeleton_gaussian(ids, parents, xyz, 1.0, values=np.zeros(2))
+    with pytest.raises(ValueError, match="at least one column"):
+        fastcore.smooth_skeleton_gaussian(
+            ids, parents, xyz, 1.0, values=np.zeros((3, 0))
+        )
 
 
 def test_threads_do_not_change_the_answer(real_topo):

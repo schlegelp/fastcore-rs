@@ -16,7 +16,7 @@ They come in three families:
 |---|---|---|---|
 | [`downsample_skeleton`](#navis_fastcore.downsample_skeleton), [`simplify_rdp`](#navis_fastcore.simplify_rdp), [`simplify_vw`](#navis_fastcore.simplify_vw) | falls | a subset of the originals | unchanged |
 | [`resample_skeleton`](#navis_fastcore.resample_skeleton) | either way | new ones for the new nodes | interpolated |
-| [`smooth_skeleton`](#navis_fastcore.smooth_skeleton), [`smooth_skeleton_gaussian`](#navis_fastcore.smooth_skeleton_gaussian) | unchanged | unchanged | moved |
+| [`smooth_skeleton`](#navis_fastcore.smooth_skeleton), [`smooth_skeleton_gaussian`](#navis_fastcore.smooth_skeleton_gaussian) | unchanged | unchanged | moved (or any other column) |
 
 ## Taking your data with you
 
@@ -40,9 +40,9 @@ It is *total*: every input node names exactly one output node — the nearest on
 the neurite, ties going towards the root — so there is no sentinel to mask off. Nodes
 that survive map to themselves.
 
-The two smoothers have no `node_map` and need none: they move coordinates and nothing
-else, so anything attached to a node is still attached to it afterwards. The one thing
-that does go stale is a *copy* of a node's position taken beforehand.
+The two smoothers have no `node_map` and need none: they rewrite per-node values and
+nothing else, so anything attached to a node is still attached to it afterwards. The one
+thing that does go stale is a *copy* of a node's position taken beforehand.
 
 ## Dropping nodes
 
@@ -130,8 +130,8 @@ two output nodes has no output row of its own, so `source`/`alpha` does not inve
 
 ## Smoothing
 
-The two smoothers move coordinates and nothing else — every node keeps its ID and
-its parent. Roots, branch points and leafs are pinned, since a branch point that
+The two smoothers rewrite per-node values and nothing else — every node keeps its ID
+and its parent. Roots, branch points and leafs are pinned, since a branch point that
 drifted would drag three neurites apart, so this is safe to run before measuring
 angles, tortuosity or tangent vectors, all of which a raw traced skeleton
 overstates.
@@ -147,6 +147,45 @@ when the skeleton is resampled.
     Not between the points. Node spacing in a traced skeleton varies by an order of
     magnitude, and a kernel over straight-line distance would let the far arm of a
     hairpin pull on the near one.
+
+### Smoothing something other than the coordinates
+
+Neither smoother reads a geometric meaning into the columns it averages, so a radius,
+a confidence or any other numeric per-node field smooths by the same code as an `x`.
+Columns are independent, which makes stacking them exactly equivalent to — and one
+pass cheaper than — a call each:
+
+```python
+# The window is a node count, so the field is the only array involved.
+xyzr = fastcore.smooth_skeleton(
+    node_ids, parent_ids, np.column_stack([coords, radius]), window=5
+)
+
+# The kernel is a distance, so the geometry stays a separate argument.
+xyzr = fastcore.smooth_skeleton_gaussian(
+    node_ids, parent_ids, coords, sigma=2000,
+    values=np.column_stack([coords, radius]),
+)
+```
+
+That asymmetry is the one thing to keep straight. `smooth_skeleton` has a single array
+because there is nothing for it to measure; `smooth_skeleton_gaussian` weighs its
+neighbours by distance *along the neurite*, so handing it a radius column as though it
+were geometry would make "distance" the cumulative absolute change in radius. That is
+not an error anything downstream could catch — it is a plausible-looking number and a
+meaningless kernel — so `coords` and `values` stay separate. A `(N, )` field comes back
+as `(N, )` from either.
+
+!!! note "Compared with `navis.smooth_skeleton`"
+
+    This covers the same ground as navis' `to_smooth` parameter, but the two do not
+    agree numerically and are not meant to. navis smooths with a *trailing*
+    `rolling(window, min_periods=1).mean()`, which lags the result half a window
+    towards each segment's distal end, and it lets branch points move — they are the
+    last row of each segment, so they take a full one-sided mean, which the parent
+    segment then reads back. Here the window is centred, shrinks symmetrically at
+    segment ends, and segment endpoints do not move at all. Both smoothers have always
+    differed from navis this way; smoothing arbitrary columns does not change it.
 
 ::: navis_fastcore.smooth_skeleton
 

@@ -24,9 +24,14 @@
 //! It is total in both cases: every input node names exactly one output node, the nearest
 //! along the neurite, with ties going proximal.
 //!
-//! The two smoothers need no such map and do not have one. They move coordinates only —
-//! every node keeps its ID and its parent — so anything attached to a node is still attached
-//! to it afterwards. Only a *copy* of a node's position taken beforehand goes stale.
+//! The two smoothers need no such map and do not have one. They rewrite per-node values only
+//! — every node keeps its ID and its parent — so anything attached to a node is still
+//! attached to it afterwards. Only a *copy* of a node's position taken beforehand goes stale.
+//!
+//! Those values need not be the coordinates. [`smooth_skeleton`] takes an `(N, K)` field and
+//! averages whatever columns it is handed, the window being a node count; the Gaussian's
+//! kernel is a distance, so it keeps the geometry as a separate argument from the field it
+//! smooths. Either way a radius is smoothed by the same code as an x.
 //!
 //! # The segment model
 //!
@@ -168,13 +173,22 @@ fn arc_lengths(pts: &[f64], d: usize) -> Vec<f64> {
 
 // --------------------------------------------------------------------------- plumbing
 
-/// Check that `coords` describes the same nodes as `parents`, and return its dimensionality.
-fn check_coords(parents: &ArrayView1<i32>, coords: &ArrayView2<f64>) -> usize {
+/// Check that a per-node array describes the same nodes as `parents`, and return its width.
+///
+/// `name` because this guards two different arguments in [`smooth_skeleton_gaussian`] — the
+/// geometry the kernel is measured over and the separate field being smoothed — and a
+/// message naming the wrong one of those is worse than no message at all.
+///
+/// The zero-column case is rejected rather than left to divide by zero in `pts.len() / d` a
+/// few frames down. It is reachable now that a caller chooses the columns: an empty
+/// `to_smooth` list is a plausible thing for a wrapper to compute and pass straight through.
+fn check_coords(parents: &ArrayView1<i32>, coords: &ArrayView2<f64>, name: &str) -> usize {
     assert_eq!(
         coords.nrows(),
         parents.len(),
-        "`coords` must have one row per node"
+        "`{name}` must have one row per node"
     );
+    assert!(coords.ncols() > 0, "`{name}` must have at least one column");
     coords.ncols()
 }
 
@@ -330,7 +344,7 @@ pub fn simplify_rdp<T>(
 where
     T: Float + AddAssign,
 {
-    let d = check_coords(parents, coords);
+    let d = check_coords(parents, coords, "coords");
     check_scale("epsilon", epsilon);
     let epsilon_sq = epsilon * epsilon;
 
@@ -415,7 +429,7 @@ pub fn simplify_vw<T>(
 where
     T: Float + AddAssign,
 {
-    let d = check_coords(parents, coords);
+    let d = check_coords(parents, coords, "coords");
     check_scale("min_area", min_area);
 
     drop_with(parents, weights, preserve, threads, |seg| {
@@ -586,7 +600,7 @@ pub fn resample_skeleton(
 ) -> Resampled {
     check_scale("spacing", spacing);
     assert!(spacing > 0.0, "`spacing` must be positive");
-    let d = check_coords(parents, coords);
+    let d = check_coords(parents, coords, "coords");
     let (segments, keep) = (break_segments(parents), topology_nodes(parents));
 
     // Carried-over nodes come first, in input order, and `position` maps an input node to
@@ -791,28 +805,45 @@ fn resample_segment(
 /// The window shrinks symmetrically as it approaches a segment's ends, which keeps the
 /// smoothed path centred on the original rather than letting it shrink towards the middle.
 ///
+/// # Any per-node field, not just coordinates
+///
+/// `values` is `(N, K)` for any `K >= 1`, and nothing here reads a geometric meaning into
+/// those columns: the window is a count of *nodes*, so this is a moving average of whatever
+/// it is handed. Pass the three coordinate columns, or a radius, or both at once — three
+/// coordinates and a radius as `(N, 4)` is one call and one pass over the segments.
+///
+/// Hence the name: this argument is the field, where [`smooth_skeleton_gaussian`]'s `coords`
+/// is geometry it measures over and never smooths. The two have the same type, so mixing
+/// them up would compile and quietly return a plausible number.
+///
+/// [`smooth_skeleton_gaussian`] is the one that cannot be so relaxed, because its kernel is
+/// a distance along the neurite and so needs the geometry told apart from the field; see its
+/// `values` argument.
+///
 /// Arguments:
 ///
 /// - `parents`: array of parent indices (roots are negative)
-/// - `coords`: `(N, D)` array of node coordinates, one row per node
+/// - `values`: `(N, K)` array of per-node values to smooth, one row per node
 /// - `window`: nodes in the window, counting the node itself. Even values round down to
 ///   the odd value below, since the window is symmetric. `0` and `1` are no-ops.
 /// - `threads`: cap on the rayon worker count for this call; `None` uses the global pool
 ///
 /// Returns:
 ///
-/// An `(N, D)` array of new coordinates, in the input's node order. Nodes that belong to
-/// no segment -- an isolated root -- are copied through.
+/// An `(N, K)` array of new values, in the input's node order and column order. Nodes that
+/// belong to no segment -- an isolated root -- are copied through.
 pub fn smooth_skeleton(
     parents: &ArrayView1<i32>,
-    coords: &ArrayView2<f64>,
+    values: &ArrayView2<f64>,
     window: usize,
     threads: Option<usize>,
 ) -> Array2<f64> {
-    let d = check_coords(parents, coords);
+    let d = check_coords(parents, values, "values");
     let half = window / 2;
 
-    smooth_with(parents, coords, d, threads, |pts, out| {
+    // No geometry: see `smooth_with`'s `geom`. The window is a node count, so there is
+    // nothing for this kernel to measure and the field is all it is given.
+    smooth_with(parents, None, values, threads, |_geom, pts, out| {
         let n = pts.len() / d;
         if half == 0 {
             out.extend_from_slice(&pts[d..(n - 1) * d]);
@@ -853,22 +884,48 @@ pub fn smooth_skeleton(
 /// from a leaf is smoothed against a symmetric neighbourhood rather than being dragged
 /// inwards by a one-sided one.
 ///
+/// # Smoothing something other than the coordinates
+///
+/// `values` is an optional `(N, K)` field to smooth *instead of* `coords` — a radius, say —
+/// while the kernel goes on being measured over `coords`. The two cannot be collapsed into
+/// one argument the way [`smooth_skeleton`]'s can: this kernel's weights come from distance
+/// along the neurite, and handing it a radius column as though it were geometry would make
+/// "distance" the cumulative absolute change in radius. That is not an error anything could
+/// catch downstream — it is a plausible-looking number and a meaningless kernel — so the
+/// geometry stays a separate argument.
+///
+/// To smooth the coordinates *and* another column in one pass, put both in `values`
+/// (`(N, 4)` for xyz and a radius). The kernel is then still measured over the untouched
+/// input geometry in `coords`, which is what it would have been anyway: `arc_lengths` is
+/// computed once, before anything moves.
+///
+/// The endpoint reflection generalises unchanged. `2 * about - p` is an odd extension of
+/// whatever field it is applied to, which is exactly the property being relied on — a field
+/// that ramps linearly into an endpoint is reproduced by its mirror, so the ramp is not
+/// flattened and the endpoint is not dragged. Note that the virtual samples it produces need
+/// not lie in the field's natural range (a mirrored radius can be negative); they are
+/// summands in a weighted mean, not outputs.
+///
 /// Arguments:
 ///
 /// - `parents`: array of parent indices (roots are negative)
-/// - `coords`: `(N, D)` array of node coordinates, one row per node
+/// - `coords`: `(N, D)` array of node coordinates, one row per node. Read only to measure
+///   distance along each neurite
+/// - `values`: optional `(N, K)` field to smooth in place of `coords`
 /// - `sigma`: kernel width, as a distance along the neurite
 /// - `truncate`: how many `sigma` out to keep summing; 4 covers all but 1e-4 of the mass
 /// - `threads`: cap on the rayon worker count for this call; `None` uses the global pool
 ///
 /// Returns:
 ///
-/// An `(N, D)` array of new coordinates, in the input's node order.
+/// An `(N, K)` array of new values -- `(N, D)` coordinates when `values` is `None` -- in the
+/// input's node order and column order.
 ///
 /// Panics if `sigma` is not positive or `truncate` is negative.
 pub fn smooth_skeleton_gaussian(
     parents: &ArrayView1<i32>,
     coords: &ArrayView2<f64>,
+    values: Option<&ArrayView2<f64>>,
     sigma: f64,
     truncate: f64,
     threads: Option<usize>,
@@ -876,34 +933,35 @@ pub fn smooth_skeleton_gaussian(
     check_scale("sigma", sigma);
     assert!(sigma > 0.0, "`sigma` must be positive");
     check_scale("truncate", truncate);
-    let d = check_coords(parents, coords);
+    let d = check_coords(parents, coords, "coords");
+    let k = values.map_or(d, |v| check_coords(parents, v, "values"));
 
     let cutoff = truncate * sigma;
     let denom = 2.0 * sigma * sigma;
     let weigh = |dist: f64| (-dist * dist / denom).exp();
 
-    smooth_with(parents, coords, d, threads, |pts, out| {
-        let n = pts.len() / d;
-        let arc = arc_lengths(pts, d);
+    let kernel = |geom: &[f64], pts: &[f64], out: &mut Vec<f64>| {
+        let n = pts.len() / k;
+        let arc = arc_lengths(geom, d);
 
         // One scratch accumulator for the whole segment rather than one per node: the
         // inner loop is a handful of multiply-adds, so a heap allocation per node would
         // cost several times the arithmetic it carries.
-        let mut acc = vec![0.0; d];
+        let mut acc = vec![0.0; k];
 
         for pos in 1..n - 1 {
-            acc.copy_from_slice(point(pts, d, pos));
+            acc.copy_from_slice(point(pts, k, pos));
             let mut total = 1.0; // the node itself, at distance 0
 
             // Proximal, then -- if we ran out of neurite before running out of kernel --
             // its mirror image beyond the endpoint. The mirror is folded into the
-            // accumulator rather than materialised: `2 * about - p` is the same three
+            // accumulator rather than materialised: `2 * about - p` is the same handful of
             // subtractions whether or not it passes through a `Vec` on the way.
             let mut q = pos + 1;
             while q < n && arc[q] - arc[pos] <= cutoff {
-                let (w, p) = (weigh(arc[q] - arc[pos]), point(pts, d, q));
-                for k in 0..d {
-                    acc[k] += p[k] * w;
+                let (w, p) = (weigh(arc[q] - arc[pos]), point(pts, k, q));
+                for c in 0..k {
+                    acc[c] += p[c] * w;
                 }
                 total += w;
                 q += 1;
@@ -915,9 +973,9 @@ pub fn smooth_skeleton_gaussian(
                         break;
                     }
                     let w = weigh(dist);
-                    let (about, p) = (point(pts, d, n - 1), point(pts, d, n - 1 - j));
-                    for k in 0..d {
-                        acc[k] += (2.0 * about[k] - p[k]) * w;
+                    let (about, p) = (point(pts, k, n - 1), point(pts, k, n - 1 - j));
+                    for c in 0..k {
+                        acc[c] += (2.0 * about[c] - p[c]) * w;
                     }
                     total += w;
                 }
@@ -927,9 +985,9 @@ pub fn smooth_skeleton_gaussian(
             let mut q = pos;
             while q > 0 && arc[pos] - arc[q - 1] <= cutoff {
                 q -= 1;
-                let (w, p) = (weigh(arc[pos] - arc[q]), point(pts, d, q));
-                for k in 0..d {
-                    acc[k] += p[k] * w;
+                let (w, p) = (weigh(arc[pos] - arc[q]), point(pts, k, q));
+                for c in 0..k {
+                    acc[c] += p[c] * w;
                 }
                 total += w;
             }
@@ -940,9 +998,9 @@ pub fn smooth_skeleton_gaussian(
                         break;
                     }
                     let w = weigh(dist);
-                    let (about, p) = (point(pts, d, 0), point(pts, d, j));
-                    for k in 0..d {
-                        acc[k] += (2.0 * about[k] - p[k]) * w;
+                    let (about, p) = (point(pts, k, 0), point(pts, k, j));
+                    for c in 0..k {
+                        acc[c] += (2.0 * about[c] - p[c]) * w;
                     }
                     total += w;
                 }
@@ -950,15 +1008,33 @@ pub fn smooth_skeleton_gaussian(
 
             out.extend(acc.iter().map(|v| v / total));
         }
-    })
+    };
+
+    // Two calls rather than one over a `values.unwrap_or(coords)`: `ArrayView2` is invariant
+    // in its lifetime, so unifying the two arguments into one binding would force them to
+    // *share* a lifetime, and that constraint would then be part of this function's public
+    // signature for no reason a caller could see. Branching keeps the two views independent,
+    // and costs nothing -- the arms are exclusive, so `kernel` moves into whichever one runs.
+    // `None` is the no-separate-geometry case `smooth_with` describes.
+    match values {
+        Some(values) => smooth_with(parents, Some(coords), values, threads, kernel),
+        None => smooth_with(parents, None, coords, threads, kernel),
+    }
 }
 
 /// Run a per-segment smoothing kernel and assemble the result.
 ///
-/// The shared frame of both smoothers. Each kernel is handed one segment's coordinates as
-/// a flat `n * d` buffer and appends the new positions of its *interior* nodes -- also
-/// flat, also in segment order, so `(n - 2) * d` values. Endpoints are not the kernel's to
-/// move, so they are not its to report.
+/// The shared frame of both smoothers. Each kernel is handed one segment's geometry and its
+/// field as flat `n * d` and `n * k` buffers, and appends the new values of the segment's
+/// *interior* nodes -- also flat, also in segment order, so `(n - 2) * k` values. Endpoints
+/// are not the kernel's to move, so they are not its to report.
+///
+/// `geom` is `None` when the field is its own geometry, and then the kernel gets the field
+/// buffer for both. That covers the two cases that are not "smooth a radius over the
+/// coordinates": the moving average, which has no geometry at all because its window is a
+/// node count, and the Gaussian smoothing the coordinates themselves. Both then gather one
+/// buffer per segment rather than two, which is what keeps those paths at the cost they had
+/// before there was a second array to gather.
 ///
 /// Flat buffers rather than a point per node because that is the difference between two
 /// allocations per segment and one per node; at a million nodes the latter costs several
@@ -969,15 +1045,16 @@ pub fn smooth_skeleton_gaussian(
 /// touches them -- so the write-back cannot collide however the segments were scheduled.
 fn smooth_with<F>(
     parents: &ArrayView1<i32>,
-    coords: &ArrayView2<f64>,
-    d: usize,
+    geom: Option<&ArrayView2<f64>>,
+    field: &ArrayView2<f64>,
     threads: Option<usize>,
     kernel: F,
 ) -> Array2<f64>
 where
-    F: Fn(&[f64], &mut Vec<f64>) + Sync + Send,
+    F: Fn(&[f64], &[f64], &mut Vec<f64>) + Sync + Send,
 {
     let segments = break_segments(parents);
+    let k = field.ncols();
 
     let moved: Vec<Vec<f64>> = with_pool(threads, || {
         segments
@@ -986,20 +1063,23 @@ where
                 if seg.len() <= 2 {
                     return Vec::new(); // endpoints only; nothing to move
                 }
-                let pts = gather(coords, seg, d);
-                let mut out = Vec::with_capacity((seg.len() - 2) * d);
-                kernel(&pts, &mut out);
+                let pts = gather(field, seg, k);
+                let geom_pts = geom.map(|g| gather(g, seg, g.ncols()));
+                let mut out = Vec::with_capacity((seg.len() - 2) * k);
+                kernel(geom_pts.as_deref().unwrap_or(&pts), &pts, &mut out);
                 out
             })
             .collect()
     });
 
-    let mut out = coords.to_owned();
+    // The field, not the geometry: what comes back has the field's columns, and the nodes no
+    // segment interior covered keep the values they came in with.
+    let mut out = field.to_owned();
     for (seg, positions) in segments.iter().zip(moved.iter()) {
         for (i, &node) in seg.iter().enumerate().take(seg.len() - 1).skip(1) {
-            let row = &positions[(i - 1) * d..i * d];
-            for k in 0..d {
-                out[[node as usize, k]] = row[k];
+            let row = &positions[(i - 1) * k..i * k];
+            for c in 0..k {
+                out[[node as usize, c]] = row[c];
             }
         }
     }
@@ -1158,7 +1238,7 @@ mod tests {
                 resample_skeleton(&p, &c, f64::NAN, None);
             }),
             std::panic::catch_unwind(|| {
-                smooth_skeleton_gaussian(&p, &c, f64::NAN, 4.0, None);
+                smooth_skeleton_gaussian(&p, &c, None, f64::NAN, 4.0, None);
             }),
         ];
 
@@ -1422,7 +1502,7 @@ mod tests {
 
         for out in [
             smooth_skeleton(&parents.view(), &coords.view(), 5, None),
-            smooth_skeleton_gaussian(&parents.view(), &coords.view(), 3.0, 4.0, None),
+            smooth_skeleton_gaussian(&parents.view(), &coords.view(), None, 3.0, 4.0, None),
         ] {
             for i in 2..n - 2 {
                 assert!(out[[i, 1]].abs() < 0.5, "node {i} at {}", out[[i, 1]]);
@@ -1444,7 +1524,7 @@ mod tests {
         let coords = Array2::from_shape_fn((7, 3), |(i, k)| ((i * 3 + k) % 5) as f64);
         for out in [
             smooth_skeleton(&parents.view(), &coords.view(), 5, None),
-            smooth_skeleton_gaussian(&parents.view(), &coords.view(), 2.0, 4.0, None),
+            smooth_skeleton_gaussian(&parents.view(), &coords.view(), None, 2.0, 4.0, None),
         ] {
             // Root 0, branch 1, leafs 3 and 6.
             for node in [0usize, 1, 3, 6] {
@@ -1461,7 +1541,7 @@ mod tests {
     #[test]
     fn gaussian_leaves_a_straight_line_alone() {
         let (parents, coords) = chain(30);
-        let out = smooth_skeleton_gaussian(&parents.view(), &coords.view(), 4.0, 4.0, None);
+        let out = smooth_skeleton_gaussian(&parents.view(), &coords.view(), None, 4.0, 4.0, None);
         for i in 0..30 {
             assert!(
                 (out[[i, 0]] - coords[[i, 0]]).abs() < 1e-9,
@@ -1475,7 +1555,168 @@ mod tests {
     #[should_panic(expected = "`sigma` must be positive")]
     fn gaussian_rejects_zero_sigma() {
         let (parents, coords) = chain(5);
-        smooth_skeleton_gaussian(&parents.view(), &coords.view(), 0.0, 4.0, None);
+        smooth_skeleton_gaussian(&parents.view(), &coords.view(), None, 0.0, 4.0, None);
+    }
+
+    /// Both smoothers treat their columns independently, so smoothing a `(N, K)` field in one
+    /// call must equal smoothing each column on its own. That is the whole basis of handing
+    /// them a radius alongside the coordinates, and it is the property a stray shared
+    /// accumulator or a `k`/`d` mix-up would break.
+    #[test]
+    fn columns_are_independent() {
+        let n = 25;
+        let (parents, coords) = chain(n);
+        // Four columns of unrelated shapes: a straight ramp, a zig-zag, a step and a
+        // constant. Nothing here is geometry -- that is the point.
+        let field = Array2::from_shape_fn((n, 4), |(i, c)| match c {
+            0 => i as f64,
+            1 => {
+                if i % 2 == 0 {
+                    3.0
+                } else {
+                    -3.0
+                }
+            }
+            2 => {
+                if i < n / 2 {
+                    0.0
+                } else {
+                    10.0
+                }
+            }
+            _ => 7.0,
+        });
+
+        let together = smooth_skeleton(&parents.view(), &field.view(), 5, None);
+        let together_g = smooth_skeleton_gaussian(
+            &parents.view(),
+            &coords.view(),
+            Some(&field.view()),
+            3.0,
+            4.0,
+            None,
+        );
+        for c in 0..4 {
+            let one = field.column(c).to_owned().insert_axis(ndarray::Axis(1));
+            let alone = smooth_skeleton(&parents.view(), &one.view(), 5, None);
+            let alone_g = smooth_skeleton_gaussian(
+                &parents.view(),
+                &coords.view(),
+                Some(&one.view()),
+                3.0,
+                4.0,
+                None,
+            );
+            for i in 0..n {
+                assert_eq!(together[[i, c]], alone[[i, 0]], "moving average, col {c}");
+                assert_eq!(together_g[[i, c]], alone_g[[i, 0]], "gaussian, col {c}");
+            }
+        }
+
+        // A constant field is a fixed point of a weighted mean, including through the endpoint
+        // reflection, where `2 * v - v == v`. Exactly so for the moving average, whose weights
+        // are all 1; to within rounding for the Gaussian, which divides a sum of `w * 7` by a
+        // separately accumulated sum of `w`.
+        for i in 0..n {
+            assert_eq!(together[[i, 3]], 7.0, "constant column moved at node {i}");
+            assert!(
+                (together_g[[i, 3]] - 7.0).abs() < 1e-12,
+                "constant column moved to {} at node {i}",
+                together_g[[i, 3]]
+            );
+        }
+    }
+
+    /// `values` changes what is smoothed, not what the Gaussian kernel is measured over. So
+    /// passing the coordinates *as* `values` has to reproduce the no-`values` call exactly --
+    /// bit-for-bit, since it is the same arithmetic in the same order -- even though one path
+    /// gathers a second buffer per segment and the other does not.
+    #[test]
+    fn gaussian_values_defaults_to_the_coordinates() {
+        let n = 40;
+        let (parents, mut coords) = chain(n);
+        for i in 0..n {
+            coords[[i, 1]] = if i % 3 == 0 { 1.5 } else { -0.5 };
+            coords[[i, 2]] = (i % 7) as f64;
+        }
+        let implicit =
+            smooth_skeleton_gaussian(&parents.view(), &coords.view(), None, 3.0, 4.0, None);
+        let explicit = smooth_skeleton_gaussian(
+            &parents.view(),
+            &coords.view(),
+            Some(&coords.view()),
+            3.0,
+            4.0,
+            None,
+        );
+        assert_eq!(implicit, explicit);
+    }
+
+    /// The kernel is a distance along the *geometry*, so the same field over two different
+    /// geometries must smooth differently -- this is the mistake the separate argument exists
+    /// to prevent. A neurite whose nodes are ten times further apart carries the same sigma
+    /// ten times fewer nodes, so it smooths less.
+    #[test]
+    fn gaussian_measures_over_the_geometry_not_the_field() {
+        let n = 21;
+        let (parents, tight) = chain(n);
+        let spread =
+            Array2::from_shape_fn((n, 3), |(i, k)| if k == 0 { 10.0 * i as f64 } else { 0.0 });
+        let field = Array2::from_shape_fn((n, 1), |(i, _)| if i % 2 == 0 { 1.0 } else { -1.0 });
+
+        let a = smooth_skeleton_gaussian(
+            &parents.view(),
+            &tight.view(),
+            Some(&field.view()),
+            3.0,
+            4.0,
+            None,
+        );
+        let b = smooth_skeleton_gaussian(
+            &parents.view(),
+            &spread.view(),
+            Some(&field.view()),
+            3.0,
+            4.0,
+            None,
+        );
+
+        let residual = |out: &Array2<f64>| (1..n - 1).map(|i| out[[i, 0]].abs()).sum::<f64>();
+        assert!(
+            residual(&a) < 0.5 * residual(&b),
+            "tight {} vs spread {}",
+            residual(&a),
+            residual(&b)
+        );
+    }
+
+    /// `values` is per-node like everything else here, and a mismatch has to name `values`
+    /// rather than `coords` -- the two are different arguments now and a caller cannot tell
+    /// which one it got wrong from a message that says the other.
+    #[test]
+    #[should_panic(expected = "`values` must have one row per node")]
+    fn gaussian_rejects_a_short_values_array() {
+        let (parents, coords) = chain(5);
+        let short = Array2::<f64>::zeros((4, 1));
+        smooth_skeleton_gaussian(
+            &parents.view(),
+            &coords.view(),
+            Some(&short.view()),
+            1.0,
+            4.0,
+            None,
+        );
+    }
+
+    /// A zero-column field would divide by zero deriving `n` from the buffer length. The
+    /// message names `values`, this function's own argument, rather than the `coords` the
+    /// other four callers of `check_coords` pass -- which is what the `name` parameter buys.
+    #[test]
+    #[should_panic(expected = "`values` must have at least one column")]
+    fn smoothing_rejects_a_field_with_no_columns() {
+        let (parents, _) = chain(5);
+        let empty = Array2::<f64>::zeros((5, 0));
+        smooth_skeleton(&parents.view(), &empty.view(), 5, None);
     }
 
     // ------------------------------------------------------------------- degeneracies
@@ -1511,7 +1752,7 @@ mod tests {
 
             assert_eq!(smooth_skeleton(&p, &c, 5, None), coords);
             assert_eq!(
-                smooth_skeleton_gaussian(&p, &c, 1.0, 4.0, None),
+                smooth_skeleton_gaussian(&p, &c, None, 1.0, 4.0, None),
                 coords
             );
         }

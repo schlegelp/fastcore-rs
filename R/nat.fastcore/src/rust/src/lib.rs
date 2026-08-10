@@ -828,13 +828,22 @@ pub fn resample_skeleton(
 /// three neurites apart — so this is safe to run before measuring angles, tortuosity or
 /// tangent vectors, all of which a raw traced skeleton overstates.
 ///
+/// Pass `values` to smooth some other per-node field instead — a width, say. The window is
+/// a count of *nodes*, so nothing here reads a geometric meaning into what it is handed and
+/// a width smooths by the same code as an `x`; `x`, `y` and `z` are then only checked for
+/// length, not read.
+///
 /// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
 /// @param x,y,z Numeric vectors of node coordinates, one entry per node.
 /// @param window Integer; nodes in the window, counting the node itself. Even values
 ///   round down to the odd value below, since the window is symmetric. `0` and `1` are
 ///   no-ops.
+/// @param values Optional numeric vector or `(N, K)` matrix: a per-node field to smooth
+///   *instead of* the coordinates.
 /// @param threads Optional integer; number of threads. `NULL` uses all cores.
-/// @return List with `x`, `y` and `z`: the new coordinates, in the input's node order.
+/// @return With `values = NULL`, a list with `x`, `y` and `z`: the new coordinates, in the
+///   input's node order. With `values` given, the new values in the shape they came in —
+///   a numeric vector for a vector, an `(N, K)` matrix for a matrix.
 /// @export
 #[extendr]
 pub fn smooth_skeleton(
@@ -843,20 +852,41 @@ pub fn smooth_skeleton(
     y: Vec<f64>,
     z: Vec<f64>,
     #[default = "5"] window: i32,
+    #[default = "NULL"] values: Option<Robj>,
     #[default = "NULL"] threads: Option<i32>,
 ) -> Robj {
     // Guards the `as usize` below; a negative window would wrap past the core's check.
     assert!(window >= 0, "`window` must be non-negative");
-    let (parents, coords) = parents_and_coords(parents, &x, &y, &z);
+    let n = parents.len();
+    let field = robj_to_field(values, n);
+    let parents = Array1::from_vec(parents);
+    assert!(
+        x.len() == n && y.len() == n && z.len() == n,
+        "`x`, `y` and `z` must have one entry per node"
+    );
+
+    // The field *replaces* the coordinates rather than joining them; stack the coordinates
+    // into `values` to smooth both. So on that path `x`, `y` and `z` are checked for length
+    // and otherwise not read -- assembling an `(N, 3)` array the core would never look at is
+    // 3N writes and, on a million-node skeleton, a 24 MB allocation, either of which would
+    // outweigh smoothing the one column that was actually asked for.
+    let coords = field.is_none().then(|| xyz_to_coords(&x, &y, &z));
+    let input = match &field {
+        Some((field, _)) => field,
+        None => coords.as_ref().expect("built whenever there is no field"),
+    };
 
     let out = fastcore::downsample::smooth_skeleton(
         &parents.view(),
-        &coords.view(),
+        &input.view(),
         window as usize,
         threads.map(|t| t as usize),
     );
 
-    coords_to_list(&out)
+    match field {
+        Some((_, was_vector)) => field_to_robj(&out, was_vector),
+        None => coords_to_list(&out),
+    }
 }
 
 /// Smooth a skeleton with a Gaussian kernel along each neurite.
@@ -868,13 +898,26 @@ pub fn smooth_skeleton(
 /// otherwise let the far arm of a hairpin pull on the near one. Segment ends are pinned
 /// by reflecting the neurite about them.
 ///
+/// Pass `values` to smooth some other per-node field instead — a width, say. Unlike
+/// `smooth_skeleton()`, that field cannot simply replace `x`, `y` and `z`: this kernel's
+/// weights come from distance *along the neurite*, so it goes on measuring over the
+/// coordinates while smoothing `values`. Handing it a width as though it were geometry
+/// would make "distance" the cumulative absolute change in width — a plausible-looking
+/// number and a meaningless kernel — so the two stay separate arguments.
+///
 /// @param parents Integer vector of 0-based parent indices (roots are `< 0`).
-/// @param x,y,z Numeric vectors of node coordinates, one entry per node.
+/// @param x,y,z Numeric vectors of node coordinates, one entry per node. Read only to
+///   measure distance along each neurite when `values` is given.
 /// @param sigma Numeric; kernel width, as a distance along the neurite.
 /// @param truncate Numeric; how many `sigma` out to keep summing. 4 covers all but 1e-4
 ///   of the kernel's mass.
+/// @param values Optional numeric vector or `(N, K)` matrix: a per-node field to smooth
+///   *instead of* the coordinates. Stack the coordinates into it to smooth both in one
+///   pass — the kernel is measured over the untouched input geometry either way.
 /// @param threads Optional integer; number of threads. `NULL` uses all cores.
-/// @return List with `x`, `y` and `z`: the new coordinates, in the input's node order.
+/// @return With `values = NULL`, a list with `x`, `y` and `z`: the new coordinates, in the
+///   input's node order. With `values` given, the new values in the shape they came in —
+///   a numeric vector for a vector, an `(N, K)` matrix for a matrix.
 /// @export
 #[extendr]
 pub fn smooth_skeleton_gaussian(
@@ -884,19 +927,25 @@ pub fn smooth_skeleton_gaussian(
     z: Vec<f64>,
     sigma: f64,
     #[default = "4.0"] truncate: f64,
+    #[default = "NULL"] values: Option<Robj>,
     #[default = "NULL"] threads: Option<i32>,
 ) -> Robj {
     let (parents, coords) = parents_and_coords(parents, &x, &y, &z);
+    let field = robj_to_field(values, parents.len());
 
     let out = fastcore::downsample::smooth_skeleton_gaussian(
         &parents.view(),
         &coords.view(),
+        field.as_ref().map(|(v, _)| v.view()).as_ref(),
         sigma,
         truncate,
         threads.map(|t| t as usize),
     );
 
-    coords_to_list(&out)
+    match field {
+        Some((_, was_vector)) => field_to_robj(&out, was_vector),
+        None => coords_to_list(&out),
+    }
 }
 
 /// Split an `(N, 3)` coordinate array back into the `x`/`y`/`z` list R works in.
@@ -907,6 +956,73 @@ fn coords_to_list(coords: &Array2<f64>) -> Robj {
         z = coords.column(2).to_vec()
     )
     .into()
+}
+
+/// Read the smoothers' optional `values` into an `(N, K)` array, remembering whether it
+/// arrived as a bare vector.
+///
+/// A vector is promoted to one column and reported as such so that
+/// [`field_to_robj`] can hand a vector back — smoothing one width column should not return
+/// an `N x 1` matrix the caller has to `drop()`. Mirrors `_prep_values` on the Python side,
+/// down to rejecting a zero-column matrix rather than letting the core divide by zero.
+///
+/// Integer input is accepted as well as double, the way `robj_to_edges` and `robj_to_faces`
+/// do it: `is.numeric(1:5)` is `TRUE` in R, integer is R's canonical spelling for a label or
+/// a count, and this argument is advertised for exactly those. Rejecting it would also have
+/// left the same field type working through Python and failing through R.
+///
+/// The two asserts duplicate the core's `check_coords`, deliberately: on the
+/// `smooth_skeleton` path the field reaches the core through the same argument coordinates
+/// arrive by, so only this frame knows the caller spelled it `values`. Both messages are
+/// stderr-only, as `to_smooth_filter` explains — which is why this is the *only* gain on
+/// offer here, and why anything a caller must catch by type is validated in R instead.
+///
+/// `NULL` arrives as `Some(Robj::null())` rather than `None`, as `robj_to_coords` explains.
+fn robj_to_field(values: Option<Robj>, n_nodes: usize) -> Option<(Array2<f64>, bool)> {
+    let v = values.filter(|v| !v.is_null())?;
+
+    let (field, was_vector) = if let Ok(m) = <RMatrix<f64>>::try_from(v.clone()) {
+        (rmatrix_to_array2(&m), false)
+    } else if let Ok(m) = <RMatrix<i32>>::try_from(v.clone()) {
+        let (nr, nc) = (m.nrows(), m.ncols());
+        let d = m.data();
+        (
+            Array2::from_shape_fn((nr, nc), |(i, j)| d[j * nr + i] as f64),
+            false,
+        )
+    } else if let Some(d) = v.as_real_slice() {
+        // A vector is already the `(N, 1)` layout the core wants, so this is a memcpy
+        // rather than the transposing walk a matrix needs.
+        (
+            Array2::from_shape_vec((d.len(), 1), d.to_vec()).expect("n values, n rows of 1"),
+            true,
+        )
+    } else if let Some(d) = v.as_integer_slice() {
+        (
+            Array2::from_shape_vec((d.len(), 1), d.iter().map(|&i| i as f64).collect())
+                .expect("n values, n rows of 1"),
+            true,
+        )
+    } else {
+        panic!("`values` must be a numeric vector or matrix");
+    };
+
+    assert!(field.ncols() > 0, "`values` must have at least one column");
+    assert_eq!(
+        field.nrows(),
+        n_nodes,
+        "`values` must have one row per node"
+    );
+    Some((field, was_vector))
+}
+
+/// Hand a smoothed field back in the shape it arrived in.
+fn field_to_robj(field: &Array2<f64>, was_vector: bool) -> Robj {
+    if was_vector {
+        field.column(0).to_vec().into()
+    } else {
+        coords_to_rmatrix(field)
+    }
 }
 
 /// The skeleton's adjacency matrix, as the three arrays of a CSR matrix.
@@ -1387,9 +1503,12 @@ pub fn mesh_connected_components(faces: Robj, n_vertices: i32) -> Vec<i32> {
 fn robj_to_coords(vertices: Option<Robj>) -> Option<Array2<f64>> {
     let v = vertices.filter(|v| !v.is_null())?;
     let m = <RMatrix<f64>>::try_from(v).expect("`vertices` must be a numeric (V, 3) matrix");
-    let nr = m.nrows();
-    let d = m.data();
-    Some(Array2::from_shape_fn((nr, 3), |(i, j)| d[j * nr + i]))
+    assert!(
+        m.ncols() == 3,
+        "`vertices` must be a numeric (V, 3) matrix, got {} column(s)",
+        m.ncols()
+    );
+    Some(rmatrix_to_array2(&m))
 }
 
 /// Convert an R `(E, 2)` numeric/integer matrix of edges.
@@ -3414,16 +3533,26 @@ pub fn synblast(
 // CMTK transforms
 // ---------------------------------------------------------------------------
 
-/// An `(N, 3)` R matrix -> row-major coordinates. R matrices are column-major.
+/// Any R numeric matrix -> the row-major `Array2` the core works in. R matrices are
+/// column-major, hence the transposing index.
+///
+/// Materialising rather than viewing (`rmatrix_to_view` does the latter) because the core's
+/// per-node loops read a whole row at a time: paying one strided pass here buys contiguous
+/// reads in every hot loop downstream.
+fn rmatrix_to_array2(m: &RMatrix<f64>) -> Array2<f64> {
+    let (nr, nc) = (m.nrows(), m.ncols());
+    let d = m.data();
+    Array2::from_shape_fn((nr, nc), |(i, j)| d[j * nr + i])
+}
+
+/// An `(N, 3)` R matrix -> row-major coordinates.
 fn rmatrix_to_coords(m: &RMatrix<f64>, arg: &str) -> Array2<f64> {
     assert!(
         m.ncols() == 3,
         "`{arg}` must be an (N, 3) matrix of 3D coordinates, got {} column(s)",
         m.ncols()
     );
-    let nr = m.nrows();
-    let d = m.data();
-    Array2::from_shape_fn((nr, 3), |(i, j)| d[j * nr + i])
+    rmatrix_to_array2(m)
 }
 
 fn coords_to_rmatrix(arr: &Array2<f64>) -> Robj {

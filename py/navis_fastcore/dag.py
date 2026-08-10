@@ -1201,6 +1201,39 @@ def _prep_coords(coords, node_ids, name="coords"):
     return coords
 
 
+def _prep_values(values, node_ids, name="values"):
+    """Coerce an arbitrary per-node field to a contiguous float64 (N, K) array.
+
+    `_prep_coords` for the smoothers, which average whatever columns they are handed -
+    the three coordinates, a radius, a confidence, or several at once - and so cannot
+    use the `(N, 3)` rule that makes an array a *coordinate* array.
+
+    A `(N, )` column is promoted to `(N, 1)`; the caller un-promotes the result, so a
+    single field in gives a single field out rather than a gratuitous second axis.
+    Returns `(array, was_1d)` for that reason.
+
+    Zero columns is rejected here as well as in the core: an empty `to_smooth` list is
+    a plausible thing for a wrapper to compute, and "smooth nothing" is much more
+    likely a bug upstream than a request.
+    """
+    vals = np.asarray(values, dtype=np.float64)
+    was_1d = vals.ndim == 1
+    if was_1d:
+        vals = vals[:, None]
+    if vals.ndim != 2:
+        raise ValueError(
+            f"`{name}` must be an (N, ) or (N, K) array, got shape {np.shape(values)}"
+        )
+    if vals.shape[1] == 0:
+        raise ValueError(f"`{name}` must have at least one column")
+    if len(vals) != len(node_ids):
+        raise ValueError(
+            f"`{name}` must have one row per node: got {len(vals)} "
+            f"for {len(node_ids)} nodes"
+        )
+    return np.ascontiguousarray(vals), was_1d
+
+
 def _dropped_to_ids(node_ids, kept, new_parent_ix, new_weights, node_map_ix):
     """Map a `(kept, new_parents, new_weights, node_map)` tuple back into ID space.
 

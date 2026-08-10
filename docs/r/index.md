@@ -111,7 +111,8 @@ healed = heal_skeleton(parents, s$d$X, s$d$Y, s$d$Z, method="ALL",
   (Visvalingam-Whyatt)
 - `resample_skeleton`: place interpolated nodes at a fixed spacing along every neurite
 - `smooth_skeleton` / `smooth_skeleton_gaussian`: take the tracing jitter out of the
-  coordinates, with branch points pinned
+  coordinates - or, via `values`, out of a width or any other numeric column - with
+  branch points pinned
 - `adjacency`: the skeleton's adjacency matrix, as the three arrays of a CSR matrix
 - `longest_path` / `longest_paths`: the longest path to a root, and the `n` longest in turn
 - `betweenness`: betweenness centrality in `O(N)` rather than Brandes' `O(V*E)`

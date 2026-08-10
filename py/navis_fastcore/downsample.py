@@ -6,6 +6,7 @@ from .dag import (
     _ids_to_indices,
     _indices_to_ids_sentinel,
     _prep_coords,
+    _prep_values,
     _prep_weights,
     _sources_to_indices,
 )
@@ -475,8 +476,10 @@ def smooth_skeleton(node_ids, parent_ids, coords, window=5, threads=None):
     parent_ids : (N, ) array
                  Array of parent IDs for each node. Root nodes' parents
                  must be -1.
-    coords :     (N, 3) array
-                 Array of coordinates for each node.
+    coords :     (N, ) or (N, K) array
+                 The values to smooth, one row per node. Usually the coordinates,
+                 but any numeric per-node field works and several can go in one
+                 call - see the notes.
     window :     int
                  Nodes in the window, counting the node itself. Even values round
                  down to the odd value below, since the window is symmetric.
@@ -486,15 +489,32 @@ def smooth_skeleton(node_ids, parent_ids, coords, window=5, threads=None):
 
     Returns
     -------
-    coords :     (N, 3) float64 array
-                 New coordinates, in the same order as `node_ids`.
+    coords :     (N, ) or (N, K) float64 array
+                 New values, in the same order and shape as `coords`. A `(N, )`
+                 column comes back as `(N, )`.
 
     Notes
     -----
+    Nothing here reads a geometric meaning into the columns: the window is a count
+    of *nodes*, so this is a moving average of whatever it is handed. Radius,
+    confidence or any other numeric column smooths the same way as an `x`, and
+    columns are independent, so stacking them is exactly equivalent to - and one
+    pass cheaper than - smoothing each on its own:
+
+    ```python
+    xyzr = fastcore.smooth_skeleton(
+        node_ids, parent_ids, np.column_stack([coords, radius]), window=5
+    )
+    ```
+
+    [`navis_fastcore.smooth_skeleton_gaussian`][] is the one that cannot be handed a
+    bare field, because its kernel is a distance along the neurite and so needs the
+    geometry told apart from what is being smoothed; it takes a separate `values`.
+
     There is no ``node_map`` here, unlike the functions that drop or add nodes: this
-    changes coordinates only, so every node keeps its ID and its parent and anything
-    attached to a node is still attached to it afterwards. The one thing that does go
-    stale is a *copy* of a node's position taken beforehand.
+    changes per-node values only, so every node keeps its ID and its parent and
+    anything attached to a node is still attached to it afterwards. The one thing
+    that does go stale is a *copy* of a node's position taken beforehand.
 
     Examples
     --------
@@ -508,15 +528,23 @@ def smooth_skeleton(node_ids, parent_ids, coords, window=5, threads=None):
     >>> fastcore.smooth_skeleton(node_ids, parent_ids, coords, window=3)[:, 1]
     array([0.        , 0.        , 0.33333333, 0.        , 0.        ])
 
+    A single non-coordinate column, in and out as `(N, )`. The root and the leaf are
+    pinned; each node between them becomes the mean of itself and its two neighbours:
+
+    >>> radius = np.array([1.0, 5.0, 1.0, 5.0, 1.0])
+    >>> fastcore.smooth_skeleton(node_ids, parent_ids, radius, window=3)
+    array([1.        , 2.33333333, 3.66666667, 2.33333333, 1.        ])
+
     """
     parent_ix = _ids_to_indices(node_ids, parent_ids)
-    coords = _prep_coords(coords, node_ids)
+    coords, was_1d = _prep_values(coords, node_ids, name="coords")
 
-    return _fastcore.smooth_skeleton(parent_ix, coords, int(window), threads=threads)
+    out = _fastcore.smooth_skeleton(parent_ix, coords, int(window), threads=threads)
+    return out[:, 0] if was_1d else out
 
 
 def smooth_skeleton_gaussian(
-    node_ids, parent_ids, coords, sigma, truncate=4.0, threads=None
+    node_ids, parent_ids, coords, sigma, truncate=4.0, values=None, threads=None
 ):
     """Smooth a skeleton with a Gaussian kernel along each neurite.
 
@@ -539,26 +567,58 @@ def smooth_skeleton_gaussian(
                  Array of parent IDs for each node. Root nodes' parents
                  must be -1.
     coords :     (N, 3) array
-                 Array of coordinates for each node.
+                 Array of coordinates for each node. Read only to measure distance
+                 along each neurite; what actually gets smoothed is `values`, which
+                 defaults to these coordinates.
     sigma :      float
                  Kernel width, as a distance along the neurite.
     truncate :   float
                  How many `sigma` out to keep summing. 4 covers all but 1e-4 of the
                  kernel's mass.
+    values :     (N, ) or (N, K) array, optional
+                 A per-node field to smooth *instead of* `coords` - a radius, say.
+                 See the notes.
     threads :    int, optional
                  Number of threads to use. ``None`` uses all available cores.
 
     Returns
     -------
     coords :     (N, 3) float64 array
-                 New coordinates, in the same order as `node_ids`.
+                 New coordinates, in the same order as `node_ids` - or, when `values`
+                 was given, the new values in the same order and shape as `values`.
 
     Notes
     -----
+    `coords` and `values` are separate arguments where
+    [`navis_fastcore.smooth_skeleton`][] has only the one, and they cannot be
+    collapsed: this kernel's weights come from distance *along the neurite*, so
+    handing it a radius column as though it were geometry would make "distance" the
+    cumulative absolute change in radius. Nothing downstream could catch that - it is
+    a plausible-looking number and a meaningless kernel - so the geometry stays put.
+
+    To smooth the coordinates *and* another column in one pass, stack them into
+    `values`. The kernel is still measured over the untouched input geometry, which
+    is what it would have been anyway - arc lengths are computed once, before
+    anything moves:
+
+    ```python
+    xyzr = fastcore.smooth_skeleton_gaussian(
+        node_ids, parent_ids, coords, sigma=2.0,
+        values=np.column_stack([coords, radius]),
+    )
+    ```
+
+    The endpoint reflection generalises unchanged: ``2 * end - p`` is an odd
+    extension of whatever field it is applied to, which is the property being relied
+    on - a field that ramps linearly into an endpoint is reproduced by its mirror, so
+    the ramp is not flattened. Its virtual samples need not lie in the field's natural
+    range (a mirrored radius can be negative); they are summands in a weighted mean,
+    not outputs.
+
     There is no ``node_map`` here, unlike the functions that drop or add nodes: this
-    changes coordinates only, so every node keeps its ID and its parent and anything
-    attached to a node is still attached to it afterwards. The one thing that does go
-    stale is a *copy* of a node's position taken beforehand.
+    changes per-node values only, so every node keeps its ID and its parent and
+    anything attached to a node is still attached to it afterwards. The one thing
+    that does go stale is a *copy* of a node's position taken beforehand.
 
     Examples
     --------
@@ -580,6 +640,17 @@ def smooth_skeleton_gaussian(
     >>> np.allclose(smoothed[[0, 4]], coords[[0, 4]])
     True
 
+    A radius, smoothed over the same geometry:
+
+    >>> radius = np.array([1.0, 5.0, 1.0, 5.0, 1.0])
+    >>> out = fastcore.smooth_skeleton_gaussian(
+    ...     node_ids, parent_ids, coords, sigma=2.0, values=radius
+    ... )
+    >>> out.shape
+    (5,)
+    >>> bool(out[2] > radius[2]) and out[[0, 4]].tolist() == [1.0, 1.0]
+    True
+
     """
     sigma = float(sigma)
     if not sigma > 0:
@@ -590,7 +661,11 @@ def smooth_skeleton_gaussian(
 
     parent_ix = _ids_to_indices(node_ids, parent_ids)
     coords = _prep_coords(coords, node_ids)
-
-    return _fastcore.smooth_skeleton_gaussian(
-        parent_ix, coords, sigma, truncate, threads=threads
+    values, was_1d = (
+        _prep_values(values, node_ids) if values is not None else (None, False)
     )
+
+    out = _fastcore.smooth_skeleton_gaussian(
+        parent_ix, coords, sigma, truncate, values=values, threads=threads
+    )
+    return out[:, 0] if was_1d else out

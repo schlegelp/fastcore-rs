@@ -10,6 +10,35 @@ Tags, source archives and the original announcements are on
 
 ## Unreleased
 
+**The skeleton smoothers take any per-node column, not just coordinates.** `smooth_skeleton`
+now accepts an `(N, K)` field and `smooth_skeleton_gaussian` a separate `values` array, so a
+radius, a confidence or anything else numeric smooths by the same code as an `x` — matching
+what `navis.smooth_skeleton`'s `to_smooth` can ask for. A `(N, )` field comes back as `(N, )`.
+
+```python
+# The window is a node count, so there is nothing to measure and the field is the only array.
+xyzr = fastcore.smooth_skeleton(ids, parents, np.column_stack([coords, radius]), window=5)
+
+# The kernel is a distance along the neurite, so the geometry stays a separate argument.
+r = fastcore.smooth_skeleton_gaussian(ids, parents, coords, sigma=2000, values=radius)
+```
+
+That asymmetry is deliberate and is the whole reason the Gaussian gained an argument rather
+than a wider one. Its weights come from distance along the neurite; hand it a radius column as
+though it were geometry and "distance" becomes the cumulative absolute change in radius — a
+plausible-looking number and a meaningless kernel, and nothing downstream could tell. Columns
+are independent either way, so stacking them is exactly equivalent to a call each and one pass
+cheaper. Smoothing the coordinates costs exactly what it did before: with no separate geometry
+to gather, that path still reads its arc lengths out of the very buffer it is averaging.
+
+R gets the same `values` argument on both functions, taking a numeric vector or an `(N, K)`
+matrix and handing back whichever shape it was given.
+
+Note that this does not make the smoothers numerically interchangeable with navis, which they
+have never been: navis smooths with a *trailing* `rolling(window, min_periods=1).mean()` — half
+a window of lag towards each segment's distal end — and lets branch points move. Here the
+window is centred, shrinks symmetrically at segment ends, and endpoints do not move at all.
+
 **Packing shapes onto a page.** Three new primitives for laying neurons out as a collage —
 `rasterize_segments` turns line work into binary masks, `pack_masks` arranges those so that
 no two share a pixel, and `pack_rectangles` is the cheaper bounding-box alternative

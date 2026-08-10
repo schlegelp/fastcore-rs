@@ -80,7 +80,7 @@ surface and how they spell it. `—` means that surface doesn't expose it direct
 | Downsample (keep every Nth node) | `downsample::downsample_skeleton` | `downsample_skeleton` | `downsample_skeleton` |
 | Simplify by geometry (RDP / Visvalingam-Whyatt) | `downsample::simplify_rdp`, `downsample::simplify_vw` | `simplify_rdp`, `simplify_vw` | `simplify_rdp`, `simplify_vw` |
 | Resample to a fixed spacing | `downsample::resample_skeleton` | `resample_skeleton` | `resample_skeleton` |
-| Smooth node coordinates | `downsample::smooth_skeleton`, `downsample::smooth_skeleton_gaussian` | `smooth_skeleton`, `smooth_skeleton_gaussian` | `smooth_skeleton`, `smooth_skeleton_gaussian` |
+| Smooth node coordinates, or any per-node column | `downsample::smooth_skeleton`, `downsample::smooth_skeleton_gaussian` | `smooth_skeleton`, `smooth_skeleton_gaussian` | `smooth_skeleton`, `smooth_skeleton_gaussian` |
 | Adjacency matrix (CSR) | `dag::adjacency` | `adjacency` | `adjacency` |
 | Longest path(s) | `dag::longest_path`, `dag::longest_paths` | `longest_path`, `longest_paths` | `longest_path`, `longest_paths` |
 | Betweenness centrality | `dag::betweenness` | `betweenness` | `betweenness` |

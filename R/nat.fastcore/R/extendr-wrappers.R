@@ -391,15 +391,24 @@ resample_skeleton <- function(parents, x, y, z, spacing, threads = NULL) .Call(w
 #' three neurites apart — so this is safe to run before measuring angles, tortuosity or
 #' tangent vectors, all of which a raw traced skeleton overstates.
 #'
+#' Pass `values` to smooth some other per-node field instead — a width, say. The window is
+#' a count of *nodes*, so nothing here reads a geometric meaning into what it is handed and
+#' a width smooths by the same code as an `x`; `x`, `y` and `z` are then only checked for
+#' length, not read.
+#'
 #' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
 #' @param x,y,z Numeric vectors of node coordinates, one entry per node.
 #' @param window Integer; nodes in the window, counting the node itself. Even values
 #'   round down to the odd value below, since the window is symmetric. `0` and `1` are
 #'   no-ops.
+#' @param values Optional numeric vector or `(N, K)` matrix: a per-node field to smooth
+#'   *instead of* the coordinates.
 #' @param threads Optional integer; number of threads. `NULL` uses all cores.
-#' @return List with `x`, `y` and `z`: the new coordinates, in the input's node order.
+#' @return With `values = NULL`, a list with `x`, `y` and `z`: the new coordinates, in the
+#'   input's node order. With `values` given, the new values in the shape they came in —
+#'   a numeric vector for a vector, an `(N, K)` matrix for a matrix.
 #' @export
-smooth_skeleton <- function(parents, x, y, z, window = 5, threads = NULL) .Call(wrap__smooth_skeleton, parents, x, y, z, window, threads)
+smooth_skeleton <- function(parents, x, y, z, window = 5, values = NULL, threads = NULL) .Call(wrap__smooth_skeleton, parents, x, y, z, window, values, threads)
 
 #' Smooth a skeleton with a Gaussian kernel along each neurite.
 #'
@@ -410,15 +419,28 @@ smooth_skeleton <- function(parents, x, y, z, window = 5, threads = NULL) .Call(
 #' otherwise let the far arm of a hairpin pull on the near one. Segment ends are pinned
 #' by reflecting the neurite about them.
 #'
+#' Pass `values` to smooth some other per-node field instead — a width, say. Unlike
+#' `smooth_skeleton()`, that field cannot simply replace `x`, `y` and `z`: this kernel's
+#' weights come from distance *along the neurite*, so it goes on measuring over the
+#' coordinates while smoothing `values`. Handing it a width as though it were geometry
+#' would make "distance" the cumulative absolute change in width — a plausible-looking
+#' number and a meaningless kernel — so the two stay separate arguments.
+#'
 #' @param parents Integer vector of 0-based parent indices (roots are `< 0`).
-#' @param x,y,z Numeric vectors of node coordinates, one entry per node.
+#' @param x,y,z Numeric vectors of node coordinates, one entry per node. Read only to
+#'   measure distance along each neurite when `values` is given.
 #' @param sigma Numeric; kernel width, as a distance along the neurite.
 #' @param truncate Numeric; how many `sigma` out to keep summing. 4 covers all but 1e-4
 #'   of the kernel's mass.
+#' @param values Optional numeric vector or `(N, K)` matrix: a per-node field to smooth
+#'   *instead of* the coordinates. Stack the coordinates into it to smooth both in one
+#'   pass — the kernel is measured over the untouched input geometry either way.
 #' @param threads Optional integer; number of threads. `NULL` uses all cores.
-#' @return List with `x`, `y` and `z`: the new coordinates, in the input's node order.
+#' @return With `values = NULL`, a list with `x`, `y` and `z`: the new coordinates, in the
+#'   input's node order. With `values` given, the new values in the shape they came in —
+#'   a numeric vector for a vector, an `(N, K)` matrix for a matrix.
 #' @export
-smooth_skeleton_gaussian <- function(parents, x, y, z, sigma, truncate = 4.0, threads = NULL) .Call(wrap__smooth_skeleton_gaussian, parents, x, y, z, sigma, truncate, threads)
+smooth_skeleton_gaussian <- function(parents, x, y, z, sigma, truncate = 4.0, values = NULL, threads = NULL) .Call(wrap__smooth_skeleton_gaussian, parents, x, y, z, sigma, truncate, values, threads)
 
 #' The skeleton's adjacency matrix, as the three arrays of a CSR matrix.
 #'

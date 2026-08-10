@@ -4,22 +4,38 @@
 \alias{smooth_skeleton_gaussian}
 \title{Smooth a skeleton with a Gaussian kernel along each neurite.}
 \usage{
-smooth_skeleton_gaussian(parents, x, y, z, sigma, truncate = 4, threads = NULL)
+smooth_skeleton_gaussian(
+  parents,
+  x,
+  y,
+  z,
+  sigma,
+  truncate = 4,
+  values = NULL,
+  threads = NULL
+)
 }
 \arguments{
 \item{parents}{Integer vector of 0-based parent indices (roots are \verb{< 0}).}
 
-\item{x, y, z}{Numeric vectors of node coordinates, one entry per node.}
+\item{x, y, z}{Numeric vectors of node coordinates, one entry per node. Read only to
+measure distance along each neurite when \code{values} is given.}
 
 \item{sigma}{Numeric; kernel width, as a distance along the neurite.}
 
 \item{truncate}{Numeric; how many \code{sigma} out to keep summing. 4 covers all but 1e-4
 of the kernel's mass.}
 
+\item{values}{Optional numeric vector or \verb{(N, K)} matrix: a per-node field to smooth
+\emph{instead of} the coordinates. Stack the coordinates into it to smooth both in one
+pass — the kernel is measured over the untouched input geometry either way.}
+
 \item{threads}{Optional integer; number of threads. \code{NULL} uses all cores.}
 }
 \value{
-List with \code{x}, \code{y} and \code{z}: the new coordinates, in the input's node order.
+With \code{values = NULL}, a list with \code{x}, \code{y} and \code{z}: the new coordinates, in the
+input's node order. With \code{values} given, the new values in the shape they came in —
+a numeric vector for a vector, an \verb{(N, K)} matrix for a matrix.
 }
 \description{
 The same operation as \code{smooth_skeleton()} with a softer, scale-based kernel: \code{sigma}
@@ -28,4 +44,12 @@ amount of smoothing does not change when the skeleton is resampled. The kernel
 measures distance \emph{along} the neurite rather than between the points, which would
 otherwise let the far arm of a hairpin pull on the near one. Segment ends are pinned
 by reflecting the neurite about them.
+}
+\details{
+Pass \code{values} to smooth some other per-node field instead — a width, say. Unlike
+\code{smooth_skeleton()}, that field cannot simply replace \code{x}, \code{y} and \code{z}: this kernel's
+weights come from distance \emph{along the neurite}, so it goes on measuring over the
+coordinates while smoothing \code{values}. Handing it a width as though it were geometry
+would make "distance" the cumulative absolute change in width — a plausible-looking
+number and a meaningless kernel — so the two stay separate arguments.
 }

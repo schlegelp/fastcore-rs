@@ -234,6 +234,76 @@ test_that("smoothing pins branch points and leaves the topology alone", {
   expect_equal(out$y, y)
 })
 
+test_that("`values` smooths some other per-node field, in the shape it came in", {
+  n <- 21L
+  p <- .chain_parents(n)
+  x <- .chain_x(n)
+  y <- .zeros(n)
+  w <- rep(c(1, 5), length.out = n) # a width, with nothing geometric about it
+
+  for (out in list(
+    smooth_skeleton(p, x, y, y, window = 5L, values = w),
+    smooth_skeleton_gaussian(p, x, y, y, sigma = 3, values = w)
+  )) {
+    # A vector in, a vector out -- not an N x 1 matrix the caller has to drop().
+    expect_true(is.numeric(out) && is.null(dim(out)))
+    expect_equal(length(out), n)
+    # Ends pinned...
+    expect_equal(out[c(1L, n)], w[c(1L, n)])
+    # ...and the middle collapsed onto the field's mean. Only the middle: the Gaussian's
+    # endpoint reflection is an odd extension, and both endpoints of this field sit at the
+    # low extreme of the oscillation, so the mirrored samples near an end are below the
+    # mean and legitimately pull their neighbourhood down with them.
+    expect_true(all(abs(out[8:14] - 3) < 0.5))
+  }
+
+  # A matrix in, a matrix out, and its columns are independent: smoothing two columns
+  # together is exactly smoothing each on its own.
+  m <- cbind(w, x)
+  for (out in list(
+    smooth_skeleton(p, x, y, y, window = 5L, values = m),
+    smooth_skeleton_gaussian(p, x, y, y, sigma = 3, values = m)
+  )) {
+    expect_equal(dim(out), c(n, 2L))
+  }
+  expect_equal(
+    smooth_skeleton(p, x, y, y, window = 5L, values = m)[, 1],
+    smooth_skeleton(p, x, y, y, window = 5L, values = w)
+  )
+
+  # Passing the coordinates as `values` reproduces the coordinate call exactly: `values`
+  # changes what is smoothed, never what the Gaussian kernel is measured over.
+  yy <- rep(c(1, -1), length.out = n)
+  plain <- smooth_skeleton_gaussian(p, x, yy, .zeros(n), sigma = 3)
+  explicit <- smooth_skeleton_gaussian(
+    p, x, yy, .zeros(n),
+    sigma = 3, values = cbind(x, yy, .zeros(n))
+  )
+  expect_equal(explicit[, 1], plain$x)
+  expect_equal(explicit[, 2], plain$y)
+
+  # Integer input counts as numeric: `is.numeric(1:5)` is TRUE, and integer is how R spells
+  # a label or a count, which is exactly what this argument is advertised for.
+  ints <- rep(c(1L, 5L), length.out = n)
+  expect_equal(
+    smooth_skeleton(p, x, y, y, window = 5L, values = ints),
+    smooth_skeleton(p, x, y, y, window = 5L, values = as.numeric(ints))
+  )
+  expect_equal(
+    dim(smooth_skeleton(p, x, y, y, window = 5L, values = cbind(ints, ints))),
+    c(n, 2L)
+  )
+
+  # A field that is not per-node, and one with no columns at all. Only that they error:
+  # a Rust panic reaches R as "User function panicked" with the message dropped, which is
+  # why the core's range checks that callers are meant to *read* return a Result instead.
+  expect_error(smooth_skeleton(p, x, y, y, values = w[-1L]))
+  expect_error(smooth_skeleton(p, x, y, y, values = matrix(numeric(0), nrow = n)))
+  # `x`/`y`/`z` are not read on the `values` path, but they are still checked for length --
+  # they are how this surface spells "one entry per node".
+  expect_error(smooth_skeleton(p, x[-1L], y, y, values = w))
+})
+
 test_that("every method leaves the node classes untouched", {
   p <- .forest_parents()
   n <- length(p)

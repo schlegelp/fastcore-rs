@@ -199,25 +199,29 @@ pub fn resample_skeleton_py<'py>(
 /// Arguments:
 ///
 /// - `parents`: array of parent indices
-/// - `coords`:  (N, 3) float64 node coordinates
+/// - `values`:  (N, K) float64 per-node values to smooth -- the coordinates, a radius, or
+///              any set of columns at once. The window is a node count, so nothing here
+///              reads a geometric meaning into them. The wrapper spells this `coords`, which
+///              is the name it has always had and the common case; the core calls it
+///              `values` because it is the field rather than geometry.
 /// - `window`:  nodes in the window, counting the node itself
 /// - `threads`: size of the thread pool, or `None` for all cores
 ///
 /// Returns:
 ///
-/// An (N, 3) array of new coordinates, in the input's node order.
+/// An (N, K) array of new values, in the input's node and column order.
 ///
 #[pyfunction]
-#[pyo3(name = "smooth_skeleton", signature = (parents, coords, window, threads=None))]
+#[pyo3(name = "smooth_skeleton", signature = (parents, values, window, threads=None))]
 pub fn smooth_skeleton_py<'py>(
     py: Python<'py>,
     parents: PyReadonlyArray1<i32>,
-    coords: PyReadonlyArray2<f64>,
+    values: PyReadonlyArray2<f64>,
     window: usize,
     threads: Option<usize>,
 ) -> Bound<'py, PyArray2<f64>> {
     let out: Array2<f64> =
-        smooth_skeleton(&parents.as_array(), &coords.as_array(), window, threads);
+        smooth_skeleton(&parents.as_array(), &values.as_array(), window, threads);
     out.into_pyarray(py)
 }
 
@@ -226,28 +230,37 @@ pub fn smooth_skeleton_py<'py>(
 /// Arguments:
 ///
 /// - `parents`:  array of parent indices
-/// - `coords`:   (N, 3) float64 node coordinates
+/// - `coords`:   (N, 3) float64 node coordinates. Read only to measure distance along each
+///               neurite -- which is why this cannot double as the field, unlike
+///               `smooth_skeleton`'s
+/// - `values`:   optional (N, K) float64 field to smooth in place of `coords`
 /// - `sigma`:    kernel width, as a distance along the neurite
 /// - `truncate`: how many `sigma` out to keep summing
 /// - `threads`:  size of the thread pool, or `None` for all cores
 ///
 /// Returns:
 ///
-/// An (N, 3) array of new coordinates, in the input's node order.
+/// An (N, K) array of new values -- (N, 3) coordinates when `values` is `None` -- in the
+/// input's node and column order.
 ///
 #[pyfunction]
-#[pyo3(name = "smooth_skeleton_gaussian", signature = (parents, coords, sigma, truncate=4.0, threads=None))]
+#[pyo3(name = "smooth_skeleton_gaussian", signature = (parents, coords, sigma, truncate=4.0, values=None, threads=None))]
 pub fn smooth_skeleton_gaussian_py<'py>(
     py: Python<'py>,
     parents: PyReadonlyArray1<i32>,
     coords: PyReadonlyArray2<f64>,
     sigma: f64,
     truncate: f64,
+    values: Option<PyReadonlyArray2<f64>>,
     threads: Option<usize>,
 ) -> Bound<'py, PyArray2<f64>> {
+    // Bound rather than inlined: `as_array` borrows the guard, so the view needs a name that
+    // outlives the `as_ref` that turns it into the `Option<&ArrayView2>` the core wants.
+    let values = values.as_ref().map(|v| v.as_array());
     let out: Array2<f64> = smooth_skeleton_gaussian(
         &parents.as_array(),
         &coords.as_array(),
+        values.as_ref(),
         sigma,
         truncate,
         threads,
