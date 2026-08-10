@@ -839,7 +839,11 @@ pub fn smooth_skeleton(
     threads: Option<usize>,
 ) -> Array2<f64> {
     let d = check_coords(parents, values, "values");
-    let half = window / 2;
+    // A centred window holds an odd number of nodes, so an even one has to give way to a
+    // neighbour. It gives way *downwards*: `window` is a budget, and averaging six nodes
+    // when five were asked for is the surprising direction to round. `saturating_sub`
+    // because `window` is unsigned and `0` is a legal no-op.
+    let half = window.saturating_sub(1) / 2;
 
     // No geometry: see `smooth_with`'s `geom`. The window is a node count, so there is
     // nothing for this kernel to measure and the field is all it is given.
@@ -943,66 +947,65 @@ pub fn smooth_skeleton_gaussian(
     let kernel = |geom: &[f64], pts: &[f64], out: &mut Vec<f64>| {
         let n = pts.len() / k;
         let arc = arc_lengths(geom, d);
+        // A segment of no length cannot be reflected into: every mirror image lands back
+        // on the endpoint, so the walk below would turn around for ever without the
+        // distance ever reaching `cutoff`. Given a span, each traversal adds it, which
+        // bounds the walk at `cutoff / span` turns.
+        let span = arc[n - 1] - arc[0];
 
         // One scratch accumulator for the whole segment rather than one per node: the
         // inner loop is a handful of multiply-adds, so a heap allocation per node would
-        // cost several times the arithmetic it carries.
+        // cost several times the arithmetic it carries. `offset` is the reflection's
+        // running constant term, cleared per walk rather than reallocated.
         let mut acc = vec![0.0; k];
+        let mut offset = vec![0.0; k];
 
         for pos in 1..n - 1 {
             acc.copy_from_slice(point(pts, k, pos));
             let mut total = 1.0; // the node itself, at distance 0
 
-            // Proximal, then -- if we ran out of neurite before running out of kernel --
-            // its mirror image beyond the endpoint. The mirror is folded into the
-            // accumulator rather than materialised: `2 * about - p` is the same handful of
-            // subtractions whether or not it passes through a `Vec` on the way.
-            let mut q = pos + 1;
-            while q < n && arc[q] - arc[pos] <= cutoff {
-                let (w, p) = (weigh(arc[q] - arc[pos]), point(pts, k, q));
-                for c in 0..k {
-                    acc[c] += p[c] * w;
-                }
-                total += w;
-                q += 1;
-            }
-            if q == n {
-                for j in 1..n {
-                    let dist = 2.0 * arc[n - 1] - arc[n - 1 - j] - arc[pos];
+            // Outwards in both directions, turning around at the segment's ends for as
+            // long as the kernel still reaches. The mirror images are folded into the
+            // accumulator rather than materialised: `2 * about - p` is the same handful
+            // of subtractions whether or not it passes through a `Vec` on the way.
+            //
+            // Reflecting *once* per end is not enough. A kernel wider than the segment
+            // runs off the end of the mirrored copy as well, and is then summing more
+            // neurite on one side of the node than the other -- which bends a straight
+            // twig, the one thing the reflection exists to prevent. Short segments are
+            // the common case in a real arbour, so the turn has to repeat.
+            for dir in [1isize, -1isize] {
+                let (mut i, mut step, mut sign, mut dist) = (pos as isize, dir, 1.0f64, 0.0f64);
+                offset.fill(0.0);
+                loop {
+                    let mut nxt = i + step;
+                    if nxt < 0 || nxt >= n as isize {
+                        if span <= 0.0 {
+                            break;
+                        }
+                        // Turn around. As an affine map on the field, the odd extension
+                        // about the endpoint being sat on is `T'(v) = 2 * T(v_end) -
+                        // T(v)` -- so, composed with the reflections that got us here,
+                        // the sign flips and the offset picks up twice the *virtual*
+                        // value of the turning point.
+                        let about = point(pts, k, i as usize);
+                        for c in 0..k {
+                            offset[c] += 2.0 * sign * about[c];
+                        }
+                        sign = -sign;
+                        step = -step;
+                        nxt = i + step;
+                    }
+                    dist += (arc[nxt as usize] - arc[i as usize]).abs();
                     if dist > cutoff {
                         break;
                     }
-                    let w = weigh(dist);
-                    let (about, p) = (point(pts, k, n - 1), point(pts, k, n - 1 - j));
+                    let (w, p) = (weigh(dist), point(pts, k, nxt as usize));
                     for c in 0..k {
-                        acc[c] += (2.0 * about[c] - p[c]) * w;
+                        acc[c] += (sign * p[c] + offset[c]) * w;
                     }
                     total += w;
-                }
-            }
-
-            // ...and the same distally.
-            let mut q = pos;
-            while q > 0 && arc[pos] - arc[q - 1] <= cutoff {
-                q -= 1;
-                let (w, p) = (weigh(arc[pos] - arc[q]), point(pts, k, q));
-                for c in 0..k {
-                    acc[c] += p[c] * w;
-                }
-                total += w;
-            }
-            if q == 0 {
-                for j in 1..n {
-                    let dist = arc[pos] + arc[j] - 2.0 * arc[0];
-                    if dist > cutoff {
-                        break;
-                    }
-                    let w = weigh(dist);
-                    let (about, p) = (point(pts, k, 0), point(pts, k, j));
-                    for c in 0..k {
-                        acc[c] += (2.0 * about[c] - p[c]) * w;
-                    }
-                    total += w;
+                    i = nxt;
                 }
             }
 
@@ -1518,6 +1521,28 @@ mod tests {
         assert_eq!(out, coords);
     }
 
+    /// A centred window holds an odd number of nodes, so an even `window` has to round -
+    /// and it rounds *down*, never averaging more nodes than it was given a budget for.
+    /// `2` therefore lands on `1` and stops being a smoother at all.
+    #[test]
+    fn moving_average_rounds_an_even_window_down() {
+        let (parents, mut coords) = chain(10);
+        coords[[4, 1]] = 5.0;
+
+        for (even, odd) in [(2, 1), (4, 3), (6, 5)] {
+            assert_eq!(
+                smooth_skeleton(&parents.view(), &coords.view(), even, None),
+                smooth_skeleton(&parents.view(), &coords.view(), odd, None),
+                "window {even} should behave like {odd}"
+            );
+        }
+        // ... and rounding down is a real distinction: 4 is not 5
+        assert_ne!(
+            smooth_skeleton(&parents.view(), &coords.view(), 4, None),
+            smooth_skeleton(&parents.view(), &coords.view(), 5, None)
+        );
+    }
+
     #[test]
     fn smoothing_pins_branch_points() {
         let parents = tree();
@@ -1549,6 +1574,57 @@ mod tests {
                 out[[i, 0]]
             );
         }
+    }
+
+    /// ...and it still does when the kernel is wider than the entire segment, which is
+    /// where a single reflection stops being enough: the mirrored copy runs out as well,
+    /// and the sum goes lopsided. Most of a real arbour is segments this short.
+    #[test]
+    fn gaussian_leaves_a_short_straight_line_alone() {
+        let (parents, coords) = chain(6); // span 5, but the kernel reaches 16
+        let out = smooth_skeleton_gaussian(&parents.view(), &coords.view(), None, 4.0, 4.0, None);
+        for i in 0..6 {
+            assert!(
+                (out[[i, 0]] - coords[[i, 0]]).abs() < 1e-9,
+                "node {i} moved to {}",
+                out[[i, 0]]
+            );
+        }
+    }
+
+    /// The reflection is an *odd* extension, so it reproduces any linear ramp, not just
+    /// the geometry - the same argument that keeps a straight line straight keeps a
+    /// linearly tapering radius tapering at the same rate.
+    #[test]
+    fn gaussian_leaves_a_linear_ramp_alone() {
+        let (parents, coords) = chain(6);
+        let values = Array2::from_shape_fn((6, 1), |(i, _)| 3.0 + 2.0 * i as f64);
+        let out = smooth_skeleton_gaussian(
+            &parents.view(),
+            &coords.view(),
+            Some(&values.view()),
+            4.0,
+            4.0,
+            None,
+        );
+        for i in 0..6 {
+            assert!(
+                (out[[i, 0]] - values[[i, 0]]).abs() < 1e-9,
+                "node {i} moved to {}",
+                out[[i, 0]]
+            );
+        }
+    }
+
+    /// A segment with no length has nothing to reflect into - every mirror image lands
+    /// back on the endpoint - so the walk has to stop turning around rather than spin for
+    /// ever chasing distance it will never accumulate.
+    #[test]
+    fn gaussian_terminates_on_a_zero_length_segment() {
+        let parents: Array1<i32> = (0..5i32).map(|i| i - 1).collect();
+        let coords: Array2<f64> = Array2::zeros((5, 3));
+        let out = smooth_skeleton_gaussian(&parents.view(), &coords.view(), None, 1.0, 4.0, None);
+        assert!(out.iter().all(|v| *v == 0.0));
     }
 
     #[test]

@@ -39,6 +39,26 @@ have never been: navis smooths with a *trailing* `rolling(window, min_periods=1)
 a window of lag towards each segment's distal end — and lets branch points move. Here the
 window is centred, shrinks symmetrically at segment ends, and endpoints do not move at all.
 
+**Two fixes to the smoothers, both of which change results from 0.11.0.** All three surfaces,
+since the R crate bundles the core.
+
+`smooth_skeleton_gaussian` reflected each segment about its ends *once*. A kernel wider than
+the segment ran off the end of the mirrored copy as well, and was then summing more neurite on
+one side of a node than the other — which bends a perfectly straight twig, the one thing the
+reflection exists to prevent. Under `sigma=2000`, a straight 10-node twig at 200 nm spacing
+bowed by 353 nm, more than the node spacing itself; most of a real arbour is segments that
+short. Worse, raising `truncate` did not help, because the error is not truncation: the sum
+converges to the one-reflection answer, not to the right one. The walk now turns around as
+many times as the kernel needs, so a straight line comes back exactly — and so does any
+linear ramp, the extension being odd. Nothing changes where `truncate * sigma` fits inside the
+segment; there a single reflection already covered the kernel.
+
+`smooth_skeleton` rounded an even `window` *up*: `window / 2` gave `4` the same two-node reach
+as `5`. The Rust, Python and R docs all said it rounds down to the odd value below, and down is
+the better reading — `window` is a budget, and averaging six nodes when five were asked for is
+the surprising direction to round — so the code now matches what they promise. `2` therefore
+lands on `1`, joining `0` and `1` as a no-op.
+
 **Packing shapes onto a page.** Three new primitives for laying neurons out as a collage —
 `rasterize_segments` turns line work into binary masks, `pack_masks` arranges those so that
 no two share a pixel, and `pack_rectangles` is the cheaper bounding-box alternative
