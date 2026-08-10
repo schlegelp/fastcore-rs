@@ -8,7 +8,7 @@ it is called out.
 Tags, source archives and the original announcements are on
 [GitHub](https://github.com/schlegelp/fastcore-rs/releases).
 
-## Unreleased
+## 0.12.0 (2026-08-10)
 
 **The skeleton smoothers take any per-node column, not just coordinates.** `smooth_skeleton`
 now accepts an `(N, K)` field and `smooth_skeleton_gaussian` a separate `values` array, so a
