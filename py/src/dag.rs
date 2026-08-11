@@ -144,23 +144,41 @@ pub fn node_indices_16<'py>(
 ///
 /// Returns:
 ///
-/// A vector of vectors where each vector contains the nodes of a segment.
+/// A 3-tuple `(nodes, offsets, lengths)` in CSR form: segment `i` is
+/// `nodes[offsets[i]:offsets[i + 1]]`, so `offsets` (int64) has one more entry than there are
+/// segments. `lengths` is the length of each segment, if `weights` were given.
+///
+/// Flat rather than a `Vec<Vec<i32>>`: that would build a `PyLong` per node index for the
+/// caller to convert straight back into numpy, which costs more than the segmentation itself.
 ///
 #[pyfunction]
 #[pyo3(name = "generate_segments")]
-pub fn generate_segments_py(
+pub fn generate_segments_py<'py>(
+    py: Python<'py>,
     parents: PyReadonlyArray1<i32>,
     weights: Option<PyReadonlyArray1<f32>>,
-) -> (Vec<Vec<i32>>, Option<Vec<f32>>) {
-    let weights: Option<Array1<f32>> = if weights.is_some() {
-        Some(weights.unwrap().as_array().to_owned())
-    } else {
-        None
-    };
+) -> (
+    Bound<'py, PyArray1<i32>>,
+    Bound<'py, PyArray1<i64>>,
+    Option<Vec<f32>>,
+) {
+    let weights: Option<Array1<f32>> = weights.map(|w| w.as_array().to_owned());
 
     let (all_segments, lengths) = generate_segments(&parents.as_array(), weights);
 
-    (all_segments, lengths)
+    let mut offsets: Vec<i64> = Vec::with_capacity(all_segments.len() + 1);
+    let mut total: i64 = 0;
+    offsets.push(total);
+    for segment in &all_segments {
+        total += segment.len() as i64;
+        offsets.push(total);
+    }
+
+    (
+        Array1::from(all_segments.concat()).into_pyarray(py),
+        Array1::from(offsets).into_pyarray(py),
+        lengths,
+    )
 }
 
 #[pyfunction]

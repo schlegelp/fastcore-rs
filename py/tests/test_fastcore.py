@@ -232,6 +232,59 @@ def test_segment_coords(swc, node_colors):
 
 
 @pytest.mark.parametrize("swc", [swc32(), swc64()])
+@pytest.mark.parametrize("node_colors", [None, np.random.rand(N_NODES, 4)])
+def test_segment_coords_flat_matches_list(swc, node_colors):
+    """`flat=True` must be the list form with a NaN row after each segment."""
+    nodes, parents, coords = swc
+
+    listed = fastcore.segment_coords(nodes, parents, coords, node_colors=node_colors)
+    flat = fastcore.segment_coords(
+        nodes, parents, coords, node_colors=node_colors, flat=True
+    )
+    if node_colors is not None:
+        listed, listed_colors = listed
+        flat, flat_colors = flat
+
+    # One separator row per segment, including a trailing one
+    assert len(flat) == sum(len(s) for s in listed) + len(listed)
+
+    breaks = np.isnan(flat[:, 0])
+    assert breaks.sum() == len(listed)
+    np.testing.assert_array_equal(flat[~breaks], np.vstack(listed))
+
+    # The separators sit at the end of each segment, not just anywhere
+    np.testing.assert_array_equal(
+        np.where(breaks)[0], np.cumsum([len(s) + 1 for s in listed]) - 1
+    )
+
+    if node_colors is not None:
+        assert len(flat_colors) == len(flat)
+        np.testing.assert_array_equal(flat_colors[~breaks], np.vstack(listed_colors))
+        assert np.isnan(flat_colors[breaks]).all()
+
+
+def test_segment_coords_flat_dtypes():
+    """Separators need NaN, but integer colours must not be promoted for it."""
+    nodes = np.arange(7, dtype=np.int32)
+    parents = np.array([-1, 0, 1, 2, 1, 4, 5], dtype=np.int32)
+    coords = np.random.rand(7, 3).astype(np.float32)
+
+    # float32 coordinates stay float32 ...
+    assert fastcore.segment_coords(nodes, parents, coords, flat=True).dtype == np.float32
+    # ... integer ones get promoted, because the separators have to be NaN
+    out = fastcore.segment_coords(nodes, parents, coords.astype(np.int32), flat=True)
+    assert np.issubdtype(out.dtype, np.floating)
+    assert np.isnan(out[:, 0]).any()
+
+    # Integer colours are padded with zeros rather than promoted: those rows are
+    # never drawn, so their value does not matter but their dtype does
+    rgb = np.full((7, 3), 7, dtype=np.uint8)
+    _, colors = fastcore.segment_coords(nodes, parents, coords, node_colors=rgb, flat=True)
+    assert colors.dtype == np.uint8
+    assert (colors == 0).any() and (colors == 7).any()
+
+
+@pytest.mark.parametrize("swc", [swc32(), swc64()])
 @pytest.mark.parametrize("directed", [True, False])
 @pytest.mark.parametrize("sources", [None, [1, 2, 3]])
 @pytest.mark.parametrize("targets", [None, [1, 2, 3]])

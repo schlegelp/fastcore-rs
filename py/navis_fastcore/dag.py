@@ -33,6 +33,16 @@ __all__ = [
 ]
 
 
+def _cut(values, offsets):
+    """Cut a CSR-packed array into a list of per-segment views.
+
+    `np.split` routes through `array_split`, which swaps axes twice per segment;
+    slicing directly is several times faster for the same views.
+
+    """
+    return [values[i:j] for i, j in zip(offsets[:-1], offsets[1:])]
+
+
 def generate_segments(node_ids, parent_ids, weights=None):
     """Generate linear segments maximizing segment lengths.
 
@@ -84,18 +94,22 @@ def generate_segments(node_ids, parent_ids, weights=None):
             "`weights` must have the same length as `node_ids`"
         )
 
-    # Get the segments (this will be a list of arrays of node indices)
-    segments, lengths = _fastcore.generate_segments(parent_ix, weights=weights)
+    # Get the segments as node indices in CSR form
+    all_indices, offsets, lengths = _fastcore.generate_segments(
+        parent_ix, weights=weights
+    )
+    counts = np.diff(offsets)
 
     if lengths is not None:
         lengths = np.asarray(lengths, dtype=np.float32)
     else:
         # Edges, not nodes: with every edge weighing 1 this is what the weighted
         # branch above returns, so `weights=None` stays equivalent to `weights=ones`.
-        lengths = np.array([len(s) - 1 for s in segments], dtype=np.int32)
+        lengths = (counts - 1).astype(np.int32)
 
-    # Map node indices back to IDs
-    seg_ids = [node_ids[s] for s in segments]
+    # Map node indices back to IDs, then cut into segments. Indexing once and
+    # slicing is cheaper than a fancy-index per segment.
+    seg_ids = _cut(np.take(node_ids, all_indices, axis=0), offsets)
 
     return seg_ids, lengths
 
@@ -144,6 +158,8 @@ def segment_coords(
     coords,
     weights=None,
     node_colors=None,
+    *,
+    flat=False,
 ):
     """Generate coordinates for linear segments.
 
@@ -161,14 +177,27 @@ def segment_coords(
     node_colors :   (N, ) numpy.ndarray, optional
                     A color for each node in `node_ids`. If provided, will
                     also return a list of colors sorted to match coordinates.
+    flat :          bool
+                    If True, return the segments as a single array with each
+                    segment separated by a row of NaNs instead of as a list.
+                    Plotting backends generally want this form; producing it
+                    directly is markedly faster than splitting into per-segment
+                    arrays and concatenating them back together.
 
     Returns
     -------
-    seg_coords :    list of arrays
-                    Note that these are views into the original `coords` array!
-    colors :        list of colors
-                    If `node_colors` provided will return a copy of it sorted
-                    to match `seg_coords`.
+    seg_coords :    list of arrays | (M, 3) array
+                    Coordinates per segment. With `flat=False` (default) a list
+                    of arrays. With `flat=True` a single array in which segments
+                    are separated by a row of NaNs; integer coordinates are
+                    promoted to float to make room for those.
+    colors :        list of colors | (M, ...) array
+                    If `node_colors` provided, a copy of it sorted to match
+                    `seg_coords`. With `flat=True` it is padded to match: the
+                    separator rows are NaN for float colors but 0 for integer
+                    ones (e.g. `uint8` RGB), which keeps the dtype intact. Those
+                    rows are never drawn, so the padded colors are only
+                    meaningful alongside the returned coordinates.
 
     Examples
     --------
@@ -186,6 +215,11 @@ def segment_coords(
            [0.05808361, 0.86617615, 0.60111501],
            [0.59865848, 0.15601864, 0.15599452]])]
 
+    The same segments as one NaN-separated array:
+
+    >>> fastcore.segment_coords(node_ids, parent_ids, coords, flat=True).shape
+    (10, 3)
+
     """
     # Convert parent IDs into indices
     parent_ix = _ids_to_indices(node_ids, parent_ids)
@@ -196,22 +230,42 @@ def segment_coords(
             "`weights` must have the same length as `node_ids`"
         )
 
-    # Get the segments (this will be a list of arrays of node indices)
-    segments, _ = _fastcore.generate_segments(parent_ix, weights=weights)
+    # Get the segments as node indices in CSR form
+    all_indices, offsets, _ = _fastcore.generate_segments(parent_ix, weights=weights)
 
-    # Translate into coordinates via a single batched index + split
-    # (faster than one fancy-index call per segment)
-    all_indices = np.concatenate(segments)
-    split_at = np.cumsum([len(s) for s in segments[:-1]])
-    seg_coords = np.split(coords[all_indices], split_at)
+    if flat:
+        # One gather straight into the padded output. `take_ix` repeats the last
+        # node of each segment into the separator row that follows it, which is
+        # then overwritten with `fill` - cheaper than scattering the gathered
+        # values into place, and it needs no temporary.
+        total = len(all_indices) + len(offsets) - 1
+        is_break = np.zeros(total, dtype=bool)
+        is_break[offsets[1:] + np.arange(len(offsets) - 1)] = True
+        take_ix = np.empty(total, dtype=all_indices.dtype)
+        take_ix[~is_break] = all_indices
+        take_ix[is_break] = 0
 
-    # Apply colors if provided
-    if not isinstance(node_colors, type(None)):
-        colors = np.split(node_colors[all_indices], split_at)
+        def arrange(values, fill, dtype):
+            out = np.empty((total, *values.shape[1:]), dtype=dtype)
+            np.take(np.asarray(values, dtype=dtype), take_ix, axis=0, out=out)
+            out[is_break] = fill
+            return out
+    else:
 
-        return seg_coords, colors
+        def arrange(values, fill, dtype):
+            return _cut(np.take(values, all_indices, axis=0), offsets)
 
-    return seg_coords
+    # The separators have to be NaN, so integer coordinates have to be promoted
+    seg_coords = arrange(coords, np.nan, np.result_type(coords.dtype, np.float32))
+
+    if node_colors is None:
+        return seg_coords
+
+    # Colors at the separators are never drawn (their coordinates are NaN), so we
+    # leave integer colors - e.g. uint8 RGB - as they are and pad them with zeros
+    # rather than promoting the whole array to float
+    fill = np.nan if np.issubdtype(node_colors.dtype, np.floating) else 0
+    return seg_coords, arrange(node_colors, fill, node_colors.dtype)
 
 
 def geodesic_matrix(

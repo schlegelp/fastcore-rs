@@ -8,6 +8,43 @@ it is called out.
 Tags, source archives and the original announcements are on
 [GitHub](https://github.com/schlegelp/fastcore-rs/releases).
 
+## 0.13.0 (unreleased)
+
+**`segment_coords` can hand back one flat array instead of a list.** Pass `flat=True` (it is
+keyword-only) and the segments come back as a single array with a row of NaNs after each one —
+the form every plotting backend actually draws.
+
+```python
+# One (M, 3) array, segments separated by NaN rows, rather than a list of (n, 3) arrays.
+coords = fastcore.segment_coords(ids, parents, xyz, flat=True)
+
+# `node_colors` is padded to match, so it still lines up row for row.
+coords, colors = fastcore.segment_coords(ids, parents, xyz, node_colors=rgba, flat=True)
+```
+
+Callers that draw a whole skeleton as one line collection were splitting into per-segment
+arrays only to concatenate them straight back together; on a few hundred neurons that
+round-trip cost more than the segmentation did. Building the padded array directly is ~3x
+faster than the list form when colours are along for the ride.
+
+The separators have to be NaN, so integer *coordinates* are promoted to float. Integer
+*colours* are not: those rows are never drawn, so they are padded with zeros and a `uint8`
+RGB array stays `uint8`.
+
+**The segmentation now crosses into Python as CSR, which sped up the list forms too.**
+The pyo3 `generate_segments` used to hand back a `Vec<Vec<i32>>` — a `PyLong` per node index,
+which the caller converted straight back into numpy arrays. Together that cost roughly twice
+what generating the segments did. It now returns `(nodes, offsets, lengths)` in the same CSR
+form as `trace_loops` and `matches_above`: segment `i` is `nodes[offsets[i]:offsets[i + 1]]`.
+
+Both Python wrappers take that path, so this is a straight speed-up and not an API change —
+`navis_fastcore.generate_segments` still returns its list of arrays. On a few hundred neurons
+that is ~2x, and `segment_coords(flat=False)` ~3.5x: it also stopped using `np.split`, which
+swaps axes twice per segment.
+
+Only the extension module changed. `fastcore::dag::generate_segments`, which the R bindings
+call, is untouched — hence Rust and R see nothing of this release.
+
 ## 0.12.0 (2026-08-10)
 
 **The skeleton smoothers take any per-node column, not just coordinates.** `smooth_skeleton`
