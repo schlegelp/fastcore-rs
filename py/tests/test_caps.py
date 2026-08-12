@@ -295,13 +295,14 @@ def test_many_holes_all_get_closed():
 
 
 def test_ring_through_the_same_vertex_twice_still_closes():
-    """Greedy tracing can name a non-manifold vertex twice in one ring.
+    """A ring naming the same vertex twice still comes back closed.
 
-    The polygon then touches itself, so neither ear-clipping attempt can find
-    ``n - 2`` ears and the fan has to take over. These are the real coordinates of
-    one such ring off a punched neuron mesh, kept because they are also the input
-    that sends ``mapbox_earcut`` — what navis reached for before this module
-    existed — into an infinite loop on its best-fit-plane retry.
+    The polygon touches itself, so neither flattening can find ``n - 2`` ears.
+    ``trace_loops`` no longer hands one of these on — it cuts the walk where it
+    crosses itself — but a caller can still build one. These are the real
+    coordinates of such a ring off a punched neuron mesh, kept because they are
+    also the input that sends ``mapbox_earcut`` — what navis reached for before
+    this module existed — into an infinite loop on its best-fit-plane retry.
     """
     vertices = np.array(
         [
@@ -320,7 +321,7 @@ def test_ring_through_the_same_vertex_twice_still_closes():
 
 
 def test_degenerate_ring_still_closes():
-    """Collinear vertices name no plane at all — the fan is the last resort."""
+    """Collinear vertices name no plane at all — the three-dimensional clip takes it."""
     vertices = np.array(
         [[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]], dtype=np.float64
     )

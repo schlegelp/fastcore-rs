@@ -177,7 +177,7 @@ test_that("capping the grid closes it", {
 })
 
 test_that("a degenerate ring still closes", {
-  # Collinear vertices name no plane at all -- the fan is the last resort.
+  # Collinear vertices name no plane at all -- the 3-D clip is the last resort.
   verts <- rbind(c(0, 0, 0), c(1, 0, 0), c(2, 0, 0), c(3, 0, 0))
   caps <- triangulate_rings(0:3, c(0L, 4L), verts)
 

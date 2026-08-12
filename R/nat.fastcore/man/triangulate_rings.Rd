@@ -21,12 +21,17 @@ Integer \verb{(M, 3)} matrix of new faces (0-based vertex indices), ring by
 ring. A ring of \code{k} vertices always caps to \code{k - 2} triangles.
 }
 \description{
-Each ring is flattened onto a plane and ear-clipped, trying three things in order:
-the ring's area-weighted (Newell) normal, then its best-fit plane, then a plain
-triangle fan — wonky on a non-convex opening, but always closed and always correctly
-wound. A ring only gets past the first attempt if the flattening self-intersects.
+Three attempts, in order: ear-clipping the ring flattened through its area-weighted
+(Newell) normal, then through its best-fit plane, and failing both, ear-clipping it
+in three dimensions without flattening at all. All three are always closed and always
+correctly wound.
 }
 \details{
+A ring only gets past the first attempt if the flattening self-intersects. That is
+not the same as the ring being un-planar — a gently curved ring can cast a crossed
+shadow and a folded one need not — and since the first two attempts are both
+projections, they tend to fail together. The third has no plane to be defeated by.
+
 The cap winds \emph{against} its ring, because the ring runs the way the faces it still
 has wind it: a cap that agreed would have the two disagreeing about which side is
 out.

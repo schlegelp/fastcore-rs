@@ -175,10 +175,19 @@ def trace_loops(halfedges):
     (``networkx.cycle_basis``, which is what ``trimesh.repair.fill_holes`` uses)
     quietly drops the edges that are not part of a simple cycle.
 
-    A walk that runs into a dead end is abandoned, and so is a ring of fewer than
-    three vertices. In both cases the half-edges it consumed stay consumed, so
-    this always terminates — but it does mean the rings need not account for
-    every half-edge handed in.
+    Every ring comes back *simple* — no vertex twice — which is what makes it a
+    polygon, and so the thing :func:`~navis_fastcore.triangulate_rings` is defined
+    on. A greedy walk does not give that on its own: at a pinch, where several
+    boundary edges meet at one point, it can leave and re-enter the same vertex,
+    and what it traced is then a figure of eight. A walk is therefore cut where it
+    crosses itself and the pieces handed on separately — the same half-edges,
+    grouped the way the caller can use.
+
+    A walk that runs into a dead end abandons what is still in hand, and so is a
+    ring of fewer than three vertices. In both cases the half-edges it consumed
+    stay consumed, so this always terminates — but it does mean the rings need not
+    account for every half-edge handed in. Cycles already split off from an
+    abandoned walk closed on their own account and are kept.
 
     Parameters
     ----------
@@ -224,13 +233,21 @@ def trace_loops(halfedges):
 def triangulate_rings(rings, offsets, vertices, threads=None):
     """Triangulate boundary rings, wound against the direction they run in.
 
-    Each ring is flattened onto a plane and ear-clipped. Three attempts, in
-    order: through the ring's area-weighted (Newell) normal, then through its
-    best-fit plane, and failing both a triangle fan from its first vertex — wonky
-    on a non-convex opening, but always closed and always correctly wound, which
-    is what everything downstream depends on. A ring only gets past the first
-    attempt if the flattening self-intersects, which is what makes ear-clipping
-    run out of ears part way through.
+    Three attempts, in order: ear-clipping the ring flattened through its
+    area-weighted (Newell) normal, then flattened through its best-fit plane, and
+    failing both, ear-clipping it in three dimensions without flattening at all.
+    All three are always closed and always correctly wound, which is what
+    everything downstream depends on.
+
+    A ring only gets past the first attempt if the flattening self-intersects,
+    which is what makes ear-clipping run out of ears part way through. That is
+    not the same as the ring being un-planar — a gently curved ring can cast a
+    crossed shadow and a folded one need not — and since both of the first two
+    attempts are projections, they tend to fail together. The third has no plane
+    to be defeated by; it clips whichever ear is cheapest by
+    ``area + 0.05 * perimeter²``, which is a heuristic about the *shape* of the
+    cap rather than a guarantee about it, and is there because the alternative
+    is a fan reaching from one vertex of the opening to every other.
 
     The cap winds *against* its ring, because the ring runs the way the faces it
     still has wind it — a cap that agreed would have the two disagreeing about

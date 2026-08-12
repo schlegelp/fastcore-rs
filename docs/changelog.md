@@ -10,6 +10,36 @@ Tags, source archives and the original announcements are on
 
 ## 0.13.0 (unreleased)
 
+**Caps no longer span the opening they are closing.** Two changes, one in each half of the
+capping path, both aimed at the same artefact: a hole coming back closed by a single fan of
+triangles reaching from one vertex to every other.
+
+`trace_loops` now returns rings that are *simple* — no vertex twice. The walk is greedy, so at
+a pinch, where several boundary edges meet at one point, it could leave and re-enter the same
+vertex; what it traced was then a figure of eight rather than a polygon, and no triangulator is
+defined on one of those. Such a walk is now cut where it crosses itself and the pieces handed on
+separately. Same half-edges, grouped the way the caller can use.
+
+`triangulate_rings` has a third attempt before it gives up. A ring gets past the first only if
+its flattening self-intersects, and since both of the existing attempts are *projections* — the
+Newell normal, then the best-fit plane — they tend to fail together, leaving the fan. Worth being
+clear that this is not the same as the ring being un-planar: a gently curved ring can cast a
+crossed shadow and a folded one need not, and on one real mesh the rings that fell through were
+on average *more* planar than the ones that did not. The new attempt ear-clips in three
+dimensions without flattening at all, taking the cheapest ear by `area + 0.05 * perimeter²`.
+That is a heuristic about the shape of the cap rather than a guarantee about it, which is why it
+sits after the two that can promise more.
+
+Over the 933 openings of that mesh the three rungs take 94.0%, 1.1% and 4.9%, so the best-fit
+plane does still earn its place — it rescues about one in five of the rings the Newell normal
+cannot flatten. Its other entry, a ring whose signed areas cancel so exactly that there is no
+area-weighted normal at all, did not come up once.
+
+On a 3.5 M-face neuron mesh with heavy invagination, capping 933 openings: the longest edge any
+cap triangle carries drops from 4.2 µm to 1.4 µm, and the number over a micron from 1003 to 5.
+The worst case, a 1223-vertex opening around a soma, goes from a median cap edge of 2.7 µm to
+65 nm. Rings small enough that a fan was acceptable are unaffected in any way that shows.
+
 **`mesh_connected_components` can read connectivity across faces, not only across vertices.**
 It now takes a `connectivity` argument with three readings, each strictly finer than the one
 before it, and each step drops a kind of junction.

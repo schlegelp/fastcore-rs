@@ -70,8 +70,9 @@ const MAX_ITERATIONS: usize = 100;
 // Three components of `f64`, which is what `vec3f` is upstream despite the name.
 // Not worth a dependency or a type — these are all one line.
 
+/// `pub(crate)` for [`crate::caps`], whose three-dimensional ear clip wants the same.
 #[inline]
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+pub(crate) fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 

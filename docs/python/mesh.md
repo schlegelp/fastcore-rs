@@ -924,20 +924,36 @@ why `boundary_halfedges` and `exposed_halfedges` both return theirs in `3F` edge
 that is the one order that does not depend on how the parallel work happened to be split, so
 the same mesh gives the same rings at every `threads` setting.
 
+It also means a walk can leave a pinch vertex and come back to it, having gone right round
+one of the other loops meeting there. What it traced is then a figure of eight rather than a
+polygon, and nothing that triangulates a ring is defined on one of those. So a walk is cut
+where it crosses itself and the pieces handed on separately: same half-edges, but every ring
+`trace_loops` returns is *simple*, no vertex twice.
+
 ### How a ring is closed
 
-`triangulate_rings` flattens each ring onto a plane and ear-clips it, trying three things in
-order:
+`triangulate_rings` ear-clips each ring, trying three things in order:
 
-1. The ring's area-weighted (Newell) normal. Cheaper than a best-fit plane and, on the rings
-   a cut actually produces, it fails slightly less often too.
-2. The best-fit plane, from the eigenvectors of the ring's 3x3 scatter matrix.
-3. A triangle fan from the ring's first vertex — wonky on a non-convex opening, but always
-   closed and always correctly wound.
+1. The ring flattened through its area-weighted (Newell) normal. Cheaper than a best-fit
+   plane and, on the rings a cut actually produces, it fails slightly less often too.
+2. The ring flattened through its best-fit plane, from the eigenvectors of its 3x3 scatter
+   matrix.
+3. The ring as it stands, in three dimensions, clipping whichever ear is cheapest by
+   `area + 0.05 * perimeter²`.
 
 A ring only gets past step 1 if the flattening self-intersects, which is what makes
 ear-clipping run out of ears part way through and yield fewer than the `n - 2` triangles a
-simple polygon always does.
+simple polygon always does. That is not the same as the ring being un-planar: a gently
+curved ring can cast a crossed shadow and a folded one need not. Since steps 1 and 2 are
+both projections they tend to fail together, which is what step 3 is for — it has no plane
+to be defeated by. Over the 933 openings of an invaginated neuron mesh the split was 94.0%,
+1.1% and 4.9%.
+
+All three close the hole and wind it correctly, which is what callers depend on. Only step 3
+is a heuristic about the *shape* of the cap: unlike a planar clip it cannot promise the cap
+does not fold over itself somewhere, which is why it goes last. What it buys is a cap that
+stays local — on a 1223-vertex opening around an invaginated soma, a median cap edge of
+65 nm where a fan out of one vertex gives 2.7 µm.
 
 The cap winds *against* its ring. The ring runs the way the faces it still has wind it, so a
 cap that agreed would have the two disagreeing about which side is out.
@@ -948,11 +964,11 @@ triangles about 93% of the time and an equally valid alternative otherwise — s
 count, same total oriented area, same winding — so do not depend on the exact triangles, only
 on the hole being closed the right way round.
 
-One case is worth knowing about. Greedy tracing can walk back through a non-manifold boundary
-vertex, which leaves a ring that names the same vertex twice — a polygon touching itself.
-Neither ear-clipping attempt can find `n - 2` ears there, so the fan takes over. On a punched
-neuron mesh roughly 10% of rings are like this, and `mapbox_earcut` can loop **forever** on
-the best-fit-plane retry one of them provokes; this implementation returns the fan.
+Rings arriving from `trace_loops` are simple, and steps 1-3 assume it. A ring built by hand
+that names the same vertex twice is a polygon touching itself; it still comes back closed and
+correctly wound, but its shape is not specified. Such a ring is also the input that can send
+`mapbox_earcut` — what navis reached for before this module existed — into an **infinite
+loop** on its best-fit-plane retry.
 
 ::: navis_fastcore.boundary_halfedges
 

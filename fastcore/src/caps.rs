@@ -7,8 +7,9 @@
 //!
 //! 1. Find the boundary — [`boundary_halfedges`] over a whole mesh, or
 //!    [`exposed_halfedges`] when you know which vertices are about to go.
-//! 2. [`trace_loops`] walks those half-edges into closed rings.
-//! 3. [`triangulate_rings`] ear-clips each ring into a cap.
+//! 2. [`trace_loops`] walks those half-edges into closed rings, each of them *simple* — no
+//!    vertex twice, and so a polygon.
+//! 3. [`triangulate_rings`] ear-clips each ring into a cap, assuming that.
 //!
 //! No vertices are ever added, only faces. That keeps every vertex index — in the face
 //! array, in whatever per-vertex data the caller carries alongside — pointing at what it
@@ -45,7 +46,7 @@ use rayon::prelude::*;
 
 use crate::mesh::{edge_key, sorted_edge_keys};
 use crate::points::eigh3;
-use crate::simplify::{cross, dot, normalize};
+use crate::simplify::{cross, dot, normalize, sub};
 use crate::threads::with_pool;
 
 // ---------------------------------------------------------------------------
@@ -274,9 +275,17 @@ pub fn exposed_halfedges(
 /// `trimesh.repair.fill_holes` uses) quietly drops the edges that are not part of a simple
 /// cycle.
 ///
-/// A walk that runs into a dead end is abandoned, and so is a ring of fewer than three
-/// vertices; in both cases the half-edges it consumed stay consumed, so the traversal
-/// always terminates.
+/// Every ring comes back *simple* — no vertex twice — which is what makes it a polygon and
+/// so the thing [`triangulate_rings`] is defined on. A greedy walk does not give that on
+/// its own: at a pinch, where several boundary edges meet at one point, it can leave and
+/// re-enter the same vertex, and what it traced is then a figure of eight. So a walk is cut
+/// where it crosses itself and the pieces handed on separately — the same half-edges,
+/// grouped the way the caller can use.
+///
+/// A walk that runs into a dead end abandons what is still in hand, and so is a ring of
+/// fewer than three vertices; in both cases the half-edges it consumed stay consumed, so
+/// the traversal always terminates. Cycles already split off from an abandoned walk are
+/// closed on their own account and are kept.
 ///
 /// Single-threaded on purpose: the walk is inherently sequential — which target is still
 /// free depends on what earlier walks took — but it is proportional to the *boundary*
@@ -335,36 +344,72 @@ pub fn trace_loops(halfedges: ArrayView2<u32>) -> (Array1<u32>, Array1<i64>) {
 
     let mut rings: Vec<u32> = Vec::new();
     let mut offsets: Vec<i64> = vec![0];
+
+    // The walk is built here rather than straight into `rings`, because a walk that
+    // touches a vertex twice has to be cut in two before it is handed on, and a ring
+    // already written into the CSR cannot be cut. `where_on_path[v]` is `v`'s index in
+    // `path`, or `NOT_ON_PATH`; the array spans the vertex space like `start` does, so
+    // the test is one lookup rather than a scan back along the walk.
+    const NOT_ON_PATH: u32 = u32::MAX;
+    let mut path: Vec<u32> = Vec::new();
+    let mut where_on_path = vec![NOT_ON_PATH; n];
+
     for &root in &tails {
         let r = root as usize;
         while cursor[r] > start[r] {
-            let mark = rings.len();
-            rings.push(root);
+            // `path` is left empty by the drain that ends each walk.
+            where_on_path[r] = 0;
+            path.push(root);
             cursor[r] -= 1;
             let mut v = heads[cursor[r] as usize];
-            let mut closed = true;
             while v != root {
                 // Take whichever half-edge out of `v` is still free. An exhausted run covers
                 // both "never a tail" (its run is empty to begin with) and "already all
                 // spent" — either way a dead end.
                 let s = v as usize;
                 if cursor[s] <= start[s] {
-                    closed = false;
                     break;
                 }
+                // Arriving where the walk has already been closes a loop of its own:
+                // everything since that visit is a cycle touching the rest of the walk
+                // only at this vertex. Emit it and rewind to where it started, which
+                // leaves `path` simple and lets the walk carry on through the vertex a
+                // second time. This is what a pinch — several boundary edges meeting at
+                // one point — looks like from inside the walk, and splitting here is the
+                // difference between handing on a polygon and handing on a figure of
+                // eight, which no triangulator downstream is defined on.
+                if where_on_path[s] != NOT_ON_PATH {
+                    let from = where_on_path[s] as usize;
+                    emit(&mut rings, &mut offsets, &path[from..]);
+                    for u in path.drain(from..) {
+                        where_on_path[u as usize] = NOT_ON_PATH;
+                    }
+                }
                 cursor[s] -= 1;
-                rings.push(v);
+                where_on_path[s] = path.len() as u32;
+                path.push(v);
                 v = heads[cursor[s] as usize];
             }
-            if closed && rings.len() - mark >= 3 {
-                offsets.push(rings.len() as i64);
-            } else {
-                rings.truncate(mark);
+            // `v == root` means the walk closed. A dead end abandons only what is left in
+            // `path`: cycles split off above closed on themselves and stand on their own.
+            if v == root {
+                emit(&mut rings, &mut offsets, &path);
+            }
+            for u in path.drain(..) {
+                where_on_path[u as usize] = NOT_ON_PATH;
             }
         }
     }
 
     (Array1::from_vec(rings), Array1::from_vec(offsets))
+}
+
+/// Append a ring to the CSR, dropping anything too short to bound a face.
+fn emit(rings: &mut Vec<u32>, offsets: &mut Vec<i64>, ring: &[u32]) {
+    if ring.len() >= 3 {
+        rings.extend_from_slice(ring);
+        offsets.push(rings.len() as i64);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -460,14 +505,66 @@ fn earcut_ring(
     true
 }
 
-/// Fan from the ring's first vertex, wound against the ring.
+/// Ear-clip a ring in three dimensions, wound against the ring.
 ///
-/// Wonky on a non-convex ring, but it always closes the hole and it always gets the winding
-/// right, which is what everything downstream actually depends on.
-fn fan(ring: &[u32], out: &mut Vec<u32>) {
-    for i in 2..ring.len() {
-        out.extend_from_slice(&[ring[0], ring[i], ring[i - 1]]);
+/// The last resort, for a ring no flattening can handle. Both attempts above are
+/// projections, so they fail on the same rings — not the ones that are least planar, but
+/// the ones whose *shadow* crosses itself, which a gently curved ring can manage as easily
+/// as a folded one. This never projects, so that failure cannot arise: it clips whichever
+/// ear is cheapest by `area + 0.05 * perimeter^2`, taken over the ring as it stands.
+///
+/// Both terms are areas, so the choice does not move if the mesh is measured in nm rather
+/// than um; the perimeter term is what stops it from paying for a small area with a long
+/// thin sliver, which minimising area alone does. This is a heuristic about the *shape* of
+/// the cap and, unlike the planar clip, cannot promise it does not fold over itself
+/// somewhere — which is why it sits after the two attempts that can. It is worth having
+/// because the alternative is a fan out of one vertex: on a real invaginated soma, a
+/// 1223-vertex ring through the pinches, it takes the median cap edge from 2.7 um to 65 nm.
+///
+/// The cost is `n` clips over a shrinking ring. Only two ears change weight per clip — the
+/// ones that gain a new neighbour — so the weights are carried rather than rebuilt, which
+/// on that same ring is ~2.4k evaluations rather than ~750k. What is left is the scan for
+/// the cheapest, over a flat `f64` array. Liepa's minimum-weight triangulation would give
+/// better-shaped caps, but it is `O(n^3)` and so wants a size cap, and the rings small
+/// enough to afford it are the ones a fan already handled acceptably.
+fn earclip3d(ring: &[u32], vertices: &[f64], out: &mut Vec<u32>) {
+    let at = |v: u32| {
+        let i = 3 * v as usize;
+        [vertices[i], vertices[i + 1], vertices[i + 2]]
+    };
+    let len = |a: [f64; 3]| dot(a, a).sqrt();
+    // The cost of clipping the ear at `k`, i.e. of the triangle its two neighbours make
+    // with it. Reads `idx` at the moment it is called, so it has to be recomputed for the
+    // two ears either side of a clip and for nothing else.
+    let weight = |idx: &[u32], k: usize| {
+        let n = idx.len();
+        let (a, b, c) = (at(idx[(k + n - 1) % n]), at(idx[k]), at(idx[(k + 1) % n]));
+        let (ab, ac) = (sub(b, a), sub(c, a));
+        len(cross(ab, ac)) * 0.5 + 0.05 * (len(ab) + len(sub(c, b)) + len(ac)).powi(2)
+    };
+
+    let mut idx: Vec<u32> = ring.to_vec();
+    let mut weights: Vec<f64> = (0..idx.len()).map(|k| weight(&idx, k)).collect();
+    while idx.len() > 3 {
+        // `>` keeps the earliest of equal candidates, so a ring with several identical ears
+        // clips the same one whichever order the scan happens to reach them in.
+        let mut best = 0usize;
+        for k in 1..weights.len() {
+            if weights[best] > weights[k] {
+                best = k;
+            }
+        }
+        let n = idx.len();
+        out.extend_from_slice(&[idx[(best + 1) % n], idx[best], idx[(best + n - 1) % n]]);
+        idx.remove(best);
+        weights.remove(best);
+        // `best` now holds what followed the clipped ear and `best - 1` what preceded it;
+        // both have gained a neighbour, and no other ear has changed.
+        let n = idx.len();
+        weights[best % n] = weight(&idx, best % n);
+        weights[(best + n - 1) % n] = weight(&idx, (best + n - 1) % n);
     }
+    out.extend_from_slice(&[idx[2], idx[1], idx[0]]);
 }
 
 /// Triangulate one ring, appending its cap to `out`.
@@ -483,7 +580,8 @@ fn cap_ring(
         return;
     }
     if n == 3 {
-        fan(ring, out);
+        // Already a triangle; reversed, so that it opposes the ring the way a cap must.
+        out.extend_from_slice(&[ring[2], ring[1], ring[0]]);
         return;
     }
 
@@ -519,10 +617,10 @@ fn cap_ring(
         }
     }
 
-    // Second attempt through the best-fit plane, then a plain fan.
+    // Second attempt through the best-fit plane, then out of the plane altogether.
     let (u, w) = scatter_basis(&centred);
     if !earcut_ring(ring, &project(&centred, u, w), ec, scratch, out) {
-        fan(ring, out);
+        earclip3d(ring, vertices, out);
     }
 }
 
@@ -562,12 +660,24 @@ pub fn check_rings(rings: &[u32], offsets: &[i64]) -> Result<(), String> {
 /// its total boundary length says it should.
 ///
 /// Every ring is closed one way or another: ear-clipping through the area-weighted normal,
-/// failing that through the best-fit plane, and failing that a triangle fan — wonky on a
-/// non-convex opening, but closed and correctly wound, which is what callers depend on.
+/// failing that through the best-fit plane, and failing both of those — which happens when
+/// the ring's shadow crosses itself, whatever plane it is cast on — ear-clipping in three
+/// dimensions instead. All three are closed and correctly wound, which is what callers
+/// depend on; only the last is a heuristic about the *shape* of the cap.
+///
+/// Over the 933 openings of an invaginated neuron mesh, the normal took 94.0%, the best-fit
+/// plane a further 1.1%, and the three-dimensional clip the remaining 4.9%. So the middle
+/// rung does earn its place, though narrowly — it rescues about one in five of the rings the
+/// normal cannot flatten. Its other entry, a ring whose signed areas cancel so exactly that
+/// there is no area-weighted normal to project through at all, did not come up once.
 ///
 /// Arguments
 /// ---------
-/// - `rings`, `offsets`: boundary rings in the CSR form [`trace_loops`] returns.
+/// - `rings`, `offsets`: boundary rings in the CSR form [`trace_loops`] returns. A ring is
+///   assumed *simple*, which is what that function guarantees. One built by hand that names
+///   a vertex twice is not a polygon, and while its cap still comes back closed and
+///   correctly wound, its shape is not specified. [`check_rings`] deliberately does not test
+///   for this: it is `O(n)` per ring, and the caller usually knows already.
 /// - `vertices`:         (V, 3) vertex positions.
 /// - `threads`:          Size of the thread pool, or `None` for all cores.
 ///
@@ -616,6 +726,17 @@ mod tests {
     use super::*;
     use crate::mesh::tests_support::grid;
     use ndarray::{array, Array2};
+
+    /// Fan from the ring's first vertex, wound against the ring.
+    ///
+    /// What [`cap_ring`] used to close a ring with when both flattenings failed. Kept as
+    /// the baseline the three-dimensional clip is measured against — a fan reaches from
+    /// one vertex to every other, so its longest edge is about the width of the opening.
+    fn fan(ring: &[u32], out: &mut Vec<u32>) {
+        for i in 2..ring.len() {
+            out.extend_from_slice(&[ring[0], ring[i], ring[i - 1]]);
+        }
+    }
 
     /// A closed tetrahedron: no boundary at all.
     fn tetrahedron() -> (Array2<u32>, Array2<f64>) {
@@ -766,8 +887,9 @@ mod tests {
     #[test]
     fn non_planar_ring_still_closes() {
         // A ring the area-weighted normal cannot flatten without self-intersection — this
-        // is the path that falls through to the best-fit plane and then to the fan. Whatever
-        // it takes, the cap has to have n - 2 triangles and use every ring vertex.
+        // is the path that falls through to the best-fit plane and, failing that, out of
+        // the plane. Whichever rung takes it, the cap has to have n - 2 triangles and use
+        // every ring vertex.
         let vertices = array![
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 3.0],
@@ -785,10 +907,10 @@ mod tests {
 
     #[test]
     fn ring_through_the_same_vertex_twice_still_closes() {
-        // Greedy tracing can walk back through a non-manifold boundary vertex, which
-        // leaves a ring naming it twice — so the polygon touches itself and neither
-        // ear-clipping attempt can find `n - 2` ears. It has to come back as a fan
-        // rather than as a short cap, and above all it has to come back.
+        // A ring naming the same vertex twice: it touches itself, so it is not a polygon
+        // and neither flattening can find `n - 2` ears. `trace_loops` no longer hands one
+        // of these on — it cuts the walk where it crosses itself — but a caller can still
+        // build one, and when it does the cap has to come back regardless.
         //
         // These are the real coordinates of one such ring off a punched neuron mesh,
         // kept because they are also the input that sends `mapbox_earcut` — what navis
@@ -809,8 +931,10 @@ mod tests {
     }
 
     #[test]
-    fn degenerate_ring_falls_back_to_a_fan() {
-        // Every vertex collinear: no plane at all, so both projections are hopeless.
+    fn degenerate_ring_still_closes() {
+        // Every vertex collinear: no plane at all, so both projections are hopeless and
+        // this lands in the three-dimensional clip. The triangles are degenerate whatever
+        // closes it — the point is that something does, with the right count.
         let vertices = array![
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
@@ -819,6 +943,107 @@ mod tests {
         ];
         let caps = triangulate_rings(&[0, 1, 2, 3], &[0, 4], vertices.view(), None);
         assert_eq!(caps.nrows(), 2);
+    }
+
+    #[test]
+    fn a_walk_that_crosses_itself_is_cut_where_it_crosses() {
+        // Two triangles sharing vertex 0, but entered from vertex 1 rather than from the
+        // shared vertex — so the greedy walk leaves 0, goes right round the second
+        // triangle and arrives back at 0 with edges still to spend. Traced in one piece
+        // that is `1 0 3 4 0 2`, which names 0 twice and is no polygon.
+        let he = array![[1u32, 0], [0, 2], [2, 1], [0, 3], [3, 4], [4, 0]];
+        let (rings, offsets) = trace_loops(he.view());
+
+        assert_eq!(offsets.len(), 3, "cut into two rings");
+        assert_eq!(rings.len(), 6, "every half-edge still used exactly once");
+        for w in offsets.windows(2) {
+            let ring = &rings.as_slice().unwrap()[w[0] as usize..w[1] as usize];
+            let unique: std::collections::HashSet<u32> = ring.iter().copied().collect();
+            assert_eq!(
+                unique.len(),
+                ring.len(),
+                "ring {ring:?} names a vertex twice"
+            );
+        }
+    }
+
+    #[test]
+    fn a_ring_no_plane_can_hold_is_clipped_locally() {
+        // Real coordinates, centred, of a 21-vertex opening off an invaginated soma —
+        // one of the rings this module used to fan. Both flattenings self-intersect, and
+        // it is worth being clear that this is not the same thing as being un-planar: a
+        // gently curved ring can cast a crossed shadow, and a folded one need not.
+        //
+        // The property under test is that the cap stays *local*. A fan reaches from one
+        // vertex to every other, so its longest edge is about the width of the opening;
+        // on this ring that is 115 nm against the clip's 63 nm, and on the 1223-vertex
+        // soma ring these come from, 4.2 um against 1.4 um.
+        let v = array![
+            [-26.794643, 22.679315, -40.629464],
+            [-16.107143, 44.007440, -25.691964],
+            [-26.794643, 29.085565, -15.035714],
+            [5.205357, 22.679315, 16.964286],
+            [-26.794643, 16.273065, 16.964286],
+            [-18.794643, 14.679315, 48.964286],
+            [-34.794643, -9.320685, 24.964286],
+            [-26.794643, -34.914435, 16.964286],
+            [5.205357, -41.320685, 16.964286],
+            [-26.794643, -33.320685, -7.035714],
+            [5.205357, -33.320685, -7.035714],
+            [29.205357, -33.320685, 16.964286],
+            [37.205357, -9.320685, 48.964286],
+            [29.205357, 14.679315, 48.964286],
+            [29.205357, 14.679315, 16.964286],
+            [37.205357, 22.679315, -8.629464],
+            [37.205357, -9.320685, -15.035714],
+            [5.205357, -17.320685, -23.035714],
+            [5.205357, -1.320685, -39.035714],
+            [-26.794643, -1.320685, -39.035714],
+            [5.205357, 22.679315, -53.441964],
+        ];
+        let n = v.nrows();
+        let ring: Vec<u32> = (0..n as u32).collect();
+        let caps = triangulate_rings(&ring, &[0, n as i64], v.view(), None);
+
+        assert_eq!(caps.nrows(), n - 2, "n - 2 triangles");
+        let used: std::collections::HashSet<u32> = caps.iter().copied().collect();
+        assert_eq!(used.len(), n, "every ring vertex used");
+
+        // Winding: the ring runs the way its remaining faces do, so for every ring edge
+        // the cap has to carry the same edge the other way round.
+        let directed: std::collections::HashSet<(u32, u32)> = caps
+            .rows()
+            .into_iter()
+            .flat_map(|t| [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])])
+            .collect();
+        for i in 0..n {
+            let (a, b) = (ring[i], ring[(i + 1) % n]);
+            assert!(
+                directed.contains(&(b, a)),
+                "cap does not oppose ring edge {a}->{b}"
+            );
+        }
+
+        let longest = |tris: &[u32]| {
+            tris.chunks_exact(3)
+                .map(|t| {
+                    (0..3)
+                        .map(|k| {
+                            let p = v.row(t[k] as usize);
+                            let q = v.row(t[(k + 1) % 3] as usize);
+                            let d = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
+                            dot(d, d).sqrt()
+                        })
+                        .fold(0.0f64, f64::max)
+                })
+                .fold(0.0f64, f64::max)
+        };
+        let mut fanned = Vec::new();
+        fan(&ring, &mut fanned);
+        assert!(
+            longest(caps.as_slice().unwrap()) < longest(&fanned),
+            "the clip should not span the opening the way a fan does"
+        );
     }
 
     #[test]

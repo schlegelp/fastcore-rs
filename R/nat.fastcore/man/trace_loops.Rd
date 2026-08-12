@@ -23,6 +23,13 @@ what makes this cover the whole boundary — a cycle basis quietly drops the edg
 that are not part of a simple cycle, and those holes stay open.
 }
 \details{
-A walk that runs into a dead end is abandoned, and so is a ring of fewer than three
-vertices, so the rings need not account for every half-edge handed in.
+Every ring comes back simple — no vertex twice. A greedy walk does not give that on
+its own: at a pinch, where several boundary edges meet at one point, it can leave and
+re-enter the same vertex, and what it traced is then a figure of eight rather than a
+polygon, which no triangulator downstream is defined on. So a walk is cut where it
+crosses itself and the pieces are handed on separately.
+
+A walk that runs into a dead end abandons what is still in hand, and so is a ring of
+fewer than three vertices, so the rings need not account for every half-edge handed
+in. Cycles already split off from an abandoned walk are kept.
 }

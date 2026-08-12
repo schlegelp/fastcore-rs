@@ -795,8 +795,15 @@ exposed_halfedges <- function(faces, dropped, threads = NULL) .Call(wrap__expose
 #' what makes this cover the whole boundary — a cycle basis quietly drops the edges
 #' that are not part of a simple cycle, and those holes stay open.
 #'
-#' A walk that runs into a dead end is abandoned, and so is a ring of fewer than three
-#' vertices, so the rings need not account for every half-edge handed in.
+#' Every ring comes back simple — no vertex twice. A greedy walk does not give that on
+#' its own: at a pinch, where several boundary edges meet at one point, it can leave and
+#' re-enter the same vertex, and what it traced is then a figure of eight rather than a
+#' polygon, which no triangulator downstream is defined on. So a walk is cut where it
+#' crosses itself and the pieces are handed on separately.
+#'
+#' A walk that runs into a dead end abandons what is still in hand, and so is a ring of
+#' fewer than three vertices, so the rings need not account for every half-edge handed
+#' in. Cycles already split off from an abandoned walk are kept.
 #'
 #' @param halfedges Integer or numeric `(K, 2)` matrix of directed half-edges, as
 #'   returned by `boundary_halfedges` or `exposed_halfedges`.
@@ -809,10 +816,15 @@ trace_loops <- function(halfedges) .Call(wrap__trace_loops, halfedges)
 
 #' Triangulate boundary rings, wound against the direction they run in.
 #'
-#' Each ring is flattened onto a plane and ear-clipped, trying three things in order:
-#' the ring's area-weighted (Newell) normal, then its best-fit plane, then a plain
-#' triangle fan — wonky on a non-convex opening, but always closed and always correctly
-#' wound. A ring only gets past the first attempt if the flattening self-intersects.
+#' Three attempts, in order: ear-clipping the ring flattened through its area-weighted
+#' (Newell) normal, then through its best-fit plane, and failing both, ear-clipping it
+#' in three dimensions without flattening at all. All three are always closed and always
+#' correctly wound.
+#'
+#' A ring only gets past the first attempt if the flattening self-intersects. That is
+#' not the same as the ring being un-planar — a gently curved ring can cast a crossed
+#' shadow and a folded one need not — and since the first two attempts are both
+#' projections, they tend to fail together. The third has no plane to be defeated by.
 #'
 #' The cap winds *against* its ring, because the ring runs the way the faces it still
 #' has wind it: a cap that agreed would have the two disagreeing about which side is
