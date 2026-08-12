@@ -37,6 +37,77 @@ test_that("connected_components_graph labels by lowest node index", {
   )
 })
 
+test_that("mesh_connected_components reads vertex and face connectivity apart", {
+  # Two triangles pinched together at vertex 2 and joined nowhere else: the vertex
+  # graph walks straight through the pinch, the faces cannot step across it.
+  pinch <- matrix(c(0, 1, 2, 2, 3, 4), ncol = 3, byrow = TRUE)
+  expect_equal(mesh_connected_components(pinch, 5), c(0, 0, 0, 0, 0))
+  expect_equal(mesh_connected_components(pinch, connectivity = "face"), c(0, 1))
+
+  # Share an edge instead of a corner and the two readings agree.
+  expect_equal(
+    mesh_connected_components(.square_faces(), connectivity = "face"),
+    c(0, 0)
+  )
+
+  # Face labels are the smallest face index in the component, even when the
+  # components are interleaved in the face matrix: 0 and 2 share edge (1, 2).
+  faces <- matrix(c(0, 1, 2, 3, 4, 5, 1, 2, 6), ncol = 3, byrow = TRUE)
+  expect_equal(mesh_connected_components(faces, connectivity = "face"), c(0, 1, 0))
+  expect_equal(
+    mesh_connected_components(faces, connectivity = "face", threads = 1),
+    c(0, 1, 0)
+  )
+
+  # `n_vertices` sets the length of the vertex answer, so it is required there — and
+  # belongs to that reading, so passing it alongside faces is an error rather than
+  # something quietly dropped. The messages come from the R wrapper, not from a Rust
+  # panic, which is what makes them matchable here at all.
+  expect_error(mesh_connected_components(pinch), "n_vertices` is required")
+  expect_error(mesh_connected_components(pinch, 5, connectivity = "edge"), "must be one of")
+  expect_error(
+    mesh_connected_components(pinch, 5, connectivity = "face"), "does not apply"
+  )
+  expect_error(mesh_connected_components(pinch, 5, threads = 2), "does not apply")
+
+  # `.match_arg` keeps partial matching, as it does for the smoothing methods.
+  expect_equal(mesh_connected_components(pinch, connectivity = "f"), c(0, 1))
+})
+
+test_that("manifold connectivity drops a seam but keeps the sheets whole", {
+  # Three fins meeting along the spine (1, 2), each two faces long. The spine carries
+  # three faces and every other interior edge exactly two.
+  fins <- matrix(
+    c(1, 2, 3, 1, 2, 4, 1, 2, 5, 1, 3, 6, 1, 4, 7, 1, 5, 8),
+    ncol = 3, byrow = TRUE
+  )
+  # Any shared edge counts, so the spine fuses the three fins into one.
+  expect_equal(mesh_connected_components(fins, connectivity = "face"), rep(0, 6))
+  # Manifold edges only: the spine is too deep to belong to one surface, but each fin
+  # is still held together by an edge only it carries.
+  expect_equal(
+    mesh_connected_components(fins, connectivity = "manifold"), c(0, 1, 2, 0, 1, 2)
+  )
+
+  # Where no edge is deeper than two, the two face readings cannot differ.
+  square <- .square_faces()
+  expect_equal(
+    mesh_connected_components(square, connectivity = "manifold"),
+    mesh_connected_components(square, connectivity = "face")
+  )
+
+  # `threads` belongs to both face readings; `n_vertices` to neither.
+  expect_equal(
+    mesh_connected_components(fins, connectivity = "manifold", threads = 1),
+    c(0, 1, 2, 0, 1, 2)
+  )
+  expect_error(
+    mesh_connected_components(fins, 9, connectivity = "manifold"), "does not apply"
+  )
+  # Partial matching reaches the new name too.
+  expect_equal(mesh_connected_components(fins, connectivity = "m"), c(0, 1, 2, 0, 1, 2))
+})
+
 test_that("bridges are exactly the edges holding a component together", {
   # A ring has no bridges; the tail hanging off it is one.
   edges <- .ring_with_tail()

@@ -157,6 +157,9 @@ mod fastcore {
     use super::mesh_connected_components_py;
 
     #[pymodule_export]
+    use super::mesh_face_components_py;
+
+    #[pymodule_export]
     use super::geodesic_matrix_mesh_py;
 
     #[pymodule_export]

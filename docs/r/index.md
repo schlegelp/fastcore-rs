@@ -120,7 +120,9 @@ healed = heal_skeleton(parents, s$d$X, s$d$Y, s$d$Z, method="ALL",
 
 **Mesh and graph**
 
-- `mesh_connected_components`: connected components of a triangle mesh
+- `mesh_connected_components`: connected components of a triangle mesh, joined at the
+  corners (`connectivity = "vertex"`), across any shared edge (`"face"`), or only across
+  edges carrying exactly two faces (`"manifold"`)
 - `unique_edges`: the unique undirected edges of a triangle mesh, with lengths
 - `connected_components_graph`: connected components of any graph, from an edge list
 - `level_set_components`: the components of *every* level set in one pass (wavefront rings)

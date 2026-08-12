@@ -9,8 +9,8 @@ use fastcore::mesh::{
     bridges, connected_components_graph, contract_vertices, geodesic_clusters,
     geodesic_farthest_mesh, geodesic_matrix_graph, geodesic_matrix_mesh, geodesic_mst_graph,
     geodesic_mst_mesh, geodesic_nearest_mesh, geodesic_path_graph, geodesic_predecessors_graph,
-    level_set_components, mesh_connected_components, minimum_spanning_tree, parents_from_edges,
-    unique_edges, GeodesicGraph, Weight,
+    level_set_components, mesh_connected_components, mesh_face_components, minimum_spanning_tree,
+    parents_from_edges, unique_edges, GeodesicGraph, Weight,
 };
 
 /// Edge weights, at whatever width the caller already has them in.
@@ -80,7 +80,7 @@ pub(crate) fn as_opt_flags<'a>(
     a.as_ref().map(|a| as_flags(a, what, n_items)).transpose()
 }
 
-/// Find connected components of a triangle mesh.
+/// Find connected components of a triangle mesh, by vertex adjacency.
 ///
 /// Arguments
 /// ---------
@@ -99,6 +99,35 @@ pub fn mesh_connected_components_py<'py>(
     n_vertices: usize,
 ) -> Bound<'py, PyArray1<u32>> {
     let result = mesh_connected_components(faces.as_array(), n_vertices);
+    result.into_pyarray(py)
+}
+
+/// Find connected components of a triangle mesh, by face adjacency.
+///
+/// Two faces belong together when they share an *edge*, not merely a corner — a strictly
+/// finer partition than `mesh_connected_components`, and one that can only be labelled per
+/// face, since a pinch vertex belongs to several face components at once.
+///
+/// Arguments
+/// ---------
+/// - `faces`:         (F, 3) uint32 array of triangular faces (vertex indices).
+/// - `manifold_only`: Join across an edge only when exactly two faces carry it, so the
+///   components come out as surfaces rather than as connected sets of triangles.
+/// - `threads`:       Size of the thread pool, or `None` for all cores.
+///
+/// Returns
+/// -------
+/// A 1-D uint32 array of length `F` where each entry contains the smallest face index in
+/// the component that face belongs to.
+#[pyfunction]
+#[pyo3(name = "mesh_face_components", signature = (faces, manifold_only=false, threads=None))]
+pub fn mesh_face_components_py<'py>(
+    py: Python<'py>,
+    faces: PyReadonlyArray2<u32>,
+    manifold_only: bool,
+    threads: Option<usize>,
+) -> Bound<'py, PyArray1<u32>> {
+    let result = mesh_face_components(faces.as_array(), manifold_only, threads);
     result.into_pyarray(py)
 }
 

@@ -550,6 +550,226 @@ def test_unique_edges_matches_trimesh():
 
 
 # -----------------------------------------------------------------------------
+# Connected components of a mesh: vertex, face and manifold connectivity
+#
+# The oracle for the face readings is trimesh: `split(only_watertight=False)` for
+# `"face"`, and `face_adjacency` — which keeps only the edges carrying exactly two
+# faces — for `"manifold"`, which is defined to reproduce it. The two readings
+# differ on exactly one thing, an edge three or more faces deep, so that is the
+# fixture most of these are built on rather than something papered over.
+# -----------------------------------------------------------------------------
+
+
+#: Two triangles pinched together at vertex 2 and joined nowhere else. The whole
+#: distinction between `"vertex"` and `"face"`, in five vertices.
+PINCH = np.array([[0, 1, 2], [2, 3, 4]], dtype=np.uint32)
+
+#: Three fins meeting along the spine (1, 2), each two faces long. The spine carries
+#: three faces and every other interior edge exactly two, which is the whole
+#: distinction between `"face"` and `"manifold"`.
+FINS = np.array(
+    [[1, 2, 3], [1, 2, 4], [1, 2, 5], [1, 3, 6], [1, 4, 7], [1, 5, 8]],
+    dtype=np.uint32,
+)
+
+
+def test_face_components_split_a_pinch_that_the_vertex_version_walks_through():
+    vertex = fastcore.mesh_connected_components(PINCH, n_vertices=5)
+    face = fastcore.mesh_connected_components(PINCH, connectivity="face")
+
+    np.testing.assert_array_equal(vertex, [0, 0, 0, 0, 0])  # one component
+    np.testing.assert_array_equal(face, [0, 1])  # two
+
+    # Share an edge instead of a corner and the two agree again.
+    shared = np.array([[0, 1, 2], [1, 2, 3]], dtype=np.uint32)
+    np.testing.assert_array_equal(
+        fastcore.mesh_connected_components(shared, connectivity="face"), [0, 0]
+    )
+
+
+def test_face_components_are_labelled_by_their_smallest_face():
+    # Components interleaved in the face array: 0 and 2 share edge (1, 2), 1 is alone.
+    faces = np.array([[0, 1, 2], [3, 4, 5], [1, 2, 6]], dtype=np.uint32)
+    np.testing.assert_array_equal(
+        fastcore.mesh_connected_components(faces, connectivity="face"), [0, 1, 0]
+    )
+
+
+def test_face_components_match_trimesh_split():
+    """The call this exists to replace, on a mesh where the two cannot differ.
+
+    Everything here is manifold, so trimesh's `face_adjacency` — which keeps only
+    the edges carrying exactly two faces — sees the same graph we do.
+    """
+    trimesh = pytest.importorskip("trimesh")
+
+    a = trimesh.creation.icosphere(subdivisions=2)
+    b = trimesh.creation.box()
+    b.apply_translation([5, 0, 0])
+    m = trimesh.util.concatenate([a, b])
+    faces = np.asarray(m.faces, dtype=np.uint32)
+
+    ours = fastcore.mesh_connected_components(faces, connectivity="face")
+    ref = trimesh.graph.connected_components(
+        m.face_adjacency, nodes=np.arange(len(faces))
+    )
+
+    assert as_partition(ours) == {frozenset(c.tolist()) for c in ref}
+    assert len(set(ours.tolist())) == 2  # the sphere and the box
+
+
+def test_face_components_partition_the_faces_of_each_vertex_component():
+    """A face component never straddles a vertex component — it can only be finer.
+
+    On a mesh with no pinch points the two are the same partition of the faces,
+    which is what makes the pinch test above the interesting one.
+    """
+    faces, verts = grid_mesh(n=9)
+    faces = np.vstack([faces, faces + len(verts)])  # a second, disjoint grid
+    n = 2 * len(verts)
+
+    vertex = fastcore.mesh_connected_components(faces, n)
+    face = fastcore.mesh_connected_components(faces, connectivity="face")
+
+    # Label each face by the vertex component of its first corner; on this mesh
+    # that is the same partition the face reading produces.
+    assert as_partition(face) == as_partition(vertex[faces[:, 0]])
+
+
+def test_face_components_join_a_non_manifold_edge_where_trimesh_does_not():
+    """Three faces on one edge are one component under `"face"` — the divergence."""
+    faces = np.array([[0, 1, 2], [0, 1, 3], [0, 1, 4]], dtype=np.uint32)
+    np.testing.assert_array_equal(
+        fastcore.mesh_connected_components(faces, connectivity="face"), [0, 0, 0]
+    )
+    # `"manifold"` is the reading that agrees with trimesh: the edge is too deep to
+    # belong to any one surface, so it joins nothing.
+    np.testing.assert_array_equal(
+        fastcore.mesh_connected_components(faces, connectivity="manifold"), [0, 1, 2]
+    )
+
+    trimesh = pytest.importorskip("trimesh")
+    assert len(trimesh.graph.face_adjacency(faces.astype(np.int64))) == 0
+
+
+def test_manifold_components_drop_the_seam_but_keep_the_sheets_whole():
+    """The seam goes, the fins do not — `"manifold"` is not just "drop those faces"."""
+    np.testing.assert_array_equal(
+        fastcore.mesh_connected_components(FINS, connectivity="face"), [0] * 6
+    )
+    # Each fin is held together by an edge only it carries, so each survives whole.
+    np.testing.assert_array_equal(
+        fastcore.mesh_connected_components(FINS, connectivity="manifold"),
+        [0, 1, 2, 0, 1, 2],
+    )
+
+
+def test_manifold_components_match_trimesh_face_adjacency():
+    """`"manifold"` is defined as trimesh's `face_adjacency`, so pin it on a mesh
+    where that actually bites: two closed spheres welded along a shared seam."""
+    trimesh = pytest.importorskip("trimesh")
+
+    a = trimesh.creation.icosphere(subdivisions=2)
+    b = trimesh.creation.icosphere(subdivisions=2)
+    faces = np.vstack([np.asarray(a.faces), np.asarray(b.faces) + len(a.vertices)])
+    # Weld a fin onto an edge both spheres already carry, making it three deep.
+    e = faces[0][:2]
+    faces = np.vstack([faces, [e[0], e[1], len(a.vertices) + len(b.vertices)]])
+    faces = np.ascontiguousarray(faces, dtype=np.uint32)
+
+    ours = fastcore.mesh_connected_components(faces, connectivity="manifold")
+    ref = trimesh.graph.connected_components(
+        trimesh.graph.face_adjacency(faces.astype(np.int64)),
+        nodes=np.arange(len(faces)),
+    )
+    assert as_partition(ours) == {frozenset(c.tolist()) for c in ref}
+    # The fixture has to exercise the difference or it proves nothing.
+    assert as_partition(ours) != as_partition(
+        fastcore.mesh_connected_components(faces, connectivity="face")
+    )
+
+
+def test_manifold_components_agree_with_face_on_a_manifold_mesh():
+    """Where no edge is deeper than two, the two face readings cannot differ."""
+    faces, verts = grid_mesh(n=9)
+    faces = np.vstack([faces, faces + len(verts)])
+    np.testing.assert_array_equal(
+        fastcore.mesh_connected_components(faces, connectivity="manifold"),
+        fastcore.mesh_connected_components(faces, connectivity="face"),
+    )
+
+
+def test_boundary_edges_join_nothing_under_either_face_reading():
+    """An edge with one face on it has no second face to join to."""
+    lone = np.array([[0, 1, 2]], dtype=np.uint32)  # every edge is a boundary
+    for conn in ("face", "manifold"):
+        np.testing.assert_array_equal(
+            fastcore.mesh_connected_components(lone, connectivity=conn), [0]
+        )
+
+
+def test_face_components_keep_degenerate_self_loops():
+    # Two faces collapsed onto the same repeated vertex, as `unique_edges` keeps them.
+    # The (0, 0) edge carries exactly one of each, so even `"manifold"` joins them —
+    # and so does trimesh, whose `edges_sorted` has the same two rows.
+    faces = np.array([[0, 0, 1], [0, 0, 2]], dtype=np.uint32)
+    for conn in ("face", "manifold"):
+        np.testing.assert_array_equal(
+            fastcore.mesh_connected_components(faces, connectivity=conn), [0, 0]
+        )
+
+
+@pytest.mark.parametrize("connectivity", ["face", "manifold"])
+def test_face_components_are_thread_count_invariant(connectivity):
+    faces, verts = grid_mesh(n=12)
+    faces = np.vstack([faces, faces + len(verts), FINS + 2 * len(verts)])
+    ref = fastcore.mesh_connected_components(faces, connectivity=connectivity)
+    for threads in (1, 2, 4):
+        np.testing.assert_array_equal(
+            fastcore.mesh_connected_components(faces, connectivity=connectivity,
+                                               threads=threads),
+            ref,
+        )
+
+
+def test_empty_faces():
+    empty = np.zeros((0, 3), dtype=np.uint32)
+    for conn in ("face", "manifold"):
+        assert len(fastcore.mesh_connected_components(empty, connectivity=conn)) == 0
+    # The vertex reading still has to account for every vertex.
+    np.testing.assert_array_equal(
+        fastcore.mesh_connected_components(empty, n_vertices=3), [0, 1, 2]
+    )
+
+
+def test_connected_components_validation():
+    faces = np.array([[0, 1, 2]], dtype=np.uint32)
+
+    with pytest.raises(ValueError, match="must be a 2-D array"):
+        fastcore.mesh_connected_components(np.zeros((4, 2), dtype=np.uint32), 4)
+
+    with pytest.raises(ValueError, match='"vertex", "face", "manifold"'):
+        fastcore.mesh_connected_components(faces, 3, connectivity="edge")
+
+    # `n_vertices` sets the length of the output, so the vertex reading needs it...
+    with pytest.raises(ValueError, match="n_vertices` is required"):
+        fastcore.mesh_connected_components(faces)
+
+    # ...and it has to cover the faces, or the core would index out of bounds.
+    with pytest.raises(ValueError, match="references vertex 2"):
+        fastcore.mesh_connected_components(faces, 2)
+
+    # An argument belonging to the other reading is rejected, not dropped: sizing a
+    # call with `n_vertices` and then asking for faces is how you get an array of a
+    # length you did not expect back without any signal.
+    for conn in ("face", "manifold"):
+        with pytest.raises(ValueError, match="n_vertices` does not apply"):
+            fastcore.mesh_connected_components(faces, 3, connectivity=conn)
+    with pytest.raises(ValueError, match="threads` does not apply"):
+        fastcore.mesh_connected_components(faces, 3, threads=2)
+
+
+# -----------------------------------------------------------------------------
 # Graph primitives: components, level sets, contraction, spanning tree
 #
 # The oracle here is igraph, since these exist to replace exactly the igraph

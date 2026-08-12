@@ -605,18 +605,19 @@ reroot_rewire <- function(parents, from, to, root) .Call(wrap__reroot_rewire, pa
 #' @export
 heal_skeleton <- function(parents, x, y, z, method, max_dist, min_size, mask, radius, use_radius, threads = NULL) .Call(wrap__heal_skeleton, parents, x, y, z, method, max_dist, min_size, mask, radius, use_radius, threads)
 
-#' Find connected components of a triangle mesh.
+#' Find connected components of a triangle mesh, by vertex or by face adjacency.
 #'
-#' `faces` is an (N, 3) matrix of vertex indices. Returns an integer vector of
-#' length `n_vertices` assigning each vertex the root-vertex index of its
-#' component.
+#' The R wrapper (`mesh_connected_components`) holds the argument matching and the
+#' documentation, as it does for `smooth_mesh_raw`; the names reaching here have already
+#' been checked, so an unknown one is a bug rather than a user error.
 #'
 #' @param faces Integer or numeric `(N, 3)` matrix of triangle vertex indices.
-#' @param n_vertices Integer; total number of vertices in the mesh.
-#' @return Integer vector of length `n_vertices` giving each vertex the
-#'   root-vertex index of its component.
-#' @export
-mesh_connected_components <- function(faces, n_vertices) .Call(wrap__mesh_connected_components, faces, n_vertices)
+#' @param n_vertices Integer total number of vertices, or `NULL` for face connectivity.
+#' @param connectivity One of `"vertex"`, `"face"` or `"manifold"`.
+#' @param threads Integer thread cap, or `NULL`.
+#' @return Integer vector, one entry per vertex or per face.
+#' @noRd
+mesh_connected_components_raw <- function(faces, n_vertices, connectivity, threads) .Call(wrap__mesh_connected_components_raw, faces, n_vertices, connectivity, threads)
 
 #' Geodesic ("along-the-mesh-edge") distances on a triangle mesh.
 #'

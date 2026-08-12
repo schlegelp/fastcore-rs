@@ -19,6 +19,50 @@ fastcore.mesh_connected_components(faces, n_vertices=6)
 # array([0, 0, 0, 3, 3, 3], dtype=uint32)
 ```
 
+`connectivity` picks which of the three readings of "connected" you get, each strictly
+finer than the one before it. The default, `"vertex"`, joins two vertices whenever a face
+names them both and labels every vertex; `"face"` joins two faces wherever they share an
+*edge* and labels every face; `"manifold"` joins two faces only across an edge carrying
+*exactly two* of them.
+
+Each step drops a kind of junction. `"vertex"` → `"face"` drops the pinch points:
+
+```python
+# Two triangles meeting at vertex 2 and nowhere else
+faces = np.array([[0, 1, 2], [2, 3, 4]], dtype=np.uint32)
+
+fastcore.mesh_connected_components(faces, n_vertices=5)
+# array([0, 0, 0, 0, 0], dtype=uint32)   -- one component: you can walk through the pinch
+
+fastcore.mesh_connected_components(faces, connectivity="face")
+# array([0, 1], dtype=uint32)            -- two: you cannot step across it
+```
+
+`"face"` → `"manifold"` drops the seams — an edge three or more faces deep belongs to no
+single surface:
+
+```python
+# Three fins meeting along the spine (1, 2)
+faces = np.array([[1, 2, 3], [1, 2, 4], [1, 2, 5]], dtype=np.uint32)
+
+fastcore.mesh_connected_components(faces, connectivity="face")
+# array([0, 0, 0], dtype=uint32)   -- the spine is a shared edge like any other
+
+fastcore.mesh_connected_components(faces, connectivity="manifold")
+# array([0, 1, 2], dtype=uint32)   -- three faces on it, so it joins nothing
+```
+
+Pick by what the components are *for*:
+
+| | joins across | use it for |
+|---|---|---|
+| `"vertex"` | a shared corner | "can these vertices reach each other along mesh edges" — what [`geodesic_matrix_mesh`](#navis_fastcore.geodesic_matrix_mesh) answers with distances |
+| `"face"` | any shared edge | splitting a mesh into the pieces you could walk across — `trimesh`'s `split(only_watertight=False)` |
+| `"manifold"` | an edge with exactly two faces | splitting it into pieces that are *surfaces*, each with a well-defined inside — before asking one for its volume or winding. Reproduces `trimesh`'s `face_adjacency` |
+
+Note there is no per-vertex form of the face answers: a pinch vertex belongs to several
+face components at once. A boundary edge — one face — joins nothing under any reading.
+
 ::: navis_fastcore.mesh_connected_components
 
 ## Geodesic distances

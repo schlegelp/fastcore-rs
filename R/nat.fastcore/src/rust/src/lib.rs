@@ -1475,24 +1475,41 @@ pub fn heal_skeleton(
     fastcore::topo::reroot_rewire(&parents.view(), &new_edges.view(), root).to_vec()
 }
 
-/// Find connected components of a triangle mesh.
+/// Find connected components of a triangle mesh, by vertex or by face adjacency.
 ///
-/// `faces` is an (N, 3) matrix of vertex indices. Returns an integer vector of
-/// length `n_vertices` assigning each vertex the root-vertex index of its
-/// component.
+/// The R wrapper (`mesh_connected_components`) holds the argument matching and the
+/// documentation, as it does for `smooth_mesh_raw`; the names reaching here have already
+/// been checked, so an unknown one is a bug rather than a user error.
 ///
 /// @param faces Integer or numeric `(N, 3)` matrix of triangle vertex indices.
-/// @param n_vertices Integer; total number of vertices in the mesh.
-/// @return Integer vector of length `n_vertices` giving each vertex the
-///   root-vertex index of its component.
-/// @export
+/// @param n_vertices Integer total number of vertices, or `NULL` for face connectivity.
+/// @param connectivity One of `"vertex"`, `"face"` or `"manifold"`.
+/// @param threads Integer thread cap, or `NULL`.
+/// @return Integer vector, one entry per vertex or per face.
+/// @noRd
 #[extendr]
-pub fn mesh_connected_components(faces: Robj, n_vertices: i32) -> Vec<i32> {
+pub fn mesh_connected_components_raw(
+    faces: Robj,
+    n_vertices: Option<i32>,
+    connectivity: &str,
+    threads: Option<i32>,
+) -> Vec<i32> {
     let faces_u32 = robj_to_faces(&faces);
-    fastcore::mesh::mesh_connected_components(faces_u32.view(), n_vertices as usize)
-        .iter()
-        .map(|&x| x as i32)
-        .collect()
+    let comps = match connectivity {
+        // The two face readings differ only in whether an edge deeper than two faces
+        // counts, which the core takes as a flag.
+        "face" | "manifold" => fastcore::mesh::mesh_face_components(
+            faces_u32.view(),
+            connectivity == "manifold",
+            to_threads(threads),
+        ),
+        "vertex" => {
+            let n = n_vertices.expect("the wrapper requires `n_vertices` here") as usize;
+            fastcore::mesh::mesh_connected_components(faces_u32.view(), n)
+        }
+        other => panic!("unknown connectivity \"{other}\""),
+    };
+    comps.iter().map(|&x| x as i32).collect()
 }
 
 /// Convert an optional R `(V, 3)` numeric matrix of vertex coordinates.
@@ -4488,7 +4505,7 @@ extendr_module! {
     fn stitch_fragments;
     fn reroot_rewire;
     fn heal_skeleton;
-    fn mesh_connected_components;
+    fn mesh_connected_components_raw;
     fn geodesic_matrix_mesh;
     fn geodesic_matrix_graph;
     fn geodesic_nearest_mesh;

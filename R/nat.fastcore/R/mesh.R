@@ -175,3 +175,118 @@ smooth_mesh <- function(faces, vertices,
   }
   out$vertices
 }
+
+# Connected components. As above, the Rust side (`mesh_connected_components_raw`) does
+# the work; this wrapper holds the argument matching and the documentation. It has to
+# live here rather than in the extendr layer because a panic reaches R as "User function
+# panicked" with the message dropped, which is no help to someone who mistyped a
+# connectivity.
+
+.CONNECTIVITIES <- c("vertex", "face", "manifold")
+
+# Which of the other arguments each connectivity actually reads, as `.SMOOTH_PARAMS` is
+# for the smoothing methods.
+.CONNECTIVITY_PARAMS <- list(
+  vertex = "n_vertices",
+  face = "threads",
+  manifold = "threads"
+)
+
+#' Connected components of a triangle mesh
+#'
+#' Three readings of "connected", chosen with `connectivity`, each strictly finer than
+#' the one before it:
+#' \describe{
+#'   \item{`"vertex"` (the default)}{Joins two vertices whenever a face names them
+#'     both, so a face joins its three corners. One label per *vertex*.}
+#'   \item{`"face"`}{Joins two faces wherever they share an **edge**, not merely a
+#'     corner. One label per *face*.}
+#'   \item{`"manifold"`}{Joins two faces only across an edge carrying **exactly two**
+#'     of them. Likewise one label per *face*.}
+#' }
+#'
+#' Each step drops a kind of junction. Going from `"vertex"` to `"face"` drops the pinch
+#' points: two triangles meeting at a single corner are one component under the first and
+#' two under the second, because there is no edge to step across. Going from `"face"` to
+#' `"manifold"` drops the seams: three sheets meeting along one edge are one component
+#' under `"face"` and three under `"manifold"`, because an edge that deep belongs to no
+#' single surface.
+#'
+#' So pick by what the components are *for*. `"vertex"` answers "can these vertices reach
+#' each other along mesh edges" - the question [geodesic_matrix_mesh()] answers with
+#' distances. `"face"` splits a mesh into the pieces you could walk across. `"manifold"`
+#' splits it into pieces that are *surfaces*, each with a well-defined inside, which is
+#' what you want before asking a piece for its volume or its winding; it reproduces
+#' `trimesh`'s `face_adjacency` exactly. There is no per-vertex form of the face answers,
+#' and that is not a gap in the interface: a pinch vertex belongs to several face
+#' components at once.
+#'
+#' All three are Union-Find with path-halving. `"vertex"` builds no adjacency at all, one
+#' serial sweep over a single integer vector; the other two group the `3F` edges the faces
+#' name first, which is a parallel sort and the only reason they take `threads`. They then
+#' differ by one test on how many faces each edge came back with, so `"manifold"` costs no
+#' more than `"face"`.
+#'
+#' An edge with a single face on it - the boundary of an open mesh - joins nothing under
+#' any reading; there is no second face to join it to. Self-loop edges from degenerate
+#' faces are kept throughout, as in [unique_edges()].
+#'
+#' @param faces Integer or numeric `(F, 3)` matrix of triangle vertex indices (0-based).
+#' @param n_vertices Integer; total number of vertices in the mesh. Belongs to
+#'   `connectivity = "vertex"`, where it is required: it sets the length of the result,
+#'   and vertices in no face are components of size one.
+#' @param connectivity One of `"vertex"` (default), `"face"` or `"manifold"`; what two
+#'   faces must share to count as connected - a corner, any edge, or an edge carrying
+#'   exactly two faces.
+#' @param threads Integer cap on the thread count for this call, or `NULL` for the
+#'   process-wide pool. Belongs to `connectivity = "face"` and `"manifold"`.
+#' @return Integer vector: one entry per vertex giving the smallest vertex index in its
+#'   component (`"vertex"`), or one entry per face giving the smallest face index in its
+#'   component (`"face"` and `"manifold"`).
+#' @seealso [connected_components_graph()], the same question from an edge list.
+#' @examples
+#' # Two triangles pinched together at vertex 2 and joined nowhere else.
+#' faces <- matrix(c(0, 1, 2, 2, 3, 4), ncol = 3, byrow = TRUE)
+#'
+#' # The vertex graph walks straight through the pinch...
+#' mesh_connected_components(faces, n_vertices = 5)
+#'
+#' # ...the faces cannot step across it.
+#' mesh_connected_components(faces, connectivity = "face")
+#'
+#' # Three fins meeting along the spine (1, 2): one component across any shared edge,
+#' # three once the spine is too deep to belong to a single surface.
+#' fins <- matrix(c(1, 2, 3, 1, 2, 4, 1, 2, 5), ncol = 3, byrow = TRUE)
+#' mesh_connected_components(fins, connectivity = "face")
+#' mesh_connected_components(fins, connectivity = "manifold")
+#' @export
+mesh_connected_components <- function(faces, n_vertices = NULL,
+                                      connectivity = c("vertex", "face", "manifold"),
+                                      threads = NULL) {
+  connectivity <- .match_arg(connectivity, .CONNECTIVITIES, "connectivity")
+
+  # An argument belonging to the other connectivity is an error rather than something
+  # quietly dropped: a call that passes `n_vertices` and asks for faces has sized its
+  # result for the answer it is not going to get.
+  given <- c(n_vertices = n_vertices, threads = threads)
+  stray <- setdiff(names(given), .CONNECTIVITY_PARAMS[[connectivity]])
+  if (length(stray)) {
+    stop(sprintf(
+      "`%s` does not apply to connectivity = \"%s\"", stray[1L], connectivity
+    ), call. = FALSE)
+  }
+
+  if (connectivity == "vertex" && is.null(n_vertices)) {
+    stop(paste0(
+      "`n_vertices` is required for connectivity = \"vertex\": it is the length of ",
+      "the result, and vertices in no face are components of size one."
+    ), call. = FALSE)
+  }
+
+  mesh_connected_components_raw(
+    faces,
+    if (is.null(n_vertices)) NULL else as.integer(n_vertices),
+    connectivity,
+    if (is.null(threads)) NULL else as.integer(threads)
+  )
+}

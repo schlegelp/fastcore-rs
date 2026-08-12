@@ -196,7 +196,11 @@ fn union(parent: &mut [u32], a: u32, b: u32) {
     }
 }
 
-/// Find connected components of a triangle mesh.
+/// Find connected components of a triangle mesh, by *vertex* adjacency.
+///
+/// Two vertices belong together when a face names them both, so a face joins its three
+/// corners and nothing finer is asked. [`mesh_face_components`] is the other reading —
+/// faces joined only where they share an *edge* — and gives a strictly finer partition.
 ///
 /// Uses Union-Find (DSU) with path-halving. The only extra allocation is a
 /// single `Vec<u32>` of length `n_vertices` for the parent array — no
@@ -230,6 +234,112 @@ pub fn mesh_connected_components(faces: ArrayView2<u32>, n_vertices: usize) -> V
     parent
 }
 
+/// Find connected components of a triangle mesh, by *face* adjacency.
+///
+/// The other reading of "connected": two faces belong together when they share an **edge**,
+/// not merely a corner. That is a strictly finer partition than
+/// [`mesh_connected_components`] — two triangles meeting at a single vertex are one component
+/// there and two here — and it is the one behind "split this mesh into the pieces you could
+/// walk across", which is what trimesh's `split(only_watertight=False)` answers.
+///
+/// The labels are per *face*, because that is the only place this answer can live: a pinch
+/// vertex belongs to several face components at once, so there is no per-vertex form of it.
+///
+/// `manifold_only` then picks which shared edges count — see below. It is the difference
+/// between "these triangles are connected" and "these triangles form one surface".
+///
+/// # Where the time goes
+///
+/// Two phases, and — unlike the rest of this module — grouping the `3F` edges is not the
+/// whole of it. That half is [`sorted_edge_keys_indexed`] and parallelises; the union pass
+/// over the groups is `O(3F α(F))` but serial, and chases pointers through an `F`-sized array
+/// in whatever order the sort left the edges. On a 408k-face mesh: 3.7 ms grouping against
+/// 2.1 ms unioning when the faces are in a locality-preserving order, and 4.9 against 4.3
+/// when they are shuffled, since the parent array then misses cache on nearly every step. So
+/// the union pass is a third to a half of the call however you slice it, and it — not the
+/// sort — is what is left to beat.
+///
+/// # Non-manifold edges, and `manifold_only`
+///
+/// An edge with three or more faces on it is the case the two readings of *this* function
+/// differ on, and neither is wrong — they answer different questions.
+///
+/// `manifold_only = false` joins every face on an edge, however many there are, so those
+/// three faces are one component. That is "connected" as the rest of this module means it:
+/// there is a shared edge, so you can step across it.
+///
+/// `manifold_only = true` uses only the edges carrying **exactly** two faces, so those three
+/// stay apart. That is trimesh's `face_adjacency`, which builds its adjacency with
+/// `group_rows(edges_sorted, require_count=2)` and therefore drops such an edge outright —
+/// and it is the right reading when the components have to be *surfaces*, each with a
+/// well-defined inside, rather than merely connected sets of triangles. A T-junction where
+/// two sheets meet along a seam is one component under the first reading and two under this
+/// one, which is what you want if you are about to ask each piece for its volume or its
+/// winding.
+///
+/// Edges with a single face — the boundary of an open mesh — join nothing either way; there
+/// is no second face to join them to.
+///
+/// Self-loop edges from degenerate faces are kept in both, as they are in [`unique_edges`].
+/// A face collapsed onto a repeated vertex still names its two real edges twice over, so
+/// under `manifold_only` it pairs with itself rather than with a neighbour — the same thing
+/// trimesh sees, since the duplicate rows are in `edges_sorted` there too.
+///
+/// Arguments
+/// ---------
+/// - `faces`:         (F, 3) array of triangular faces given as vertex indices.
+/// - `manifold_only`: Join across an edge only when exactly two faces carry it. See above.
+/// - `threads`:       Size of the thread pool, or `None` for all cores.
+///
+/// Returns
+/// -------
+/// A `Vec<u32>` of length `F` holding, per face, the root of its component — which is the
+/// smallest face index in that component.
+pub fn mesh_face_components(
+    faces: ArrayView2<u32>,
+    manifold_only: bool,
+    threads: Option<usize>,
+) -> Vec<u32> {
+    assert_eq!(faces.ncols(), 3, "`faces` must have shape (F, 3)");
+    let n_faces = faces.nrows();
+    assert!(
+        n_faces <= u32::MAX as usize,
+        "`faces` has {n_faces} rows, more than a u32 face index can address"
+    );
+
+    // The Python wrapper always hands us C-order (borrowed as-is); a strided view from a
+    // Rust caller gets copied into standard layout.
+    let storage = faces.as_standard_layout();
+    let s: &[u32] = storage.as_slice().expect("standard layout is contiguous");
+
+    let packed = with_pool(threads, || sorted_edge_keys_indexed(s));
+
+    // Each face is its own parent initially — the only allocation left.
+    let mut parent: Vec<u32> = (0..n_faces as u32).collect();
+
+    // One serial pass over the runs of equal edge key: the first face of a run absorbs the
+    // rest. Unioning every member with that one is enough; the others follow by transitivity,
+    // as the three corners of a face do in `mesh_connected_components`. The run *length* is
+    // the number of faces on that edge, so `manifold_only` is a single test on it — which is
+    // why this is a flag rather than a second function.
+    for run in packed.chunk_by(|a, b| a >> 64 == b >> 64) {
+        if manifold_only && run.len() != 2 {
+            continue;
+        }
+        let first = face_of(run[0]);
+        for &p in &run[1..] {
+            union(&mut parent, first, face_of(p));
+        }
+    }
+
+    // Final compression: make every face point directly to its root.
+    for i in 0..n_faces {
+        parent[i] = find(&mut parent, i as u32);
+    }
+
+    parent
+}
+
 // ---------------------------------------------------------------------------
 // Unique edges
 // ---------------------------------------------------------------------------
@@ -249,10 +359,11 @@ pub(crate) fn edge_key(u: u32, v: u32) -> u64 {
 
 /// The `3F` edges a face array names, as undirected keys, sorted ascending.
 ///
-/// The one place the `3F` edge-list convention and the [`edge_key`] packing are turned into
-/// a buffer, so the two consumers that group edges — [`unique_edges`]' fast path, which
-/// keeps the first of each run, and [`crate::caps::boundary_halfedges`], which keeps the
-/// runs of length one — cannot drift on either.
+/// One of the two places the `3F` edge-list convention and the [`edge_key`] packing are
+/// turned into a buffer — the other is [`sorted_edge_keys_indexed`], which is this plus the
+/// payload — so the consumers that group edges cannot drift on either. This bare form is for
+/// the two that need only the keys: [`unique_edges`]' fast path, which keeps the first of
+/// each run, and [`crate::caps::boundary_halfedges`], which keeps the runs of length one.
 ///
 /// Runs on the ambient rayon pool; callers wrap it in [`with_pool`].
 pub(crate) fn sorted_edge_keys(faces: &[u32]) -> Vec<u64> {
@@ -266,6 +377,44 @@ pub(crate) fn sorted_edge_keys(faces: &[u32]) -> Vec<u64> {
         });
     keys.par_sort_unstable();
     keys
+}
+
+/// [`sorted_edge_keys`], tagged with each edge's own position in the `3F` list.
+///
+/// For the two consumers that have to know *where* an edge came from: [`unique_edges`]' full
+/// path, whose "first occurrence" semantics are exactly the lowest position in a run, and
+/// [`mesh_face_components`], which recovers the face as [`face_of`]. Both group the buffer by
+/// its high 64 bits — the key — and read the low 64 for the payload.
+///
+/// Folding the position into the low bits is what lets one *unstable* integer sort still land
+/// ties in original order, which is `np.unique`'s stable-argsort semantics for half the memory
+/// traffic of sorting keys and payloads as separate arrays.
+///
+/// Runs on the ambient rayon pool; callers wrap it in [`with_pool`].
+pub(crate) fn sorted_edge_keys_indexed(faces: &[u32]) -> Vec<u128> {
+    let mut packed = vec![0u128; faces.len()];
+    packed
+        .par_chunks_exact_mut(3)
+        .zip(faces.par_chunks_exact(3))
+        .enumerate()
+        .for_each(|(i, (out, f))| {
+            let e = (3 * i) as u128;
+            out[0] = ((edge_key(f[0], f[1]) as u128) << 64) | e;
+            out[1] = ((edge_key(f[1], f[2]) as u128) << 64) | (e + 1);
+            out[2] = ((edge_key(f[2], f[0]) as u128) << 64) | (e + 2);
+        });
+    packed.par_sort_unstable();
+    packed
+}
+
+/// The face an entry of [`sorted_edge_keys_indexed`] came from.
+///
+/// Three consecutive positions per face, so the face is the position over three — which is
+/// why [`mesh_face_components`] needs no payload of its own. Position order is face order, so
+/// the first entry of a run is still that run's lowest face index.
+#[inline]
+fn face_of(packed: u128) -> u32 {
+    (packed as u64 / 3) as u32
 }
 
 /// Unique undirected edges of a triangle mesh — a drop-in for trimesh's
@@ -332,22 +481,9 @@ pub fn unique_edges(
             }
             (edges, None, None)
         } else {
-            // Full path: fold each edge's position in the 3F list into the low 64
-            // bits so one *unstable* integer sort still lands ties in original
-            // order — which is exactly np.unique's stable-argsort "first
-            // occurrence" semantics.
-            let mut packed = vec![0u128; n_edges];
-            packed
-                .par_chunks_exact_mut(3)
-                .zip(s.par_chunks_exact(3))
-                .enumerate()
-                .for_each(|(i, (out, f))| {
-                    let e = (3 * i) as u128;
-                    out[0] = ((edge_key(f[0], f[1]) as u128) << 64) | e;
-                    out[1] = ((edge_key(f[1], f[2]) as u128) << 64) | (e + 1);
-                    out[2] = ((edge_key(f[2], f[0]) as u128) << 64) | (e + 2);
-                });
-            packed.par_sort_unstable();
+            // Full path: each edge carries its position in the 3F list, so the first of
+            // each run is its first occurrence — np.unique's stable-argsort semantics.
+            let packed = sorted_edge_keys_indexed(s);
 
             let mut edges: Vec<u32> = Vec::new();
             let mut index: Vec<i64> = Vec::new();
@@ -4182,6 +4318,116 @@ mod tests {
         let faces = array![[0u32, 0, 1]];
         let (edges, _, _, _) = unique_edges(faces.view(), None, false, false, None);
         assert_eq!(edges, array![[0u32, 0], [0, 1]]);
+    }
+
+    #[test]
+    fn face_components_split_what_only_touches_at_a_vertex() {
+        // Two triangles sharing vertex 2 and nothing else. One vertex component, because a
+        // walk over the vertex graph crosses at 2 — but two face components, because you
+        // cannot step from one triangle to the other across an edge.
+        let faces = array![[0u32, 1, 2], [2, 3, 4]];
+        assert_eq!(mesh_connected_components(faces.view(), 5), vec![0; 5]);
+        assert_eq!(mesh_face_components(faces.view(), false, None), vec![0, 1]);
+
+        // Give them an edge in common and the two readings agree again.
+        let faces = array![[0u32, 1, 2], [1, 2, 3]];
+        assert_eq!(mesh_face_components(faces.view(), false, None), vec![0, 0]);
+    }
+
+    #[test]
+    fn face_components_label_by_the_smallest_face_and_survive_reordering() {
+        // Three separate triangles, listed so that the components are interleaved: faces
+        // 0 and 2 share edge (1, 2), face 1 is on its own.
+        let faces = array![[0u32, 1, 2], [3, 4, 5], [1, 2, 6]];
+        assert_eq!(
+            mesh_face_components(faces.view(), false, None),
+            vec![0, 1, 0]
+        );
+    }
+
+    #[test]
+    fn face_components_join_every_face_on_a_non_manifold_edge() {
+        // Three faces on edge (0, 1) — trimesh's `face_adjacency` keeps only the edges with
+        // exactly two faces and would report no adjacency at all here.
+        let faces = array![[0u32, 1, 2], [0, 1, 3], [0, 1, 4]];
+        assert_eq!(
+            mesh_face_components(faces.view(), false, None),
+            vec![0, 0, 0]
+        );
+
+        // `manifold_only` is the other answer: an edge three faces deep is not a seam any
+        // one surface owns, so it joins nothing and each face is its own component.
+        assert_eq!(
+            mesh_face_components(faces.view(), true, None),
+            vec![0, 1, 2]
+        );
+    }
+
+    #[test]
+    fn manifold_components_split_a_seam_but_keep_the_sheets_whole() {
+        // Three fins meeting along the spine (1, 2), each two faces long. The spine carries
+        // three faces, every other interior edge exactly two — so `manifold_only` drops the
+        // spine and leaves three intact sheets, while joining everything it can inside each.
+        // That is the point of the mode: the pieces come out as *surfaces*, not merely as
+        // connected sets of triangles.
+        let faces = array![
+            [1u32, 2, 3], // fin A, on the spine
+            [1, 2, 4],    // fin B, on the spine
+            [1, 2, 5],    // fin C, on the spine
+            [1, 3, 6],    // fin A's second face, sharing (1, 3) with face 0
+            [1, 4, 7],    // fin B's, sharing (1, 4) with face 1
+            [1, 5, 8],    // fin C's, sharing (1, 5) with face 2
+        ];
+        // Everything is reachable across some shared edge, so the spine fuses the three.
+        assert_eq!(
+            mesh_face_components(faces.view(), false, None),
+            vec![0, 0, 0, 0, 0, 0]
+        );
+        // Manifold edges only: three fins, each labelled by its own first face.
+        assert_eq!(
+            mesh_face_components(faces.view(), true, None),
+            vec![0, 1, 2, 0, 1, 2]
+        );
+    }
+
+    #[test]
+    fn manifold_components_ignore_boundary_edges_but_not_interior_ones() {
+        // An open strip: every edge is either a boundary (one face) or interior (two). The
+        // boundary joins nothing either way, so both readings see the same graph and give
+        // one component — `manifold_only` costs nothing on a mesh that is already manifold.
+        let (faces, _) = grid(6, 1.0);
+        let any = mesh_face_components(faces.view(), false, None);
+        let manifold = mesh_face_components(faces.view(), true, None);
+        assert_eq!(any, manifold);
+        assert!(any.iter().all(|&c| c == 0));
+    }
+
+    #[test]
+    fn face_components_handle_degenerate_and_empty_input() {
+        // Two faces collapsed onto the same repeated vertex: joined by that self-loop edge,
+        // which `unique_edges` keeps too.
+        let faces = array![[0u32, 0, 1], [0, 0, 2]];
+        assert_eq!(mesh_face_components(faces.view(), false, None), vec![0, 0]);
+
+        let empty = Array2::<u32>::zeros((0, 3));
+        assert!(mesh_face_components(empty.view(), false, None).is_empty());
+    }
+
+    #[test]
+    fn face_components_agree_with_the_vertex_version_on_a_manifold_mesh() {
+        // On a closed surface every pair of faces that touch share an edge, so the two
+        // readings induce the same partition — here, one component covering everything.
+        let (faces, coords) = uv_sphere(12, 12);
+        let comps = mesh_face_components(faces.view(), false, Some(2));
+        assert!(comps.iter().all(|&c| c == 0));
+
+        // Two spheres side by side: the second's faces are all labelled by its first face.
+        let shifted = faces.mapv(|v| v + coords.nrows() as u32);
+        let both = ndarray::concatenate(ndarray::Axis(0), &[faces.view(), shifted.view()]).unwrap();
+        let comps = mesh_face_components(both.view(), false, None);
+        let split = faces.nrows();
+        assert!(comps[..split].iter().all(|&c| c == 0));
+        assert!(comps[split..].iter().all(|&c| c == split as u32));
     }
 
     #[test]

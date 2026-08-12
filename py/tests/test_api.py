@@ -89,6 +89,11 @@ _, _, _PROJ_IX, _, _ = fastcore.project_mesh_2d(_TETRA, FACES)
 # A node id — an index into the graph.
 NODE_IDS = {
     "mesh_connected_components": fastcore.mesh_connected_components(FACES, 4),
+    # The face reading labels by face index, which is a node id in the graph the
+    # faces themselves form.
+    "mesh_connected_components[face]": fastcore.mesh_connected_components(
+        FACES, connectivity="face"
+    ),
     "connected_components_graph": fastcore.connected_components_graph(EDGES, 4),
     "unique_edges[edges]": _EDGES_U,
     "contract_vertices": fastcore.contract_vertices(EDGES, [0, 0, 1, 1]),

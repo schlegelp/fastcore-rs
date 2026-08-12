@@ -29,53 +29,180 @@ __all__ = [
 ]
 
 
-def mesh_connected_components(faces, n_vertices):
+#: The connectivities :func:`mesh_connected_components` accepts, and which of its optional
+#: arguments each one actually reads — the table the "does not apply" check consults, as
+#: ``.SMOOTH_PARAMS`` is for the smoothing methods. Insertion order is the order the error
+#: message lists them in, so it reads finest-last, as the docstring explains them.
+_CONNECTIVITY_PARAMS = {
+    "vertex": ("n_vertices",),
+    "face": ("threads",),
+    "manifold": ("threads",),
+}
+
+
+def mesh_connected_components(faces, n_vertices=None, connectivity="vertex", threads=None):
     """Find connected components of a triangle mesh.
 
-    Uses Union-Find (DSU) with path-halving. The only extra allocation is a
-    single integer array of length ``n_vertices`` — no adjacency list is built.
+    Three readings of "connected", chosen with ``connectivity``, each strictly finer
+    than the one before it:
+
+    - ``"vertex"`` (default) joins two vertices whenever a face names them both, so a
+      face joins its three corners and the answer is one label per *vertex*.
+    - ``"face"`` joins two faces wherever they share an **edge**, and the answer is one
+      label per *face*.
+    - ``"manifold"`` joins two faces only across an edge carrying **exactly two** of
+      them, and is likewise one label per *face*.
+
+    Each step drops a kind of junction. Going from ``"vertex"`` to ``"face"`` drops the
+    pinch points: two triangles meeting at a single corner are one component under the
+    first and two under the second, because there is no edge to step across. Going from
+    ``"face"`` to ``"manifold"`` drops the seams: three sheets meeting along one edge are
+    one component under ``"face"`` and three under ``"manifold"``, because an edge that
+    deep belongs to no single surface.
+
+    So pick by what the components are *for*. ``"vertex"`` answers "can these vertices
+    reach each other along mesh edges" — the question
+    :func:`~navis_fastcore.geodesic_matrix_mesh` answers with distances. ``"face"``
+    splits a mesh into the pieces you could walk across, which is ``trimesh``'s
+    ``split(only_watertight=False)``. ``"manifold"`` splits it into pieces that are
+    *surfaces*, each with a well-defined inside — what you want before asking a piece for
+    its volume or its winding — and reproduces ``trimesh``'s ``face_adjacency`` exactly.
+
+    Face components cannot be reported per vertex, incidentally, and that is not an
+    oversight in the interface: a pinch vertex belongs to several face components at
+    once, so there is no per-vertex form of that answer.
+
+    All three are Union-Find (DSU) with path-halving. ``"vertex"`` builds no adjacency at
+    all — one serial sweep of the faces over a single integer array of length
+    ``n_vertices``. The other two group the ``3 * F`` edges the faces name first, which is
+    a parallel sort and the only reason they take ``threads``; they then differ by one
+    test on how many faces each edge came back with, so ``"manifold"`` costs no more than
+    ``"face"``.
 
     Parameters
     ----------
-    faces :      (N, 3) array
-                 Triangular faces given as rows of three vertex indices.
-                 Must be convertible to ``uint32``.
-    n_vertices : int
-                 Total number of vertices in the mesh. Must be at least
-                 ``faces.max() + 1``.
+    faces :        (F, 3) array
+                   Triangular faces given as rows of three vertex indices.
+                   Must be convertible to ``uint32``.
+    n_vertices :   int, optional
+                   Total number of vertices in the mesh. Must be at least
+                   ``faces.max() + 1``. Belongs to ``connectivity="vertex"``, where it
+                   is required: it sets the length of the output, and vertices named by
+                   no face are components of size one.
+    connectivity : "vertex" | "face" | "manifold"
+                   What two faces must share to count as connected: a corner
+                   (``"vertex"``), any edge (``"face"``), or an edge carrying exactly
+                   two faces (``"manifold"``). See above.
+    threads :      int, optional
+                   Size of the thread pool the edge grouping sorts on. Defaults to all
+                   available cores. Belongs to ``connectivity="face"`` and
+                   ``connectivity="manifold"``.
 
     Returns
     -------
-    components : (n_vertices, ) uint32 array
-                 For each vertex the index of the root vertex of its connected
-                 component. Vertices that share a component will have the same
-                 value (the smallest vertex index in that component).
+    components :   (n_vertices, ) or (F, ) uint32 array
+                   For ``connectivity="vertex"``, one entry per vertex holding the
+                   smallest vertex index in its component; for the two face readings,
+                   one entry per face holding the smallest face index in its component.
+                   Either way, items that share a component share a value.
+
+    Notes
+    -----
+    ``n_vertices`` and ``threads`` each belong to particular connectivities, and passing
+    one where it does not apply is an error rather than something quietly dropped — the
+    rule :func:`~navis_fastcore.smooth_mesh` follows for its per-method parameters.
+    Sizing a call with ``n_vertices`` and then asking for ``connectivity="face"`` would
+    otherwise hand back an array of a different length than the caller expected, which is
+    the one failure that looks like success.
+
+    An edge with a single face on it — the boundary of an open mesh — joins nothing under
+    any reading; there is no second face to join it to. Self-loop edges from degenerate
+    faces are kept throughout, as in :func:`~navis_fastcore.unique_edges`.
+
+    ``"manifold"`` is ``trimesh.graph.face_adjacency``, which builds its adjacency with
+    ``group_rows(edges_sorted, require_count=2)`` and so drops a deeper edge outright.
+    ``"face"`` is the reading the rest of this module uses, where a shared edge is a
+    shared edge however many faces are on it.
 
     Examples
     --------
-    Two triangles sharing an edge — one component:
+    Two triangles sharing an edge — one component either way:
 
     >>> import navis_fastcore as fastcore
     >>> import numpy as np
     >>> faces = np.array([[0, 1, 2], [1, 2, 3]], dtype=np.uint32)
     >>> fastcore.mesh_connected_components(faces, n_vertices=4)
     array([0, 0, 0, 0], dtype=uint32)
+    >>> fastcore.mesh_connected_components(faces, connectivity="face")
+    array([0, 0], dtype=uint32)
 
-    Two disjoint triangles — two components:
+    Two disjoint triangles — two components, of three vertices or of one face:
 
     >>> faces = np.array([[0, 1, 2], [3, 4, 5]], dtype=np.uint32)
     >>> fastcore.mesh_connected_components(faces, n_vertices=6)
     array([0, 0, 0, 3, 3, 3], dtype=uint32)
+    >>> fastcore.mesh_connected_components(faces, connectivity="face")
+    array([0, 1], dtype=uint32)
+
+    Where ``"vertex"`` and ``"face"`` part company — two triangles pinched together at
+    vertex 2. The vertex graph walks straight through it, the faces cannot:
+
+    >>> faces = np.array([[0, 1, 2], [2, 3, 4]], dtype=np.uint32)
+    >>> fastcore.mesh_connected_components(faces, n_vertices=5)
+    array([0, 0, 0, 0, 0], dtype=uint32)
+    >>> fastcore.mesh_connected_components(faces, connectivity="face")
+    array([0, 1], dtype=uint32)
+
+    And where ``"face"`` and ``"manifold"`` do — three fins meeting along the spine
+    ``(1, 2)``. That edge carries three faces, so it is a seam no one surface owns:
+
+    >>> faces = np.array([[1, 2, 3], [1, 2, 4], [1, 2, 5]], dtype=np.uint32)
+    >>> fastcore.mesh_connected_components(faces, connectivity="face")
+    array([0, 0, 0], dtype=uint32)
+    >>> fastcore.mesh_connected_components(faces, connectivity="manifold")
+    array([0, 1, 2], dtype=uint32)
+
+    Face labels are face *indices*, so they group the rows of ``faces`` directly:
+
+    >>> comp = fastcore.mesh_connected_components(faces, connectivity="manifold")
+    >>> faces[comp == comp[0]]
+    array([[1, 2, 3]], dtype=uint32)
 
     """
-    faces = np.asarray(faces, dtype=np.uint32, order="C")
-
-    if faces.ndim != 2 or faces.shape[1] != 3:
+    if connectivity not in _CONNECTIVITY_PARAMS:
         raise ValueError(
-            f"`faces` must be a 2-D array of shape (N, 3), got {faces.shape}"
+            "`connectivity` must be one of "
+            + ", ".join(f'"{c}"' for c in _CONNECTIVITY_PARAMS)
+            + f", got {connectivity!r}"
         )
 
-    return _fastcore.mesh_connected_components(faces, int(n_vertices))
+    # An argument belonging to another connectivity is an error rather than something
+    # quietly dropped, as it is for `smooth_mesh`'s per-method parameters: a call that
+    # passes `n_vertices` and asks for faces has sized its output for the answer it is
+    # not going to get.
+    for name, value in (("n_vertices", n_vertices), ("threads", threads)):
+        if value is not None and name not in _CONNECTIVITY_PARAMS[connectivity]:
+            raise ValueError(
+                f'`{name}` does not apply to connectivity="{connectivity}"'
+            )
+
+    if connectivity in ("face", "manifold"):
+        return _fastcore.mesh_face_components(
+            _prep_faces(faces),
+            connectivity == "manifold",
+            None if threads is None else int(threads),
+        )
+
+    if n_vertices is None:
+        raise ValueError(
+            '`n_vertices` is required for connectivity="vertex": it is the length of '
+            "the output, and vertices in no face are components of size one."
+        )
+    # `_prep_mesh` owns the coercion and the "does `n_vertices` cover the faces" check;
+    # only the message above is specific to this function.
+    faces, _, n_vertices = _prep_mesh(faces, None, n_vertices)
+
+    return _fastcore.mesh_connected_components(faces, n_vertices)
 
 
 def unique_edges(

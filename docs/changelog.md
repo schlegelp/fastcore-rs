@@ -10,6 +10,65 @@ Tags, source archives and the original announcements are on
 
 ## 0.13.0 (unreleased)
 
+**`mesh_connected_components` can read connectivity across faces, not only across vertices.**
+It now takes a `connectivity` argument with three readings, each strictly finer than the one
+before it, and each step drops a kind of junction.
+
+`"vertex"` (the default, and the old behaviour) joins two vertices whenever a face names them
+both. `"face"` joins two faces wherever they share an *edge*, which drops the **pinch points**:
+
+```python
+# Two triangles meeting at vertex 2 and nowhere else
+faces = np.array([[0, 1, 2], [2, 3, 4]], dtype=np.uint32)
+
+fastcore.mesh_connected_components(faces, n_vertices=5)
+# array([0, 0, 0, 0, 0], dtype=uint32)   -- one component: you can walk through the pinch
+
+fastcore.mesh_connected_components(faces, connectivity="face")
+# array([0, 1], dtype=uint32)            -- two: you cannot step across it
+```
+
+`"manifold"` joins two faces only across an edge carrying *exactly two* of them, which drops
+the **seams** — an edge three or more faces deep belongs to no single surface:
+
+```python
+# Three fins meeting along the spine (1, 2)
+faces = np.array([[1, 2, 3], [1, 2, 4], [1, 2, 5]], dtype=np.uint32)
+
+fastcore.mesh_connected_components(faces, connectivity="face")
+# array([0, 0, 0], dtype=uint32)   -- the spine is a shared edge like any other
+
+fastcore.mesh_connected_components(faces, connectivity="manifold")
+# array([0, 1, 2], dtype=uint32)   -- three faces on it, so it joins nothing
+```
+
+So `"face"` splits a mesh into the pieces you could walk across — `trimesh`'s
+`split(only_watertight=False)` — and `"manifold"` splits it into pieces that are *surfaces*,
+each with a well-defined inside, which is what you want before asking a piece for its volume
+or its winding. That last one is `trimesh.graph.face_adjacency` exactly, down to its
+`group_rows(edges_sorted, require_count=2)`, and there is a test pinning the two together on a
+mesh where the distinction bites.
+
+Both face readings label per *face*, which is the only place that answer can live: a pinch
+vertex belongs to several face components at once, so there is no per-vertex form of it. A
+boundary edge — one face — joins nothing under any of the three.
+
+`n_vertices` is now optional, since the face readings do not need it, and `threads` is new:
+those two have to group the `3F` edges the faces name, which they do with a parallel sort.
+They then differ by a single test on how many faces each edge came back with, so `"manifold"`
+costs no more than `"face"`. The vertex pass is unchanged — still one serial sweep over a
+single integer array, still the default.
+
+Each of those arguments belongs to particular connectivities, and passing one where it does
+not apply is an error rather than something quietly dropped — the rule `smooth_mesh` already
+follows for its per-method parameters. `mesh_connected_components(faces, n_vertices,
+connectivity="face")` would otherwise hand back an array of a different length than the caller
+sized it for, which is the one failure that looks like success.
+
+In Rust the face readings are a second function, `mesh::mesh_face_components`, taking a
+`manifold_only` flag rather than a name; in R it is `connectivity = "manifold"`, as in Python,
+with the usual partial matching.
+
 **`segment_coords` can hand back one flat array instead of a list.** Pass `flat=True` (it is
 keyword-only) and the segments come back as a single array with a row of NaNs after each one —
 the form every plotting backend actually draws.
