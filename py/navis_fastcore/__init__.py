@@ -8,6 +8,7 @@ from .cmtk import *
 from .dag import *
 from .downsample import *
 from .elastix import *
+from .internals import *
 from .linkage import *
 from .matches import *
 from .mesh import *
@@ -37,6 +38,7 @@ for _sub in (
     "dag",
     "downsample",
     "elastix",
+    "internals",
     "linkage",
     "matches",
     "mesh",

@@ -30,6 +30,9 @@ use mesh::*;
 mod caps;
 use caps::*;
 
+mod internals;
+use internals::*;
+
 mod simplify;
 use simplify::*;
 
@@ -185,6 +188,12 @@ mod fastcore {
 
     #[pymodule_export]
     use super::triangulate_rings_py;
+
+    #[pymodule_export]
+    use super::openness_py;
+
+    #[pymodule_export]
+    use super::drop_internals_py;
 
     #[pymodule_export]
     use super::connected_components_graph_py;

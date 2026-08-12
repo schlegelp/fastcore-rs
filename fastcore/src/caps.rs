@@ -435,7 +435,11 @@ fn signed_area(flat: &[[f64; 2]]) -> f64 {
 /// fallback. Only the zero case can arise from a ring whose signed areas cancel; the other
 /// two need coordinates that already overflowed, and normalising by either would put NaN
 /// into the projection and from there into the ear-clipper.
-fn basis(normal: [f64; 3]) -> Option<([f64; 3], [f64; 3])> {
+///
+/// `pub(crate)` for [`crate::internals`], which needs the same frame to spray rays over a
+/// face's hemisphere — and for the same reason wants the degenerate case handed back rather
+/// than divided through.
+pub(crate) fn basis(normal: [f64; 3]) -> Option<([f64; 3], [f64; 3])> {
     let n = normalize(normal)?;
     // Any vector not parallel to the normal will do to get started.
     let other = if n[0].abs() < 0.9 {
