@@ -10,6 +10,56 @@ Tags, source archives and the original announcements are on
 
 ## 0.13.0 (2026-08-13)
 
+**A mesh can be stripped of the surface it keeps on its inside.** An *invagination* is a piece
+of membrane that bulges into the cell, usually the boundary of a mitochondrion or a vesicle
+touching it from within. Segmented meshes are full of them and they are ruinous for anything
+that walks the surface: each one is a tunnel a skeletonisation's wave front can take a shortcut
+through, or split on. On the 3.5 M-face mesh this was built against they account for 3,076 of
+its handles, and removing them takes the skeleton from 3,227 leafs to ~500 without losing a
+real branch.
+
+The property that defines one — the cell encloses it — is also what makes it invisible from
+outside, so `drop_internals` asks that directly:
+
+```python
+vertices, faces, keep, passes = fastcore.drop_internals(vertices, faces)
+```
+
+One pass scores every face by the fraction of a ray spray that escapes, diffuses that field
+over the faces, cuts below a threshold, drops the components left enclosing no volume — the
+inside-out shreds of pocket wall — and caps the holes. Then it repeats, because capping a
+pocket mouth turns a partially open neighbour into a fully buried one; the passes converge
+fast, burying 18.7% of faces, then 0.5%, then 0.2%. Only vertices are ever *removed*, since
+caps re-use the ones already on the boundary, so `keep` is all a caller needs to carry a vertex
+map or any other per-vertex annotation across the repair. Note that this also closes openings
+the mesh arrived with — a neurite truncated at the edge of the dataset, say — which for
+skeletonisation is what you want: a stump left open splits the wave front just as a pocket
+mouth does.
+
+`openness` is that score on its own, for callers who want the field rather than the repair — to
+colour a mesh by it, or to pick a threshold. Outer membrane lands at 0.5-1.0 and the wall of an
+invagination at exactly 0, with the ground between them thinly populated, which is why
+`threshold` is not really a tuning parameter: anything in 0.05-0.10 does the same thing, and
+what says so is the boundary-edge count, flat across that range and then exploding as the cut
+outruns the capping.
+
+The ray casting is ours rather than a collision library's, because the question is much smaller
+than the one those answer: not what a ray hit, nor where, nor which hit came first, only
+whether it got out. The BVH is a binned-SAH tree whose only query returns on the first triangle
+it touches — no nearest-hit ordering, no shrinking far bound, no hit record. Against the
+ncollpyde prototype on that mesh, 118.8s -> 3.4s, for a repaired mesh differing by 527 faces in
+2.85 M and a skeleton well inside the noise floor (531 leafs against 523).
+
+Two things the prototype could not promise. The spray is drawn by hashing `(face, ray)` rather
+than from a stream, so the answer does not depend on how the faces were split across threads —
+which is what lets a pass re-cast only near the previous pass's caps and still provably agree
+with a full sweep. And faces must be wound **outward**: rays follow the face normals, so a
+consistently inward mesh reads as entirely buried and comes back empty. Inconsistent winding is
+worse, because it fails quietly — the faces that disagree read as buried and are cut out of
+otherwise healthy membrane.
+
+Python and Rust (`fastcore::internals`) only; there is no R wrapper yet.
+
 **Caps no longer span the opening they are closing.** Two changes, one in each half of the
 capping path, both aimed at the same artefact: a hole coming back closed by a single fan of
 triangles reaching from one vertex to every other.
