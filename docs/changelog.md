@@ -8,7 +8,7 @@ it is called out.
 Tags, source archives and the original announcements are on
 [GitHub](https://github.com/schlegelp/fastcore-rs/releases).
 
-## 0.13.0 (unreleased)
+## 0.13.0 (2026-08-13)
 
 **Caps no longer span the opening they are closing.** Two changes, one in each half of the
 capping path, both aimed at the same artefact: a hole coming back closed by a single fan of
