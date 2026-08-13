@@ -412,8 +412,10 @@ pub(crate) fn sorted_edge_keys_indexed(faces: &[u32]) -> Vec<u128> {
 /// Three consecutive positions per face, so the face is the position over three — which is
 /// why [`mesh_face_components`] needs no payload of its own. Position order is face order, so
 /// the first entry of a run is still that run's lowest face index.
+///
+/// `pub(crate)` for [`crate::internals`], which groups the same buffer into a face adjacency.
 #[inline]
-fn face_of(packed: u128) -> u32 {
+pub(crate) fn face_of(packed: u128) -> u32 {
     (packed as u64 / 3) as u32
 }
 
