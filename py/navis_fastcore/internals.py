@@ -155,7 +155,9 @@ def drop_internals(
                 Diffusion rounds applied to the field before thresholding.
                 Thresholding a raw field cuts along a ragged contour: on a 3.5 M
                 face mesh this takes the result from 7,339 holes with 54,112
-                boundary vertices to 513 with 12,094, removing the same faces.
+                boundary vertices to 513 with 12,094. It moves the contour the cut
+                starts from, not how far the cut reaches — the extent comes off the
+                raw field, so a pocket narrower than this reaches is still cut whole.
     iterations : int
                 Passes of the whole cycle.
     hops :      int, optional

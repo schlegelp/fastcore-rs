@@ -16,8 +16,13 @@
 //!    tuning parameter.
 //! 2. **Smooth** that field over the faces, so the iso-contour the cut follows is short and
 //!    smooth rather than ragged. On a 3.5 M-face mesh this takes the result from 7,339 holes
-//!    with 54,112 boundary vertices to 513 with 12,094 — the same faces removed, a far better
-//!    cut.
+//!    with 54,112 boundary vertices to 513 with 12,094 — a far better cut. Smoothing decides
+//!    where the contour sits, but not how far the cut reaches: diffusion averages a pocket
+//!    against the wide-open membrane beside it, so on a pocket narrower than `smooth` reaches
+//!    the thresholded region shrinks back towards the blind floor. The raw field settles the
+//!    extent instead — it is bimodal, and a face that saw nothing reads exactly zero — so the
+//!    cut grows from the contour through faces that saw nothing, and stops where the pocket
+//!    does.
 //! 3. **Cut**: drop the buried faces, then drop the components that enclose no volume — the
 //!    inside-out shreds of pocket wall left behind. The cut has just opened every component it
 //!    touched, so that volume is read against each component's own centroid; see
@@ -27,6 +32,12 @@
 //! Then repeat: capping a mouth turns a partially-open neighbour into a fully buried one, so
 //! later passes find pockets the first threshold could not see. It converges fast — 18.7% of
 //! faces buried, then 0.5%, then 0.2%.
+//!
+//! The extent rule in step 2 is what makes that true rather than nearly true. Without it a cut
+//! that stops inside a pocket leaves a cap that is itself buried — a cap at the bottom of a
+//! tube can see no more than the floor it replaced — so the next pass cuts that cap and lays
+//! an identical one back. On a real neuron that accounted for 40-48% of every pass after the
+//! first; on a mesh whose every pocket is in that state the passes made no progress at all.
 //!
 //! # Winding
 //!
@@ -357,6 +368,25 @@ impl FaceGraph {
         cur
     }
 
+    /// Grow a face mask across shared edges for as long as `allow` says, without a hop limit.
+    ///
+    /// [`Self::dilate`] grows a fixed distance regardless of what it crosses; this grows an
+    /// arbitrary distance but only through faces that pass a test, so the region it ends up
+    /// with is bounded by the mesh rather than by a number.
+    fn flood(&self, mask: &mut [bool], allow: impl Fn(usize) -> bool) {
+        let mut frontier: Vec<u32> = (0..self.len() as u32)
+            .filter(|&i| mask[i as usize])
+            .collect();
+        while let Some(i) = frontier.pop() {
+            for &j in self.neighbours_of(i as usize) {
+                if !mask[j as usize] && allow(j as usize) {
+                    mask[j as usize] = true;
+                    frontier.push(j);
+                }
+            }
+        }
+    }
+
     /// Grow a face mask by `hops` steps across shared edges.
     fn dilate(&self, mask: &mut [bool], hops: u32) {
         let mut frontier: Vec<u32> = (0..self.len() as u32)
@@ -493,7 +523,8 @@ fn cap_holes(v: ArrayView2<f64>, faces: &[u32]) -> Vec<u32> {
 pub struct Pass {
     /// Faces the mesh had going in.
     pub faces_before: usize,
-    /// Faces whose smoothed openness fell below the threshold.
+    /// Faces the cut took: those whose smoothed openness fell below the threshold, plus
+    /// whatever the extent flood reached from them.
     pub buried: usize,
     /// Faces re-cast this pass — the whole mesh on the first, the collar around the last
     /// pass's caps afterwards.
@@ -526,7 +557,11 @@ pub struct Pass {
 ///   starts eating real membrane. The rule that says so is the boundary-edge count, which is
 ///   flat from 0.02 to 0.10 and then explodes — that is the cut outrunning the capping.
 /// - `n_rays`:    Rays per face; see [`openness`].
-/// - `smooth`:    Diffusion rounds applied to the field before thresholding.
+/// - `smooth`:    Diffusion rounds applied to the field before thresholding. This moves the
+///   contour the cut starts from, not how far the cut reaches — the extent comes off the raw
+///   field, so a pocket narrower than this reaches is still cut whole. Raise it far enough
+///   and it lifts the pocket clear of the threshold altogether, at which point nothing is cut
+///   rather than too much.
 /// - `iterations`: Passes of the whole cycle. Three is plenty.
 /// - `hops`:      How far past the previous pass's caps to re-cast. Worth keeping above
 ///   `smooth`, which is how far a stale value at the rim can diffuse inward. `None` re-casts
@@ -580,7 +615,10 @@ pub fn drop_internals(
             let graph = FaceGraph::build(&f, n);
             let bvh = Bvh::build(&v, &f);
 
-            let recast = match (cap_start, hops) {
+            // Which faces this pass asked afresh. `None` is "all of them" — the first pass,
+            // and any pass when `hops` is off — and is what the flood below reads to keep
+            // itself inside values this pass actually measured.
+            let (recast, region) = match (cap_start, hops) {
                 (Some(start), Some(hops)) => {
                     let mut region = vec![false; n];
                     region[start..].fill(true);
@@ -595,16 +633,40 @@ pub fn drop_internals(
                             *slot = fresh.next().expect("one value per selected face");
                         }
                     }
-                    recast
+                    (recast, Some(region))
                 }
                 _ => {
                     field = openness_with(&bvh, &v, &f, None, n_rays, None, seed);
-                    n
+                    (n, None)
                 }
             };
 
             let smoothed = graph.smooth(&field, smooth);
-            let buried: Vec<bool> = smoothed.iter().map(|&x| x < threshold).collect();
+            let mut buried: Vec<bool> = smoothed.iter().map(|&x| x < threshold).collect();
+
+            // Smoothing decides where the cut starts; the raw field decides how far it goes.
+            // Diffusion averages a pocket against the wide-open membrane beside it, so on a
+            // pocket narrower than `smooth` reaches, the thresholded region shrinks back
+            // towards the blind floor and the cut stops inside the pocket — whereupon the cap
+            // it leaves is itself buried, and all the next pass can do is lay the same cap
+            // again. The raw field cannot be washed out that way: it is bimodal, and a face
+            // that saw nothing at all reads exactly zero. So grow the cut through the faces
+            // that saw nothing, which carries it to where the pocket stops being one.
+            //
+            // Only through faces this pass re-cast, though. Everywhere else `field` is as
+            // stale as `hops` allows, and a stale zero is a face that saw nothing *before*
+            // the last cut opened the mesh up — which is exactly the face most likely to see
+            // something now. The threshold can read those: a wrong one costs the one face. A
+            // flood cannot, because it has no hop limit of its own, so a wrong one is a
+            // doorway it walks through and keeps going. Confining it to the collar is what
+            // puts it back under the bound `hops` is documented to give. It is a small
+            // correction — four faces in 331,708 on the neuron this was built against — but
+            // it is the difference between an approximation with a stated reach and one
+            // without.
+            graph.flood(&mut buried, |i| {
+                field[i] == 0.0 && region.as_ref().is_none_or(|r| r[i])
+            });
+
             let n_buried = buried.iter().filter(|&&b| b).count();
             if n_buried == 0 {
                 log.push(Pass {
@@ -762,6 +824,26 @@ mod tests {
         (v, f)
     }
 
+    /// `drop_internals` with the arguments these tests mostly do not vary.
+    fn repair(
+        v: &[f64],
+        f: &[u32],
+        smooth: u32,
+        iterations: u32,
+    ) -> (Array2<f64>, Array2<u32>, Array1<u32>, Vec<Pass>) {
+        drop_internals(
+            view2(v, 3),
+            view2u(f),
+            0.05,
+            16,
+            smooth,
+            iterations,
+            Some(20),
+            1985,
+            None,
+        )
+    }
+
     fn view2<'a>(v: &'a [f64], cols: usize) -> ArrayView2<'a, f64> {
         ArrayView2::from_shape((v.len() / cols, cols), v).unwrap()
     }
@@ -863,17 +945,7 @@ mod tests {
     #[test]
     fn the_floating_organelle_goes_and_the_cell_stays() {
         let (v, f) = nested();
-        let (nv, nf, keep, passes) = drop_internals(
-            view2(&v, 3),
-            view2u(&f),
-            0.05,
-            16,
-            2,
-            3,
-            Some(20),
-            1985,
-            None,
-        );
+        let (nv, nf, keep, passes) = repair(&v, &f, 2, 3);
         assert_eq!(nf.nrows(), 12, "only the outer box should be left");
         assert_eq!(nv.nrows(), 8);
         // The outer box's vertices came first and are untouched.
@@ -888,17 +960,7 @@ mod tests {
     #[test]
     fn a_clean_mesh_is_left_alone() {
         let (v, f) = box_mesh([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
-        let (nv, nf, keep, _) = drop_internals(
-            view2(&v, 3),
-            view2u(&f),
-            0.05,
-            16,
-            2,
-            3,
-            Some(20),
-            1985,
-            None,
-        );
+        let (nv, nf, keep, _) = repair(&v, &f, 2, 3);
         assert_eq!(nf.nrows(), 12);
         assert_eq!(nv.nrows(), 8);
         assert_eq!(keep.len(), 8);
@@ -909,17 +971,7 @@ mod tests {
     #[test]
     fn keep_indexes_the_input() {
         let (v, f) = nested();
-        let (nv, _, keep, _) = drop_internals(
-            view2(&v, 3),
-            view2u(&f),
-            0.05,
-            16,
-            2,
-            3,
-            Some(20),
-            1985,
-            None,
-        );
+        let (nv, _, keep, _) = repair(&v, &f, 2, 3);
         for (row, &k) in keep.iter().enumerate() {
             for c in 0..3 {
                 assert_eq!(nv[[row, c]], v[3 * k as usize + c]);
@@ -1069,27 +1121,13 @@ mod tests {
     #[test]
     fn the_pipeline_does_not_care_where_the_mesh_sits() {
         let (v, f) = pocket();
-        // No diffusion, because this mesh is 28 faces: a round of it averages the pocket
-        // against the wide-open lid right next to it, and what the threshold then reaches is
-        // the tube's blind floor alone — cut, capped back over the same ring, and cut again
-        // next pass, for ever. The field is already clean at this size.
         let run = |dz: f64| {
             let moved: Vec<f64> = v
                 .iter()
                 .enumerate()
                 .map(|(i, x)| if i % 3 == 2 { x + dz } else { *x })
                 .collect();
-            let (_, nf, keep, passes) = drop_internals(
-                view2(&moved, 3),
-                view2u(&f),
-                0.05,
-                16,
-                0,
-                3,
-                Some(20),
-                1985,
-                None,
-            );
+            let (_, nf, keep, passes) = repair(&moved, &f, 2, 3);
             (nf, keep, passes)
         };
 
@@ -1115,6 +1153,43 @@ mod tests {
             assert_eq!(nf, here, "moved {dz} along z");
             assert_eq!(k, keep, "moved {dz} along z");
             assert_eq!(p, passes, "moved {dz} along z");
+        }
+    }
+
+    /// Smoothing may move where the cut starts; it must not decide how far the cut gets.
+    ///
+    /// Diffusion averages a narrow pocket against the wide-open lid beside it, so with the
+    /// contour alone the threshold reaches only the tube's blind floor. Cutting that leaves a
+    /// cap at the bottom of the tube, as buried as the floor it replaced, for the next pass to
+    /// cut and lay again — no progress, for every pass of the budget, and the tube still
+    /// there at the end. The extent flood carries the cut out through the faces that saw
+    /// nothing, so the pocket goes whatever `smooth` is set to.
+    ///
+    /// Up to a point: `smooth = 4` on a mesh this small lifts every face clear of the
+    /// threshold, and a flood with no seed reaches nothing. That is the contour failing, not
+    /// the extent, and it fails the safe way round — nothing is cut at all.
+    #[test]
+    fn smoothing_does_not_decide_how_far_the_cut_reaches() {
+        let (v, f) = pocket();
+        for smooth in 0..=3 {
+            let (_, nf, _, passes) = repair(&v, &f, smooth, 6);
+            // The tube is gone, not merely re-floored: capping the mouth costs fewer faces
+            // than the eight of tube wall the cut takes with it.
+            assert!(
+                nf.nrows() < f.len() / 3,
+                "smooth = {smooth} left the pocket in place: {passes:?}"
+            );
+            assert!(
+                boundary_halfedges(nf.view(), None).is_empty(),
+                "smooth = {smooth} left the mouth open"
+            );
+            // Converged, rather than stopped by the budget — which is what a stall looks like.
+            assert_eq!(
+                passes.last().expect("at least one pass").buried,
+                0,
+                "smooth = {smooth} did not converge: {passes:?}"
+            );
+            assert!(passes.len() < 6, "smooth = {smooth} spent the whole budget");
         }
     }
 

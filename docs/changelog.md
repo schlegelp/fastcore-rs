@@ -22,6 +22,26 @@ the inside kept and the outside thrown away. Each component is now coned to its 
 which both keeps the term small and makes the answer independent of where the mesh sits.
 Closed components read exactly as before, since there the anchor cancels.
 
+**`drop_internals` cuts a pocket out whole, instead of stopping inside it.** Smoothing the
+openness field decides where the cut's contour sits, and it was also deciding how far the cut
+reached — which it is bad at, because diffusion averages a narrow pocket against the wide-open
+membrane beside it and the thresholded region shrinks back towards the blind floor. Cutting
+only that leaves a cap at the bottom of the tube, as buried as the floor it replaced, so the
+next pass cuts that cap and lays an identical one back: on a real neuron 40-48% of every pass
+after the first was spent re-cutting its own caps, and on a mesh whose every pocket was in that
+state the passes made no progress at all.
+
+The extent now comes off the raw field instead, which cannot be washed out that way: it is
+bimodal, and a face that saw nothing reads exactly zero. The cut grows from the contour through
+faces that saw nothing and stops where the pocket does. On the 410k-face neuron this takes the
+handle count from 399 to 217 and converges several times faster (8,634 then 2,321 faces buried
+after the first pass, against 6,530 then 3,169 with no sign of stopping). `smooth` is now only
+the knob it was documented to be; raise it far enough and it lifts a pocket clear of the
+threshold altogether, at which point nothing is cut rather than too little.
+
+Note `Pass.buried` now counts the faces the cut took, which is the thresholded contour plus
+whatever the flood reached from it.
+
 ## 0.13.0 (2026-08-13)
 
 **A mesh can be stripped of the surface it keeps on its inside.** An *invagination* is a piece

@@ -89,7 +89,9 @@ pub fn openness_py<'py>(
 /// - `n_rays`:     Rays per face - see `openness`.
 /// - `smooth`:     Diffusion rounds applied to the field before thresholding. Thresholding a
 ///   raw field cuts along a ragged contour; this shortens it several fold without moving where
-///   the cut sits.
+///   the cut sits. It moves the contour the cut starts from, not how far the cut reaches: the
+///   extent comes off the raw field, so a pocket narrower than this reaches is still cut
+///   whole.
 /// - `iterations`: Passes of the whole cycle.
 /// - `hops`:       How far past the previous pass's caps to re-cast. `None` re-casts
 ///   everything, which costs about twice as much and moves no mesh metric more than a percent.
