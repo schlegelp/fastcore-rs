@@ -33,7 +33,10 @@
 //! - [`simplify`] — decimating a triangle mesh by quadric-error edge collapse, and —
 //!   the reason it is here rather than in a dependency — reporting which vertex of the
 //!   simplified mesh every vertex of the original ended up in, so per-vertex data
-//!   (synapses, radii, labels) survives the simplification.
+//!   (synapses, radii, labels) survives the simplification. Its quadrics are anchored on
+//!   the mesh rather than on the origin, for the same reason the smoother's volume
+//!   correction is: at dataset coordinates the error terms otherwise cancel most of
+//!   their digits away, and the thresholds they are compared against are absolute.
 //! - [`smoothing`] — the other half of mesh cleanup: moving vertices to take the noise
 //!   out of a surface, by Laplacian, Taubin or HC filtering over a uniform,
 //!   inverse-distance or cotangent one-ring. Face array, vertex count and vertex order

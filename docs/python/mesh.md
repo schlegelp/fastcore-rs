@@ -639,8 +639,12 @@ corner table either refuses a mesh with an edge shared by three faces or silentl
 the offending faces, and meshes out of EM segmentation are full of them.
 
 **It is the same algorithm `pyfqmr` runs** — a port of Sven Forstmann's `Simplify.h` — so
-expect comparable speed rather than a speed-up. On a clean mesh the two agree to the face
-array, which is what the test suite checks. What is new is the vertex map, the pinning,
+expect comparable speed rather than a speed-up. On a clean mesh near the origin the two
+agree to the face array, which is what the test suite checks. Far from it they part
+company, because this anchors its quadrics on the mesh where upstream measures from the
+origin: in dataset coordinates upstream's error terms cancel nine of their sixteen digits
+away, which on a flat grid left it stopping with 96 faces of 242 where this one leaves 3.
+What is new is the vertex map, the pinning,
 and that no C++ toolchain is involved, which is what lets the same code build for
 pyodide and for the R source tarball.
 

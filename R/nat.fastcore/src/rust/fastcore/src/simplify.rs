@@ -34,13 +34,25 @@
 //!
 //! # Divergences from upstream
 //!
-//! Three, all of them about degenerate geometry, all marked `DIVERGENCE` at the
-//! site. Upstream normalises vectors unconditionally; a zero-length vector then
-//! yields NaN, and because every comparison against NaN is false, NaN silently
-//! *defeats* the two tests that are supposed to reject a bad collapse. Neuron
-//! meshes do contain zero-area and duplicated faces, so each of those spots grew a
-//! length check. On a clean mesh none of them trigger and the output matches
-//! `pyfqmr` exactly.
+//! Four, all marked `DIVERGENCE` at the site. Three are about degenerate geometry:
+//! upstream normalises vectors unconditionally, a zero-length vector then yields
+//! NaN, and because every comparison against NaN is false, NaN silently *defeats*
+//! the two tests that are supposed to reject a bad collapse. Neuron meshes do
+//! contain zero-area and duplicated faces, so each of those spots grew a length
+//! check. None of the three fires on a clean mesh.
+//!
+//! The fourth is of a different kind, and it is the one to know about: the quadrics
+//! are anchored on the mesh rather than on the origin. It fires on every mesh, and
+//! it is why the parity claim below has a range on it.
+//!
+//! # Parity with `pyfqmr`
+//!
+//! On a clean mesh near the origin the output matches `pyfqmr` to the face array,
+//! which is what the oracle tests check. Far from it the two part company, because
+//! upstream's quadrics lose precision there and these do not — see the anchoring
+//! divergence. Measured on a 24x24 sphere: identical faces out to an offset of
+//! 1e3, parting at 1e5. Dataset coordinates are 1e5 to 1e6, so a mesh straight out
+//! of EM segmentation is past that line; the fixtures the oracle tests use are not.
 
 use crate::mesh::find;
 use ndarray::{Array1, Array2, ArrayView2};
@@ -309,6 +321,31 @@ struct Simplifier<'a> {
     /// Number of the pass in progress, as the stamp `Triangle::dirty` is compared
     /// against. See the note in [`Simplifier::run`].
     pass: u32,
+    /// The point every quadric is anchored on: the centre of the input's bounding box.
+    ///
+    /// DIVERGENCE (4/4): upstream builds each face's plane as `n . x + d` with `d = -n . p`
+    /// on absolute coordinates, and [`Quadric::error`] then sums terms of order `d^2` down to
+    /// an answer of order (edge length)^2. That is not a far-field curiosity. The thresholds
+    /// the sweep compares those errors against are absolute: `ALPHA * (it + K)^agg` starts at
+    /// 2.2e-6, and [`simplify_mesh_lossless`]'s epsilon defaults to 1e-3. On a mesh in EM
+    /// nanometres the noise floor of `error` is around 1e-4 — above both — so the early
+    /// passes are decided by the sign of a rounding error, and that sign can be negative,
+    /// which passes every test a real error would fail. On a flat grid, where every vertex's
+    /// true error is exactly zero, the lossless pass left 96 faces of 242 standing at the
+    /// origin and 120 at 1e7; anchored it leaves 3 at either.
+    ///
+    /// The bounding box rather than the centroid, for the reason [`crate::bvh`] gives for the
+    /// same choice: the centroid of a neuron mesh sits wherever the arbor happens to be
+    /// dense, which is not where the extent is. `min`/`max` also reduce in any order, so this
+    /// stays bit-identical if the loop is ever widened — which [`Simplifier::run`]'s
+    /// determinism rests on.
+    ///
+    /// Fixed for the whole run, and that is a requirement rather than an economy: an error
+    /// computed in the third pass is compared against the same threshold as one computed in
+    /// the ninth, so they have to be measured from the same place. Positions themselves are
+    /// never shifted — `(x - c) + c` is not `x` in binary — so a vertex that survives comes
+    /// back at exactly the bits it went in at, which is what `locked` promises.
+    origin: [f64; 3],
 }
 
 impl<'a> Simplifier<'a> {
@@ -342,6 +379,23 @@ impl<'a> Simplifier<'a> {
             "`vertices` must be finite"
         );
 
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        for r in vertices.rows() {
+            for ((l, h), x) in lo.iter_mut().zip(&mut hi).zip(r) {
+                *l = l.min(*x);
+                *h = h.max(*x);
+            }
+        }
+        // An empty mesh has no box; anything finite will do, since nothing reads it.
+        let origin = std::array::from_fn(|k| {
+            if lo[k] <= hi[k] {
+                0.5 * (lo[k] + hi[k])
+            } else {
+                0.0
+            }
+        });
+
         let verts = vertices
             .rows()
             .into_iter()
@@ -354,7 +408,7 @@ impl<'a> Simplifier<'a> {
             })
             .collect::<Vec<_>>();
 
-        // DIVERGENCE (1/3): drop faces that name the same vertex twice. They have
+        // DIVERGENCE (1/4): drop faces that name the same vertex twice. They have
         // no area, so no plane and no normal, and upstream would carry them along
         // as a source of NaN. Dropping them here rather than tolerating them later
         // keeps every triangle in the sweep a real triangle.
@@ -384,6 +438,7 @@ impl<'a> Simplifier<'a> {
             refs: Vec::new(),
             locked,
             pass: 0,
+            origin,
         }
     }
 
@@ -494,14 +549,16 @@ impl<'a> Simplifier<'a> {
                 self.vertices[t.v[1] as usize].p,
                 self.vertices[t.v[2] as usize].p,
             ];
-            // DIVERGENCE (2/3): a zero-area face has no normal. Upstream normalises
+            // DIVERGENCE (2/4): a zero-area face has no normal. Upstream normalises
             // anyway and stores NaN, which later makes `flipped`'s orientation test
             // false and lets bad collapses through. Record the absence instead: the
             // face contributes no plane to its vertices' quadrics, and `flipped`
             // knows to skip it.
             t.n = normalize(cross(sub(p[1], p[0]), sub(p[2], p[0])));
             if let Some(n) = t.n {
-                let q = Quadric::plane(n[0], n[1], n[2], -dot(n, p[0]));
+                // DIVERGENCE (4/4): the plane constant is measured from `origin`, not from
+                // the origin. See the field's doc for what that is worth.
+                let q = Quadric::plane(n[0], n[1], n[2], -dot(n, sub(p[0], self.origin)));
                 for j in 0..3 {
                     let v = &mut self.vertices[t.v[j] as usize];
                     v.q = v.q + q;
@@ -543,10 +600,21 @@ impl<'a> Simplifier<'a> {
                 // `det != 0.0` is an exact test on a quantity that can be
                 // denormal-small, so the inverse it admits is sometimes numerically
                 // hopeless. Validating the result instead of tightening the test
-                // leaves every well-conditioned answer bit-identical to upstream's
-                // and sends only the blow-ups down the fallback path below.
+                // leaves every well-conditioned answer alone and sends only the
+                // blow-ups down the fallback path below. `det` itself is built from
+                // the quadric's normal products, which the anchoring does not touch,
+                // so which branch is taken is still bit-for-bit upstream's choice.
                 if p.iter().all(|x| x.is_finite()) {
-                    return (q.error(p), p);
+                    // DIVERGENCE (4/4): `p` is anchored, like the quadric that produced it.
+                    // Callers place vertices with it, so it goes back to absolute here — and
+                    // the fallback below returns absolute too, which is what keeps the two
+                    // branches comparable.
+                    let abs = [
+                        p[0] + self.origin[0],
+                        p[1] + self.origin[1],
+                        p[2] + self.origin[2],
+                    ];
+                    return (q.error(p), abs);
                 }
             }
         }
@@ -557,7 +625,12 @@ impl<'a> Simplifier<'a> {
             (p1[1] + p2[1]) / 2.0,
             (p1[2] + p2[2]) / 2.0,
         ];
-        let (e1, e2, e3) = (q.error(p1), q.error(p2), q.error(p3));
+        // DIVERGENCE (4/4): measured from `origin`, as the quadric was built.
+        let (e1, e2, e3) = (
+            q.error(sub(p1, self.origin)),
+            q.error(sub(p2, self.origin)),
+            q.error(sub(p3, self.origin)),
+        );
         let error = e1.min(e2).min(e3);
         // Upstream's tie-break order: last match wins, so midpoint beats p2 beats p1
         // when the errors are equal.
@@ -596,7 +669,7 @@ impl<'a> Simplifier<'a> {
                 continue;
             }
 
-            // DIVERGENCE (3/3): if `p` coincides with a neighbour there is no
+            // DIVERGENCE (3/4): if `p` coincides with a neighbour there is no
             // direction to compare, and the face would be degenerate after the
             // collapse. Upstream gets NaN here and, because `NaN > 0.999` and
             // `NaN < 0.2` are both false, accepts the collapse. Reject it.
@@ -1009,6 +1082,7 @@ mod tests {
     /// which is what makes it the natural fixture for lossless mode. `uv_sphere` is the
     /// closed counterpart, and the shape a decimated connectomics mesh has.
     use crate::mesh::tests_support::{grid, uv_sphere};
+    use ndarray::Axis;
 
     /// The invariants every result must satisfy, whatever the input.
     fn check_invariants(out: &Simplified, n_in: usize) {
@@ -1050,6 +1124,34 @@ mod tests {
             false,
             None,
         )
+    }
+
+    /// Where the mesh sits must not change how it simplifies. The quadric's plane constant
+    /// is `-n . p`, so on absolute coordinates it grows with the distance to the origin and
+    /// `Quadric::error` then has to cancel terms of order `d^2` down to an answer of order
+    /// (edge length)^2 — nine digits of sixteen on a mesh in EM nanometres. Anchored on the
+    /// mesh's own centre there is nothing to cancel, and the answer stops drifting.
+    #[test]
+    fn simplification_does_not_care_where_the_mesh_sits() {
+        let (faces, verts) = uv_sphere(24, 24);
+        let target = faces.nrows() / 4;
+        let here = simplify_to(&faces, &verts, target);
+        for offset in [1e6, 1e9] {
+            let moved = verts.mapv(|x| x + offset);
+            let there = simplify_to(&faces, &moved, target);
+            assert_eq!(
+                there.faces, here.faces,
+                "moved {offset}: different collapses"
+            );
+            for (a, b) in there.vertices.iter().zip(here.vertices.iter()) {
+                // The shift is not exactly reversible in f64, so this is the ulp of the
+                // offset rather than of the mesh.
+                assert!(
+                    (a - offset - b).abs() <= 1e-9 * offset.max(1.0),
+                    "moved {offset}: {a} - {offset} is not {b}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1252,6 +1354,45 @@ mod tests {
             }
         }
         assert!(preimages.iter().any(|&c| c > 1));
+    }
+
+    /// The case the anchoring exists for, and the one that shows what it is worth.
+    ///
+    /// A flat grid costs exactly nothing to flatten — every interior vertex's true quadric
+    /// error is zero — so a lossless pass should take it down to a couple of triangles
+    /// whatever `epsilon` is. Measured from the origin instead of from the mesh, `error`
+    /// has a noise floor that climbs with the coordinates and swamps the threshold, and the
+    /// pass stops early on numbers that are entirely rounding: 96 of 242 faces left standing
+    /// at the origin, 120 at 1e7, against 3 anchored.
+    ///
+    /// The grid has to be rotated. Axis-aligned, every normal is `(0, 0, 1)`, every term in
+    /// the quadric is an exact multiple of one rounded quantity and the cancellation is exact
+    /// at any offset — so the axis-aligned version of this test passes without the fix and
+    /// pins nothing.
+    #[test]
+    fn lossless_flattens_a_tilted_grid_wherever_it_sits() {
+        let (faces, flat) = grid(12, 1.0);
+        // A rotation with no zeros in it, so no normal component is exactly representable.
+        let (c, t) = (0.8f64, 0.6f64);
+        let verts = flat.map_axis(Axis(1), |r| {
+            let (x, y, z) = (r[0], r[1], r[2]);
+            let (y, z) = (c * y - t * z, t * y + c * z);
+            let (x, z) = (c * x - t * z, t * x + c * z);
+            [x, y, z]
+        });
+        let rotated = Array2::from_shape_fn((verts.len(), 3), |(i, k)| verts[i][k]);
+
+        for offset in [0.0, 4.6e5, 1e7] {
+            let moved = rotated.mapv(|x| x + offset);
+            let out = simplify_mesh_lossless(faces.view(), moved.view(), 1e-9, 9999, false, None);
+            check_invariants(&out, moved.nrows());
+            assert!(
+                out.faces.nrows() <= 32,
+                "at offset {offset} a flat grid should collapse to almost nothing, got {} of {}",
+                out.faces.nrows(),
+                faces.nrows()
+            );
+        }
     }
 
     #[test]

@@ -71,6 +71,74 @@ make the ear clipper choose other ears clears 26 of the 378 rings affected, so i
 of the rule rather than a triangulation that could be smarter. `drop_internals` returns a
 closed mesh, not a manifold one, and now says so on every surface.
 
+**`simplify_mesh` anchors its quadrics on the mesh, not on the origin.** The
+Garland-Heckbert plane constant is `-n . p`, built from absolute coordinates, so the error of
+a candidate collapse is a sum of terms of order `d^2` cancelling down to an answer of order
+(edge length)^2. On a mesh in EM nanometres that is `2e11` cancelling to `1e2` — nine of
+f64's sixteen digits.
+
+That matters at the coordinates these meshes actually arrive in, because the thresholds the
+error is compared against are absolute numbers. The sweep's schedule starts at 2.2e-6 and
+`simplify_mesh_lossless`'s epsilon defaults to 1e-3, while the noise floor of the error at
+dataset coordinates is around 1e-4 — above both. So the early passes were decided by the sign
+of a rounding error, and that sign can be negative, which passes every test a real error would
+fail. On a tilted flat grid, where every vertex costs exactly nothing to remove, the lossless
+pass left 96 faces of 242 standing at the origin and 120 at 1e7; anchored it leaves 3.
+
+Each plane and each error is now measured from the centre of the input's bounding box — the
+same choice, for the same reason, that the BVH makes. Which collapse branch is taken is
+unchanged, since the determinant is built from the quadric's normal products and the anchoring
+does not touch those. Surviving vertices still come back at exactly the bits they went in at;
+only the arithmetic moved.
+
+One consequence to know about: output no longer matches `pyfqmr` face-for-face on a mesh far
+from the origin, because upstream is the one losing precision there. Near the origin — where
+every parity fixture lives — they still agree.
+
+**A boundary is now a side with nothing on the other side of it, not an edge with one face.**
+`boundary_halfedges` grouped the mesh's edges and kept the ones exactly one face carried. That
+misses the case every capped mesh contains: an edge three faces meet along is two faces glued
+back to back and *one free side*, as open as any boundary edge, and a face count says three and
+drops it. Dropping it unbalanced both its endpoints, so the boundary handed to `trace_loops`
+was not a union of cycles, walks dead-ended, and the holes they were tracing never got capped
+— 149 boundary edges left in a repaired 410k-face neuron, from three abandoned chains of 3, 8
+and 141 vertices.
+
+The test is now parity. Faces meeting along an edge are sheets meeting along a spine: they
+pair off back to back, and an odd count leaves exactly one with a free side. One face is the
+familiar case; three is two glued and one free. Counting rather than matching directions is
+deliberate — two faces glued the same way round are a fold in a closed surface, not a hole, so
+parity keeps this blind to winding where a direction count would report six boundary half-edges
+on a tetrahedron with one face flipped. Direction only decides which way the free side points,
+by majority, which an odd count always has.
+
+On consistently wound input that comes with a guarantee the old rule could not give: every face
+contributes a directed 3-cycle, so the half-edges are balanced at every vertex, and a balanced
+digraph decomposes into cycles. `trace_loops` cannot dead-end on it. `drop_internals` now
+returns **0 boundary edges** at every iteration count, where it left 149.
+
+Those three-face edges are capping's own doing and that has not changed: a cap may add no
+vertices — which is what lets `keep` carry a vertex map across the repair — so its chords run
+between vertices the mesh already has and some land on edges it already has. Rotating a ring to
+make the ear clipper choose other ears clears 26 of the 378 rings affected, so it is the price
+of the rule rather than a triangulation that could be smarter. `drop_internals` returns a
+closed mesh, not a manifold one, and now says so on every surface.
+
+**`simplify_mesh` anchors its quadrics on the mesh, so where the mesh sits stops mattering.**
+The Garland-Heckbert plane constant is `-n . p`, built on absolute coordinates, and the error
+of a candidate collapse is then a sum of terms of order `d^2` cancelling down to an answer of
+order (edge length)^2. On a neuron in EM nanometres, hundreds of thousands of units from the
+origin, that is `2e11` cancelling to `1e2` — about nine of f64's sixteen digits. Anchoring each
+plane and each error on the mesh's own centre makes every term the size of the answer.
+
+The effect at realistic coordinates was small, which is why it had gone unnoticed: on a
+410k-face neuron at 4.6e5 nm the simplified mesh's mean distance from the input moved by 0.07%
+and its worst case not at all, though the collapses chosen differed. It is the far field that
+was bad, and it is now flat: simplifying the same mesh 1e9 units out used to cost 24% on the
+worst-case distance and drift the vertex count, and now returns what simplifying it at the
+origin returns. Surviving vertices still come back at exactly the coordinates they went in at;
+only the arithmetic moved.
+
 ## 0.13.0 (2026-08-13)
 
 **A mesh can be stripped of the surface it keeps on its inside.** An *invagination* is a piece
