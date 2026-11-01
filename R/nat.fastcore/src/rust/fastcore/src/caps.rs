@@ -16,9 +16,20 @@
 //! pointed at before, which is the property that lets a cap be applied after the subset
 //! rather than during it.
 //!
+//! That rule has a price, and it is not avoidable by triangulating more cleverly. A cap's
+//! internal chords run between vertices the mesh already has, and a hole whose rim passes
+//! close to itself has pairs the mesh already joins — so the chord lands on an existing edge
+//! and leaves it carrying four faces. On the 410k-face neuron this was measured against,
+//! capping lands 1,638 chords on existing edges across 378 of 699 rings, and rotating a ring
+//! to make the ear clipper choose other ears clears only 26 of them. A fan to a fresh vertex
+//! at the ring's centre would avoid all of it, and is exactly what a caller who must keep a
+//! vertex map cannot have. **The mesh comes back closed; it does not come back manifold.**
+//!
 //! # Half-edges, and why the direction is kept
 //!
-//! A boundary edge has exactly one face left on it, and that face winds it one particular
+//! A boundary edge is a side of the surface with nothing on the other side of it — which is
+//! a question about direction, not about how many faces the edge carries; see
+//! [`boundary_halfedges`]. The face that leaves a side unmatched winds it one particular
 //! way. Keeping that direction is what makes step 2 a walk rather than a search — the ring
 //! is already oriented — and it is what tells step 3 which way round to wind the cap, since
 //! a cap that agrees with its ring would have the two disagreeing about which side is out.
@@ -30,11 +41,11 @@
 //! argsort* — 75 ms of an 84 ms call on a 578k-face mesh, and not something numpy can be
 //! talked out of: the bare `np.sort` of the same keys is already 51 ms.
 //!
-//! So the shape here is: sort the bare `u64` keys in parallel, scan for the ones that
-//! occur once, and take a second pass over the faces to recover the directed half-edge
-//! carrying each. That second pass is what avoids sorting `(key, position)` pairs — twice
-//! the memory traffic — for a payload that is a rounding error of the input. 84 ms becomes
-//! 8 ms.
+//! So the shape here is: sort the `3F` keys in parallel and scan the runs. The keys carry
+//! the position they came from, because deciding whether an edge is boundary needs to know
+//! how many faces named it and which way round each wound it — see [`boundary_halfedges`] —
+//! so these are `u128`s rather than bare `u64`s, at twice the memory traffic. 84 ms becomes
+//! under 10.
 //!
 //! [`exposed_halfedges`] never looks at the mesh as a whole to begin with. A face can only
 //! expose an edge if it loses *exactly one* corner, which on a real prune is a percent or
@@ -44,7 +55,7 @@
 use ndarray::{Array1, Array2, ArrayView2};
 use rayon::prelude::*;
 
-use crate::mesh::{edge_key, sorted_edge_keys};
+use crate::mesh::{edge_key, sorted_edge_keys_indexed};
 use crate::points::eigh3;
 use crate::simplify::{cross, dot, normalize, sub};
 use crate::threads::with_pool;
@@ -74,41 +85,80 @@ fn blocked<T: Clone + Send>(
         .concat()
 }
 
-/// The edge keys exactly one face carries, sorted ascending.
+/// The half-edges a mesh leaves unmatched, in half-edge order.
 ///
-/// Sorting bare keys rather than `(key, position)` pairs halves the bytes moved; the
-/// positions are recovered by [`halfedges_with_keys`] afterwards, which is cheaper than
-/// carrying them through the sort as long as the boundary is small relative to the mesh —
-/// and a boundary that isn't is a mesh with more hole than surface.
+/// A boundary is a side of the surface with nothing on the other side of it, and what decides
+/// that is how many faces meet along the edge — not how many is more than one. Think of the
+/// faces on an edge as sheets meeting along a spine: they pair off back to back, and an **odd**
+/// count leaves exactly one sheet with a free side. One face is the familiar case. Three is
+/// two glued and one free, as open as any boundary edge, and a rule that asked "does exactly
+/// one face carry this edge" dropped it. Those edges exist in any mesh
+/// [`crate::internals::drop_internals`] has capped, because a cap may add no vertices and so
+/// sometimes lands a chord on an edge the mesh already had. Dropping them is what used to
+/// leave [`trace_loops`] a boundary that was not a union of cycles, and so walks that
+/// dead-ended and holes that were never capped.
 ///
-/// A run of one is an edge with one face on it, which is what a boundary is.
-fn solo_keys(faces: &[u32]) -> Vec<u64> {
-    let keys = sorted_edge_keys(faces);
-    keys.chunk_by(|a, b| a == b)
-        .filter(|run| run.len() == 1)
-        .map(|run| run[0])
-        .collect()
-}
+/// Parity is the whole test, which keeps this blind to winding: two faces glued the same way
+/// round are a fold in a closed surface, not a hole, and counting unmatched *directions*
+/// instead would report six boundary half-edges on a tetrahedron with one face flipped and
+/// then cap the solid twice over.
+///
+/// Direction still decides which way the free side points — the majority of the faces on the
+/// edge, which an odd count always has. On consistently wound input that makes the result
+/// balanced, as many half-edges arriving at each vertex as leaving it: every face contributes
+/// a directed 3-cycle, and pairing off a matched edge takes one from each side at both ends.
+/// A balanced digraph decomposes into edge-disjoint cycles, so [`trace_loops`] cannot
+/// dead-end. Wound inconsistently there is no coherent orientation to have, and the walk's
+/// own dead-end handling is what covers it.
+///
+/// Parity needs to know which face each key came from, so this sorts
+/// [`crate::mesh::sorted_edge_keys_indexed`]'s `u128`s rather than bare `u64` keys — twice the
+/// bytes moved, for a question the bare keys cannot answer.
+fn unmatched_halfedges(faces: &[u32]) -> Array2<u32> {
+    let packed = sorted_edge_keys_indexed(faces);
 
-/// The directed half-edges whose undirected key is in `keys`, in half-edge order.
-///
-/// `keys` must be sorted. Order matters downstream: [`trace_loops`] is greedy, so which
-/// ring a half-edge lands in at a non-manifold vertex depends on the order it arrives in,
-/// and half-edge order is the one order that does not depend on how the work was split.
-fn halfedges_with_keys(faces: &[u32], keys: &[u64]) -> Array2<u32> {
-    let out: Vec<u32> = faces
-        .par_chunks_exact(3)
-        .flat_map_iter(|f| {
-            [[f[0], f[1]], [f[1], f[2]], [f[2], f[0]]]
-                .into_iter()
-                .filter(|e| keys.binary_search(&edge_key(e[0], e[1])).is_ok())
-                .flatten()
-        })
-        .collect();
+    // The half-edge at `3i + j` runs from `faces[3i + j]` to the next corner round face `i`.
+    let at = |pos: usize| {
+        let (base, j) = (3 * (pos / 3), pos % 3);
+        [faces[base + j], faces[base + (j + 1) % 3]]
+    };
+
+    let mut free: Vec<usize> = Vec::new();
+    for run in packed.chunk_by(|a, b| a >> 64 == b >> 64) {
+        if run.len() % 2 == 0 {
+            continue;
+        }
+        // `edge_key` packs the lower vertex first, so "forward" runs low to high. A run is
+        // sorted by position, so the first of each direction is the first in face order —
+        // taken without allocating, since there is one run per edge of the mesh.
+        let (mut n_forward, mut first_forward, mut first_backward) = (0usize, None, None);
+        for &e in run {
+            let pos = (e as u64) as usize;
+            let [a, b] = at(pos);
+            if a <= b {
+                n_forward += 1;
+                first_forward.get_or_insert(pos);
+            } else {
+                first_backward.get_or_insert(pos);
+            }
+        }
+        let majority = if 2 * n_forward > run.len() {
+            first_forward
+        } else {
+            first_backward
+        };
+        free.push(majority.expect("an odd run has a majority direction"));
+    }
+
+    // Half-edge order. [`trace_loops`] is greedy, so which ring a half-edge lands in at a
+    // non-manifold vertex depends on the order it arrives in, and this is the one order that
+    // does not depend on how the work was split.
+    free.sort_unstable();
+    let out: Vec<u32> = free.into_iter().flat_map(at).collect();
     Array2::from_shape_vec((out.len() / 2, 2), out).expect("collected pairs")
 }
 
-/// Find every edge of a mesh that has only one face on it.
+/// Find every side of a mesh's surface that has nothing on the other side of it.
 ///
 /// This has to group the edges of the whole mesh, which is the expensive way round — use
 /// [`exposed_halfedges`] where you already know which vertices are going away.
@@ -120,21 +170,17 @@ fn halfedges_with_keys(faces: &[u32], keys: &[u64]) -> Array2<u32> {
 ///
 /// Returns
 /// -------
-/// A `(K, 2)` array of directed half-edges, wound the way their one remaining face winds
-/// them, in the order they appear in the conceptual `3F` edge list.
+/// A `(K, 2)` array of directed half-edges, wound the way the face that left them unmatched
+/// winds them, in the order they appear in the conceptual `3F` edge list. They are balanced
+/// — as many arrive at each vertex as leave it — so they decompose into closed rings; see
+/// [`unmatched_halfedges`] for why that is a promise rather than an observation.
 pub fn boundary_halfedges(faces: ArrayView2<u32>, threads: Option<usize>) -> Array2<u32> {
     // The Python wrapper always hands us C-order (borrowed as-is); a strided view from a
     // Rust caller gets copied into standard layout.
     let storage = faces.as_standard_layout();
     let s: &[u32] = storage.as_slice().expect("standard layout is contiguous");
 
-    with_pool(threads, || {
-        let solo = solo_keys(s);
-        if solo.is_empty() {
-            return Array2::zeros((0, 2));
-        }
-        halfedges_with_keys(s, &solo)
-    })
+    with_pool(threads, || unmatched_halfedges(s))
 }
 
 /// Find the edges a subset is about to expose.
@@ -468,7 +514,10 @@ fn scatter_basis(centred: &[[f64; 3]]) -> ([f64; 3], [f64; 3]) {
         }
     }
     let (_, vecs) = eigh3(m);
-    ([vecs[0][0], vecs[1][0], vecs[2][0]], [vecs[0][1], vecs[1][1], vecs[2][1]])
+    (
+        [vecs[0][0], vecs[1][0], vecs[2][0]],
+        [vecs[0][1], vecs[1][1], vecs[2][1]],
+    )
 }
 
 /// Project a centred ring onto an orthonormal pair.
@@ -499,7 +548,11 @@ fn earcut_ring(
     // that needs flipping.
     let flip = signed_area(flat) > 0.0;
     for t in scratch.chunks_exact(3) {
-        let (a, b, c) = (ring[t[0] as usize], ring[t[1] as usize], ring[t[2] as usize]);
+        let (a, b, c) = (
+            ring[t[0] as usize],
+            ring[t[1] as usize],
+            ring[t[2] as usize],
+        );
         if flip {
             out.extend_from_slice(&[c, b, a]);
         } else {
@@ -755,6 +808,71 @@ mod tests {
         )
     }
 
+    /// Three faces along one edge are two glued back to back and one free side. Counting
+    /// faces calls that three and drops it; counting directions sees the side that is open,
+    /// which is what a boundary is. Capping leaves such edges behind — a cap may add no
+    /// vertices, so its chords sometimes land on edges the mesh already had — so this is the
+    /// case the repair pipeline actually meets.
+    #[test]
+    fn a_three_face_edge_reports_its_free_side() {
+        // Faces 0-1-2 and 0-1-4 cross edge 0-1 the same way; 1-0-3 crosses it the other.
+        let faces = array![[0u32, 1, 2], [1, 0, 3], [0, 1, 4]];
+        let b = boundary_halfedges(faces.view(), None);
+        let on_01: Vec<[u32; 2]> = b
+            .rows()
+            .into_iter()
+            .map(|r| [r[0], r[1]])
+            .filter(|e| (e[0].min(e[1]), e[0].max(e[1])) == (0, 1))
+            .collect();
+        assert_eq!(
+            on_01,
+            vec![[0, 1]],
+            "one side of 0-1 is open, and it points 0 -> 1"
+        );
+    }
+
+    /// A closed surface has no boundary however its faces are wound. Two faces glued the same
+    /// way round are a fold, not a hole — counting unmatched directions rather than faces
+    /// would call each of a flipped face's three edges open and cap the solid a second time.
+    #[test]
+    fn a_closed_mesh_has_no_boundary_however_it_is_wound() {
+        let (faces, _) = tetrahedron();
+        for i in 0..faces.nrows() {
+            let mut flipped = faces.to_owned();
+            let row = flipped.row(i).to_owned();
+            flipped[[i, 1]] = row[2];
+            flipped[[i, 2]] = row[1];
+            assert_eq!(
+                boundary_halfedges(flipped.view(), None).nrows(),
+                0,
+                "face {i} wound the other way is still not a hole"
+            );
+        }
+    }
+
+    /// The property the whole walk rests on: every face is a directed 3-cycle, so cancelling
+    /// matched pairs can only leave a digraph where as many half-edges arrive at a vertex as
+    /// leave it — and a balanced digraph is a union of cycles, which is what `trace_loops`
+    /// needs to never dead-end.
+    #[test]
+    fn the_boundary_is_balanced_at_every_vertex() {
+        let (grid_faces, _) = grid(6, 1.0);
+        let awkward = array![[0u32, 1, 2], [1, 0, 3], [0, 1, 4], [2, 3, 4]];
+        for faces in [grid_faces.view(), awkward.view()] {
+            let b = boundary_halfedges(faces, None);
+            let n = faces.iter().copied().max().unwrap_or(0) as usize + 1;
+            let (mut out, mut inc) = (vec![0i32; n], vec![0i32; n]);
+            for r in b.rows() {
+                out[r[0] as usize] += 1;
+                inc[r[1] as usize] += 1;
+            }
+            assert_eq!(out, inc, "every vertex is entered as often as it is left");
+            // And so the walk accounts for every half-edge it was handed.
+            let (rings, _) = trace_loops(b.view());
+            assert_eq!(rings.len(), b.nrows(), "no half-edge abandoned");
+        }
+    }
+
     #[test]
     fn closed_mesh_has_no_boundary() {
         let (faces, _) = tetrahedron();
@@ -836,7 +954,11 @@ mod tests {
         let outer = 4 * (n - 1);
         assert_eq!(exposed.nrows(), all.len() - outer);
         for e in exposed.rows() {
-            assert!(all.contains(&(e[0], e[1])), "{:?} not on the new boundary", e);
+            assert!(
+                all.contains(&(e[0], e[1])),
+                "{:?} not on the new boundary",
+                e
+            );
         }
     }
 
@@ -929,7 +1051,11 @@ mod tests {
             [5611.96044922, 22447.96679688, 16756.00585938]
         ];
         let caps = triangulate_rings(&[0, 1, 2, 3, 4, 5], &[0, 6], vertices.view(), None);
-        assert_eq!(caps.nrows(), 4, "n - 2 triangles, whichever route got there");
+        assert_eq!(
+            caps.nrows(),
+            4,
+            "n - 2 triangles, whichever route got there"
+        );
         let used: std::collections::HashSet<u32> = caps.iter().copied().collect();
         assert_eq!(used.len(), 6, "every ring vertex used");
     }
@@ -1096,7 +1222,10 @@ mod tests {
             [0.0, -2.0, 0.0],
         ];
         let (u, w) = scatter_basis(&centred);
-        assert!((u[0].abs() - 1.0).abs() < 1e-12, "widest spread is x: {u:?}");
+        assert!(
+            (u[0].abs() - 1.0).abs() < 1e-12,
+            "widest spread is x: {u:?}"
+        );
         assert!((w[1].abs() - 1.0).abs() < 1e-12, "then y: {w:?}");
         assert!(dot(u, w).abs() < 1e-12, "orthonormal");
     }

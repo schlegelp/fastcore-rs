@@ -362,8 +362,8 @@ pub(crate) fn edge_key(u: u32, v: u32) -> u64 {
 /// One of the two places the `3F` edge-list convention and the [`edge_key`] packing are
 /// turned into a buffer — the other is [`sorted_edge_keys_indexed`], which is this plus the
 /// payload — so the consumers that group edges cannot drift on either. This bare form is for
-/// the two that need only the keys: [`unique_edges`]' fast path, which keeps the first of
-/// each run, and [`crate::caps::boundary_halfedges`], which keeps the runs of length one.
+/// the one consumer that needs only the keys: [`unique_edges`]' fast path, which keeps the
+/// first of each run.
 ///
 /// Runs on the ambient rayon pool; callers wrap it in [`with_pool`].
 pub(crate) fn sorted_edge_keys(faces: &[u32]) -> Vec<u64> {

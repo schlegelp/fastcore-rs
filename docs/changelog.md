@@ -42,6 +42,35 @@ threshold altogether, at which point nothing is cut rather than too little.
 Note `Pass.buried` now counts the faces the cut took, which is the thresholded contour plus
 whatever the flood reached from it.
 
+**A boundary is now a side with nothing on the other side of it, not an edge with one face.**
+`boundary_halfedges` grouped the mesh's edges and kept the ones exactly one face carried. That
+misses the case every capped mesh contains: an edge three faces meet along is two faces glued
+back to back and *one free side*, as open as any boundary edge, and a face count says three and
+drops it. Dropping it unbalanced both its endpoints, so the boundary handed to `trace_loops`
+was not a union of cycles, walks dead-ended, and the holes they were tracing never got capped
+— 149 boundary edges left in a repaired 410k-face neuron, from three abandoned chains of 3, 8
+and 141 vertices.
+
+The test is now parity. Faces meeting along an edge are sheets meeting along a spine: they
+pair off back to back, and an odd count leaves exactly one with a free side. One face is the
+familiar case; three is two glued and one free. Counting rather than matching directions is
+deliberate — two faces glued the same way round are a fold in a closed surface, not a hole, so
+parity keeps this blind to winding where a direction count would report six boundary half-edges
+on a tetrahedron with one face flipped. Direction only decides which way the free side points,
+by majority, which an odd count always has.
+
+On consistently wound input that comes with a guarantee the old rule could not give: every face
+contributes a directed 3-cycle, so the half-edges are balanced at every vertex, and a balanced
+digraph decomposes into cycles. `trace_loops` cannot dead-end on it. `drop_internals` now
+returns **0 boundary edges** at every iteration count, where it left 149.
+
+Those three-face edges are capping's own doing and that has not changed: a cap may add no
+vertices — which is what lets `keep` carry a vertex map across the repair — so its chords run
+between vertices the mesh already has and some land on edges it already has. Rotating a ring to
+make the ear clipper choose other ears clears 26 of the 378 rings affected, so it is the price
+of the rule rather than a triangulation that could be smarter. `drop_internals` returns a
+closed mesh, not a manifold one, and now says so on every surface.
+
 ## 0.13.0 (2026-08-13)
 
 **A mesh can be stripped of the surface it keeps on its inside.** An *invagination* is a piece

@@ -870,7 +870,9 @@ caps = fastcore.triangulate_rings(rings, offsets, new_vertices)
 to openings the mesh came with — a neurite truncated at the edge of the dataset, say — and
 sealing those is `boundary_halfedges`' job. One consequence is worth knowing: where a cut
 runs into an opening the mesh came with, what it exposes is an open chain rather than a
-ring, and `trace_loops` abandons it. That hole stays open.
+ring, and `trace_loops` abandons it. That hole stays open. (This is about the subset path:
+`boundary_halfedges` reads the whole mesh and hands back a boundary that always decomposes
+into rings.)
 
 ### Why these are here
 

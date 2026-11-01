@@ -122,7 +122,10 @@ def drop_internals(
 
     Only vertices are ever *removed*; caps re-use the ones already on the
     boundary. So ``keep`` is all a caller needs to carry a vertex map,
-    connectors or any other per-vertex annotation across the repair.
+    connectors or any other per-vertex annotation across the repair. The price
+    of that rule is that a cap's chords run between vertices the mesh already
+    has, so one occasionally lands on an edge the mesh already has and leaves it
+    carrying four faces: the mesh comes back closed, but not manifold.
 
     Note this also closes openings the mesh arrived with — a neurite truncated
     at the edge of the dataset, say. For skeletonisation that is what you want:

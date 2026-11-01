@@ -80,6 +80,11 @@ pub fn openness_py<'py>(
 /// repeat, since capping a pocket mouth turns a partially-open neighbour into a fully buried
 /// one. Passes converge fast: 18.7% of faces buried, then 0.5%, then 0.2%.
 ///
+/// Caps may add no vertices, so that `keep` can carry a vertex map across the repair. The
+/// price is that a cap's chords run between vertices the mesh already has, and one
+/// occasionally lands on an edge the mesh already has: the mesh comes back closed, but not
+/// manifold.
+///
 /// Arguments
 /// ---------
 /// - `vertices`:   (V, 3) float64 array of vertex positions.

@@ -11,7 +11,13 @@ use crate::mesh::as_slice;
 /// What `trace_loops` hands back: the rings, flat, and the offsets that cut them up.
 type RingsOut<'py> = (Bound<'py, PyArray1<u32>>, Bound<'py, PyArray1<i64>>);
 
-/// Find every edge of a mesh that has only one face on it.
+/// Find every side of a mesh's surface that has nothing on the other side of it.
+///
+/// A boundary is a question about direction, not about how many faces an edge carries: the
+/// faces crossing an edge one way pair off against those crossing it the other, and the
+/// leftovers are boundary. So an edge three faces meet along reports the one free side a
+/// face count would drop. The result is balanced at every vertex, and therefore always
+/// decomposes into closed rings.
 ///
 /// Arguments
 /// ---------
@@ -20,8 +26,8 @@ type RingsOut<'py> = (Bound<'py, PyArray1<u32>>, Bound<'py, PyArray1<i64>>);
 ///
 /// Returns
 /// -------
-/// A (K, 2) uint32 array of directed half-edges, wound the way their one remaining
-/// face winds them.
+/// A (K, 2) uint32 array of directed half-edges, wound the way the face that left them
+/// unmatched winds them.
 #[pyfunction]
 #[pyo3(name = "boundary_halfedges", signature = (faces, threads=None))]
 pub fn boundary_halfedges_py<'py>(
@@ -80,10 +86,7 @@ pub fn exposed_halfedges_py<'py>(
 /// so `offsets` (int64) has one more entry than there are rings.
 #[pyfunction]
 #[pyo3(name = "trace_loops")]
-pub fn trace_loops_py<'py>(
-    py: Python<'py>,
-    halfedges: PyReadonlyArray2<u32>,
-) -> RingsOut<'py> {
+pub fn trace_loops_py<'py>(py: Python<'py>, halfedges: PyReadonlyArray2<u32>) -> RingsOut<'py> {
     let halfedges = halfedges.as_array();
     // Sequential, but proportional to the boundary rather than the mesh — and it builds a
     // CSR of it first, so it is still worth not holding the GIL through.

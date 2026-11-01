@@ -20,7 +20,10 @@ Only the openings a cut is about to make, worked out *before* subsetting::
     caps = fastcore.triangulate_rings(rings, offsets, vertices)
 
 No vertices are ever added, only faces, so every vertex index a caller already
-holds still points at what it pointed at before.
+holds still points at what it pointed at before. The price is that a cap's
+chords run between vertices the mesh already has, so one occasionally lands on
+an edge the mesh already has and leaves it carrying four faces. The result is
+closed, but not necessarily manifold.
 """
 
 import numpy as np
@@ -37,16 +40,26 @@ __all__ = [
 
 
 def boundary_halfedges(faces, threads=None):
-    """Find every edge of a mesh that has only one face on it.
+    """Find every side of a mesh's surface that has nothing on the other side of it.
 
-    An interior edge has two faces on it and a boundary edge has one, so this is
-    a grouping of the ``3 * F`` edges the faces name. That grouping is the whole
-    cost, and it is why this is here: ``np.unique(keys, return_inverse=True,
-    return_counts=True)`` — the obvious way to write it — is a stable argsort,
-    75 ms of an 84 ms call on a 578k-face mesh, and numpy cannot be talked out of
-    it (the bare ``np.sort`` of the same keys is already 51 ms). Sorting the bare
-    keys in parallel and taking a second pass to recover the direction brings
-    that to 8 ms.
+    A boundary is a question about direction, not about how many faces an edge
+    carries. Each face winds its three edges, so an undirected edge sees some
+    number of faces crossing it one way and some the other; the ones that pair
+    off back to back are interior and the leftovers are boundary. On a manifold
+    edge that is the familiar reading — one face, one unmatched side. An edge
+    three faces meet along is two faces glued and one free side, and a face
+    count would drop it; such edges turn up in any mesh
+    :func:`~navis_fastcore.drop_internals` has capped.
+
+    What that buys is a guarantee: the half-edges come back balanced, as many
+    arriving at each vertex as leaving it, so they always decompose into closed
+    rings and :func:`~navis_fastcore.trace_loops` can never dead-end on them.
+
+    Grouping the ``3 * F`` edges the faces name is the whole cost, and it is why
+    this is here: ``np.unique(keys, return_inverse=True, return_counts=True)`` —
+    the obvious way to write it — is a stable argsort, 75 ms of an 84 ms call on
+    a 578k-face mesh, and numpy cannot be talked out of it (the bare ``np.sort``
+    of the same keys is already 51 ms).
 
     Use :func:`~navis_fastcore.exposed_halfedges` instead where you already know
     which vertices are going away — it never looks at the mesh as a whole.

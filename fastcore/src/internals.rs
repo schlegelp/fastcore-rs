@@ -27,7 +27,9 @@
 //!    inside-out shreds of pocket wall left behind. The cut has just opened every component it
 //!    touched, so that volume is read against each component's own centroid; see
 //!    [`enclosing_mask`] for what reading it against the origin costs.
-//! 4. **Cap** the resulting holes, which are the pocket mouths, with [`crate::caps`].
+//! 4. **Cap** the resulting holes — the pocket mouths, and anything the mesh arrived open at
+//!    — with [`crate::caps`]. Closed, but not manifold: capping may not add vertices here, so
+//!    a chord occasionally lands on an edge the mesh already had.
 //!
 //! Then repeat: capping a mouth turns a partially-open neighbour into a fully buried one, so
 //! later passes find pockets the first threshold could not see. It converges fast — 18.7% of
