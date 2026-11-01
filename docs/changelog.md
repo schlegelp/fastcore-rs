@@ -8,7 +8,7 @@ it is called out.
 Tags, source archives and the original announcements are on
 [GitHub](https://github.com/schlegelp/fastcore-rs/releases).
 
-## 0.13.1 (unreleased)
+## 0.13.1 (2026-11-01)
 
 **`drop_internals` no longer throws the mesh away when it is stored far from the origin.** The
 step that drops components enclosing no volume summed each component's tetrahedra on the
