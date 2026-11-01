@@ -19,7 +19,9 @@
 //!    with 54,112 boundary vertices to 513 with 12,094 — the same faces removed, a far better
 //!    cut.
 //! 3. **Cut**: drop the buried faces, then drop the components that enclose no volume — the
-//!    inside-out shreds of pocket wall left behind.
+//!    inside-out shreds of pocket wall left behind. The cut has just opened every component it
+//!    touched, so that volume is read against each component's own centroid; see
+//!    [`enclosing_mask`] for what reading it against the origin costs.
 //! 4. **Cap** the resulting holes, which are the pocket mouths, with [`crate::caps`].
 //!
 //! Then repeat: capping a mouth turns a partially-open neighbour into a fully buried one, so
@@ -87,18 +89,22 @@ fn point(v: &[f64], i: u32) -> [f64; 3] {
     [v[b], v[b + 1], v[b + 2]]
 }
 
+/// Centroid of one face.
+#[inline]
+fn face_center(v: &[f64], f: &[u32]) -> [f64; 3] {
+    let (a, b, c) = (point(v, f[0]), point(v, f[1]), point(v, f[2]));
+    [
+        (a[0] + b[0] + c[0]) / 3.0,
+        (a[1] + b[1] + c[1]) / 3.0,
+        (a[2] + b[2] + c[2]) / 3.0,
+    ]
+}
+
 /// Unit normal and centroid of one face; the normal is `None` for a degenerate triangle.
 #[inline]
 fn face_frame(v: &[f64], f: &[u32]) -> (Option<[f64; 3]>, [f64; 3]) {
     let (a, b, c) = (point(v, f[0]), point(v, f[1]), point(v, f[2]));
-    (
-        normalize(cross(sub(b, a), sub(c, a))),
-        [
-            (a[0] + b[0] + c[0]) / 3.0,
-            (a[1] + b[1] + c[1]) / 3.0,
-            (a[2] + b[2] + c[2]) / 3.0,
-        ],
-    )
+    (normalize(cross(sub(b, a), sub(c, a))), face_center(v, f))
 }
 
 /// How far off the surface to launch, when the caller does not say: 5% of the median edge
@@ -384,10 +390,29 @@ impl FaceGraph {
 /// legitimate pieces — one hemibrain example mesh has 299 — and keeping only the biggest
 /// silently deletes real neurite. Only inside-out or degenerate scraps are dropped.
 ///
-/// This is also the one place in the pipeline where signed volume can be trusted: it is read
-/// per component *before* capping, when each sheet is still closed. Once the mesh has been cut
-/// and capped it is open and partly non-manifold, and its divergence-theorem volume means
-/// nothing.
+/// The volume is read against each component's own centroid rather than against the origin,
+/// and that is load-bearing rather than tidy. Summing the tetrahedra on a point gives the
+/// volume of the surface *coned to that point*, which is the component's own volume only when
+/// the component is closed; on an open one the cone is real and its size grows with the
+/// distance to the point. Every component the cut touched is open, because the cut is what
+/// opened it — the holes do not get capped until the next step — so against the origin the
+/// cone is as big as wherever the mesh happens to sit. These meshes sit in dataset
+/// nanometres, hundreds of thousands of them from the origin, and on one such neuron the cone
+/// term turned the main component's +5.8e10 into -1.4e9 and took 340,456 of its 341,049 faces
+/// with it. Coning to the centroid instead keeps the term small and, more to the point, makes
+/// the answer independent of where the mesh sits — the same reading, and for the same reason,
+/// that [`crate::smoothing`] takes an anchor rather than assuming the origin.
+///
+/// Subtracting the centroid *before* the cross product is also the whole of the floating-point
+/// story, so the tempting one-pass form is a trap: the identity `V(p) = V(0) - p.(sum of face
+/// cross products)/6` is exact in reals and removes the cone, but it reaches the answer as the
+/// difference of two numbers the size of the coordinates, which at 1e6 agrees with the origin
+/// reading bit for bit. Make every *term* small and nothing cancels.
+///
+/// What this still cannot do is make the question well-posed. An open sheet has no enclosed
+/// volume, so the sign test below stays a heuristic for one: a shallow, correctly wound dish
+/// cones to near zero either way. The win is that the answer is no longer arbitrary as a
+/// function of where the mesh sits, which is what was throwing whole neurons away.
 fn enclosing_mask(v: &[f64], faces: &[u32]) -> Vec<bool> {
     let n = faces.len() / 3;
     let n_faces_arr = ArrayView2::from_shape((n, 3), faces).expect("(F, 3)");
@@ -395,16 +420,34 @@ fn enclosing_mask(v: &[f64], faces: &[u32]) -> Vec<bool> {
 
     // Labels are the smallest face index in each component, so they index arrays of length F
     // directly — no compaction needed.
-    let mut volume = vec![0.0f64; n];
+    let mut centroid = vec![[0.0f64; 3]; n];
     let mut count = vec![0u32; n];
     for (i, l) in labels.iter().enumerate() {
-        let f = &faces[3 * i..3 * i + 3];
-        let (a, b, c) = (point(v, f[0]), point(v, f[1]), point(v, f[2]));
-        // The signed volume of the tetrahedron on the origin. Summed over a closed surface
-        // the origin cancels, which is what makes this a property of the component and not of
-        // where it happens to sit.
-        volume[*l as usize] += dot(a, cross(b, c)) / 6.0;
+        let acc = &mut centroid[*l as usize];
+        for (slot, x) in acc.iter_mut().zip(face_center(v, &faces[3 * i..3 * i + 3])) {
+            *slot += x;
+        }
         count[*l as usize] += 1;
+    }
+    for (sum, &n_faces) in centroid.iter_mut().zip(&count) {
+        if n_faces > 0 {
+            for x in sum.iter_mut() {
+                *x /= n_faces as f64;
+            }
+        }
+    }
+
+    let mut volume = vec![0.0f64; n];
+    for (i, l) in labels.iter().enumerate() {
+        let f = &faces[3 * i..3 * i + 3];
+        let o = centroid[*l as usize];
+        let (a, b, c) = (
+            sub(point(v, f[0]), o),
+            sub(point(v, f[1]), o),
+            sub(point(v, f[2]), o),
+        );
+        // The signed volume of the tetrahedron on the component's centroid.
+        volume[*l as usize] += dot(a, cross(b, c)) / 6.0;
     }
 
     labels
@@ -691,6 +734,34 @@ mod tests {
         (v, f)
     }
 
+    /// A box with a blind square tube pushed into its lid — the invagination this is all
+    /// about, in the smallest form that still behaves like one. The tube is narrow and deep,
+    /// so its wall sees nothing, and cutting the wall away opens the mouth: the one small
+    /// case where `enclosing_mask` is handed a component the pipeline itself has opened.
+    /// Repaired, it should come back as the plain box the pocket was pushed into.
+    fn pocket() -> (Vec<f64>, Vec<u32>) {
+        let ring = |z: f64, h: f64| {
+            let (lo, hi) = (5.0 - h, 5.0 + h);
+            vec![lo, lo, z, hi, lo, z, hi, hi, z, lo, hi, z]
+        };
+        let mut v = ring(0.0, 5.0); // 0..4  outer floor
+        v.extend(ring(10.0, 5.0)); //  4..8  outer lid
+        v.extend(ring(10.0, 0.5)); //  8..12 the mouth, in the lid
+        v.extend(ring(2.0, 0.5)); //  12..16 the tube's own floor
+        let (b, t, m, p) = (0u32, 4u32, 8u32, 12u32);
+
+        // Outward is away from the cytoplasm, which inside the tube means into the lumen.
+        let mut f = vec![b, b + 2, b + 1, b, b + 3, b + 2];
+        for i in 0..4u32 {
+            let j = (i + 1) % 4;
+            f.extend_from_slice(&[t + i, b + i, b + j, t + i, b + j, t + j]); // outer wall
+            f.extend_from_slice(&[t + i, t + j, m + i, t + j, m + j, m + i]); // lid, holed
+            f.extend_from_slice(&[m + i, p + j, p + i, m + i, m + j, p + j]); // tube wall
+        }
+        f.extend_from_slice(&[p, p + 1, p + 2, p, p + 2, p + 3]);
+        (v, f)
+    }
+
     fn view2<'a>(v: &'a [f64], cols: usize) -> ArrayView2<'a, f64> {
         ArrayView2::from_shape((v.len() / cols, cols), v).unwrap()
     }
@@ -953,13 +1024,98 @@ mod tests {
     }
 
     #[test]
-    fn signed_volume_sees_through_the_origin() {
-        // A box that does not contain the origin still has positive signed volume, which is
-        // what the divergence theorem promises and what `enclosing_mask` leans on.
+    fn a_closed_component_reads_the_same_wherever_it_sits() {
+        // On a closed surface the anchor cancels, which is what the divergence theorem
+        // promises — so a box that does not contain the origin reads positive either way.
+        // The open case, where the anchor is the whole story, is the test below.
         let (v, f) = box_mesh([100.0, 100.0, 100.0], [101.0, 101.0, 101.0]);
         assert!(enclosing_mask(&v, &f).iter().all(|&x| x));
         let flipped = flip(&f);
         assert!(enclosing_mask(&v, &flipped).iter().all(|&x| !x));
+    }
+
+    /// The components `enclosing_mask` is handed are the ones the cut has just opened, and an
+    /// open surface's tetrahedra sum to the volume of the cone to whatever point they were
+    /// taken on. Read on the origin that cone is as big as the mesh is far away — and signed
+    /// by which way the opening happens to face, so it is as likely to swallow the real volume
+    /// as to inflate it. Read on the component's own centroid it cannot, so neither where the
+    /// mesh sits nor which way its holes point may change the answer.
+    #[test]
+    fn an_open_component_survives_being_far_from_the_origin() {
+        for corner in [[0.0, 0.0, 0.0], [1e6, 1e6, 1e6]] {
+            let hi = [corner[0] + 1.0, corner[1] + 1.0, corner[2] + 1.0];
+            let (v, f) = box_mesh(corner, hi);
+            // Take a lid off, which is what a cut leaves behind: still obviously a cell, and
+            // open until the capping step closes it. Both lids, because the cone term changes
+            // sign with the opening and only one of the two ever failed loudly.
+            for lid in [0, 2] {
+                let mut open = f.clone();
+                open.drain(3 * lid..3 * lid + 6); // the two triangles of one face
+                assert!(
+                    enclosing_mask(&v, &open).iter().all(|&x| x),
+                    "box at {corner:?} with lid {lid} off should be kept"
+                );
+                assert!(
+                    enclosing_mask(&v, &flip(&open)).iter().all(|&x| !x),
+                    "and inside out it should not"
+                );
+            }
+        }
+    }
+
+    /// The same, end to end — and here the pipeline opens the component itself, which is the
+    /// real shape of the bug and the one that cost a whole neuron. See [`enclosing_mask`] for
+    /// what that cost.
+    #[test]
+    fn the_pipeline_does_not_care_where_the_mesh_sits() {
+        let (v, f) = pocket();
+        // No diffusion, because this mesh is 28 faces: a round of it averages the pocket
+        // against the wide-open lid right next to it, and what the threshold then reaches is
+        // the tube's blind floor alone — cut, capped back over the same ring, and cut again
+        // next pass, for ever. The field is already clean at this size.
+        let run = |dz: f64| {
+            let moved: Vec<f64> = v
+                .iter()
+                .enumerate()
+                .map(|(i, x)| if i % 3 == 2 { x + dz } else { *x })
+                .collect();
+            let (_, nf, keep, passes) = drop_internals(
+                view2(&moved, 3),
+                view2u(&f),
+                0.05,
+                16,
+                0,
+                3,
+                Some(20),
+                1985,
+                None,
+            );
+            (nf, keep, passes)
+        };
+
+        // Properties, not counts: the pocket is gone, what is left is closed, and the passes
+        // ran out of things to bury rather than out of iterations.
+        let (here, keep, passes) = run(0.0);
+        assert!(
+            here.nrows() < f.len() / 3,
+            "the pocket should have been cut away"
+        );
+        assert!(
+            boundary_halfedges(here.view(), None).is_empty(),
+            "and the mouth it left closed"
+        );
+        assert_eq!(
+            passes.last().expect("at least one pass").buried,
+            0,
+            "and the repair should have converged"
+        );
+
+        for dz in [1e6, -1e6] {
+            let (nf, k, p) = run(dz);
+            assert_eq!(nf, here, "moved {dz} along z");
+            assert_eq!(k, keep, "moved {dz} along z");
+            assert_eq!(p, passes, "moved {dz} along z");
+        }
     }
 
     #[test]

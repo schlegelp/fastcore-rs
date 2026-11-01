@@ -8,6 +8,20 @@ it is called out.
 Tags, source archives and the original announcements are on
 [GitHub](https://github.com/schlegelp/fastcore-rs/releases).
 
+## 0.13.1 (unreleased)
+
+**`drop_internals` no longer throws the mesh away when it is stored far from the origin.** The
+step that drops components enclosing no volume summed each component's tetrahedra on the
+origin, which is the component's own volume only when the component is closed. Every component
+the cut has touched is open — the holes are not capped until the next step — so what was really
+being measured was the volume of the surface *coned to the origin*, a number whose size grows
+with the distance to it and whose sign is set by which way the holes happen to face. On a
+segmented neuron in dataset nanometres, 450,000 units out, that turned the main component's
++5.8e10 into -1.4e9 and dropped 340,456 of its 341,049 faces, leaving a scatter of scraps:
+the inside kept and the outside thrown away. Each component is now coned to its own centroid,
+which both keeps the term small and makes the answer independent of where the mesh sits.
+Closed components read exactly as before, since there the anchor cancels.
+
 ## 0.13.0 (2026-08-13)
 
 **A mesh can be stripped of the surface it keeps on its inside.** An *invagination* is a piece
