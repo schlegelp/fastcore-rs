@@ -8,7 +8,7 @@ it is called out.
 Tags, source archives and the original announcements are on
 [GitHub](https://github.com/schlegelp/fastcore-rs/releases).
 
-## 0.13.2 (unreleased)
+## 0.13.2 (2026-11-03)
 
 **`drop_internals` no longer throws most of a neuron away when the cut opens it in many
 places.** 0.13.1 fixed the step that drops components enclosing no volume so that the answer
