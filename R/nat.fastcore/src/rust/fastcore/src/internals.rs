@@ -24,9 +24,9 @@
 //!    cut grows from the contour through faces that saw nothing, and stops where the pocket
 //!    does.
 //! 3. **Cut**: drop the buried faces, then drop the components that enclose no volume — the
-//!    inside-out shreds of pocket wall left behind. The cut has just opened every component it
-//!    touched, so that volume is read against each component's own centroid; see
-//!    [`enclosing_mask`] for what reading it against the origin costs.
+//!    inside-out shreds of pocket wall left behind. The cut has just opened every component
+//!    it touched, so each one is closed before it is measured; see [`enclosing_mask`] for
+//!    what measuring an open surface instead costs.
 //! 4. **Cap** the resulting holes — the pocket mouths, and anything the mesh arrived open at
 //!    — with [`crate::caps`]. Closed, but not manifold: capping may not add vertices here, so
 //!    a chord occasionally lands on an edge the mesh already had.
@@ -111,6 +111,39 @@ fn face_center(v: &[f64], f: &[u32]) -> [f64; 3] {
         (a[1] + b[1] + c[1]) / 3.0,
         (a[2] + b[2] + c[2]) / 3.0,
     ]
+}
+
+/// Mean of the face centres: the anchor a signed volume is taken on.
+fn faces_centroid(v: &[f64], faces: &[u32]) -> [f64; 3] {
+    let mut o = [0.0f64; 3];
+    for f in faces.chunks_exact(3) {
+        for (slot, x) in o.iter_mut().zip(face_center(v, f)) {
+            *slot += x;
+        }
+    }
+    for x in o.iter_mut() {
+        *x /= (faces.len() / 3) as f64;
+    }
+    o
+}
+
+/// `sum over faces of (a - o).((b - o) x (c - o)) / 6`.
+///
+/// On a closed surface this is its volume and `o` cancels. On an open one it is the volume
+/// of that surface closed by coning its holes to `o`, which is a quite different thing — see
+/// [`enclosing_mask`], whose whole job is to not be caught by the difference.
+fn tet_sum(v: &[f64], faces: &[u32], o: [f64; 3]) -> f64 {
+    faces
+        .chunks_exact(3)
+        .map(|f| {
+            let (a, b, c) = (
+                sub(point(v, f[0]), o),
+                sub(point(v, f[1]), o),
+                sub(point(v, f[2]), o),
+            );
+            dot(a, cross(b, c)) / 6.0
+        })
+        .sum()
 }
 
 /// Unit normal and centroid of one face; the normal is `None` for a degenerate triangle.
@@ -416,76 +449,146 @@ impl FaceGraph {
 // Dropping what encloses nothing
 // ---------------------------------------------------------------------------
 
+/// What [`enclosing_mask`] made of the faces it was handed.
+struct Enclosure {
+    /// Whether to keep each face. Its component is kept if it bounds positive volume — or if
+    /// the capping could not close it, in which case it was never judged at all.
+    keep: Vec<bool>,
+    /// Whether each face's component has the faces to bound anything: four, for a closed
+    /// surface. Arithmetic rather than measurement, so the guard in [`drop_internals`] has no
+    /// say in it.
+    big_enough: Vec<bool>,
+    /// Faces whose component the capping left open, and which were therefore kept unjudged.
+    unclosed: usize,
+}
+
 /// Which faces sit in a component that encloses positive volume.
 ///
 /// Deliberately *not* "keep the largest component": neuron meshes routinely arrive in many
 /// legitimate pieces — one hemibrain example mesh has 299 — and keeping only the biggest
 /// silently deletes real neurite. Only inside-out or degenerate scraps are dropped.
 ///
-/// The volume is read against each component's own centroid rather than against the origin,
-/// and that is load-bearing rather than tidy. Summing the tetrahedra on a point gives the
-/// volume of the surface *coned to that point*, which is the component's own volume only when
-/// the component is closed; on an open one the cone is real and its size grows with the
-/// distance to the point. Every component the cut touched is open, because the cut is what
-/// opened it — the holes do not get capped until the next step — so against the origin the
-/// cone is as big as wherever the mesh happens to sit. These meshes sit in dataset
-/// nanometres, hundreds of thousands of them from the origin, and on one such neuron the cone
-/// term turned the main component's +5.8e10 into -1.4e9 and took 340,456 of its 341,049 faces
-/// with it. Coning to the centroid instead keeps the term small and, more to the point, makes
-/// the answer independent of where the mesh sits — the same reading, and for the same reason,
-/// that [`crate::smoothing`] takes an anchor rather than assuming the origin.
+/// # Every component is closed before it is measured
 ///
-/// Subtracting the centroid *before* the cross product is also the whole of the floating-point
-/// story, so the tempting one-pass form is a trap: the identity `V(p) = V(0) - p.(sum of face
-/// cross products)/6` is exact in reals and removes the cone, but it reaches the answer as the
-/// difference of two numbers the size of the coordinates, which at 1e6 agrees with the origin
-/// reading bit for bit. Make every *term* small and nothing cancels.
+/// Summing a surface's tetrahedra on a point `p` gives its volume only when it is closed.
+/// What it gives otherwise is the volume of that surface *closed by coning every hole to
+/// `p`*, and the components handed here are precisely the ones the cut has just opened — the
+/// mouths are not capped until the next step. Coning to a point is a ruinous way to close a
+/// pocket mouth: the cones reach right across the cell and lie on top of one another, so what
+/// they add and subtract has nothing to do with the cell.
 ///
-/// What this still cannot do is make the question well-posed. An open sheet has no enclosed
-/// volume, so the sign test below stays a heuristic for one: a shallow, correctly wound dish
-/// cones to near zero either way. The win is that the answer is no longer arbitrary as a
-/// function of where the mesh sits, which is what was throwing whole neurons away.
-fn enclosing_mask(v: &[f64], faces: &[u32]) -> Vec<bool> {
+/// One number puts the scale on it. Every face the cut removes takes `(x - p).n dA / 3` out
+/// of the sum, which is large wherever the surface is far from `p` — while all a membrane
+/// encloses is its own area times its own thickness. So the mouths need only be a sliver of
+/// the component to outweigh it. On one neuron 160 µm across, 3,414 faces' worth of
+/// mouths — 0.6% of the component — read its +6.8e10 as -7.5e10 and dropped all 558,144 of
+/// its faces, which was most of the neuron.
+///
+/// So close each component first, with the same [`cap_holes`] the pipeline uses a step later
+/// — applied to the component alone, which is the surface the question is about. The two
+/// closings are not the same caps: boundary is decided by the parity of the faces on an edge,
+/// so an edge where two components meet reads differently in isolation than it does in the
+/// whole mesh. That is a reason to keep them separate, not to share them. It does mean this
+/// measurement now leans on [`cap_holes`]: change what that closes and you change which
+/// components survive. On a closed surface the anchor cancels, so the reading becomes a property of the
+/// component and of nothing else.
+///
+/// The anchor is still each component's own centroid, because the cancelling is exact in
+/// reals and not in floating point: these meshes sit hundreds of thousands of dataset
+/// nanometres from the origin, and subtracting the centroid *before* the cross product is
+/// what keeps every term small. The tempting one-pass form is a trap — the identity
+/// `V(p) = V(0) - p.(sum of face cross products)/6` removes the cone and is exact in reals,
+/// but it reaches the answer as the difference of two numbers the size of the coordinates,
+/// which at 1e6 agrees with the origin reading bit for bit. Make every *term* small and
+/// nothing cancels.
+///
+/// # And where it cannot close one, it does not answer
+///
+/// Capping adds no vertices, so there are rings it cannot close — a boundary that pinches at
+/// a vertex can split into pieces too short to bound a face, and then nothing is capped at
+/// all. A component still carrying boundary is one whose reading is the cone again, so that
+/// is asked rather than assumed: close the component, then check that it closed. One that
+/// did not is kept, unjudged, and counted in [`Pass::unclosed`].
+///
+/// Refusing to answer is the only honest thing to do with a question this cannot put
+/// properly, and it is cheap — on eleven segmented neurons of 0.3 M to 2.4 M faces, not one
+/// component failed to close. The branch is there for the mesh that does.
+fn enclosing_mask(v: &[f64], faces: &[u32]) -> Enclosure {
     let n = faces.len() / 3;
     let n_faces_arr = ArrayView2::from_shape((n, 3), faces).expect("(F, 3)");
     let labels = mesh_face_components(n_faces_arr, true, None);
 
-    // Labels are the smallest face index in each component, so they index arrays of length F
-    // directly — no compaction needed.
-    let mut centroid = vec![[0.0f64; 3]; n];
-    let mut count = vec![0u32; n];
-    for (i, l) in labels.iter().enumerate() {
-        let acc = &mut centroid[*l as usize];
-        for (slot, x) in acc.iter_mut().zip(face_center(v, &faces[3 * i..3 * i + 3])) {
-            *slot += x;
-        }
-        count[*l as usize] += 1;
+    // Gather each component's faces into a run of its own, so it can be lifted out and closed
+    // on its own. Labels are the smallest face index in each component, so they index `0..n`
+    // directly and a counting pass does this without a sort: tally into `offset`, sum it in
+    // place, then scatter. A component's rows are then `grouped[offset[l]..offset[l + 1]]`,
+    // which is also where its face count comes from.
+    let mut offset = vec![0u32; n + 1];
+    for &l in labels.iter() {
+        offset[l as usize + 1] += 1;
     }
-    for (sum, &n_faces) in centroid.iter_mut().zip(&count) {
-        if n_faces > 0 {
-            for x in sum.iter_mut() {
-                *x /= n_faces as f64;
+    for i in 0..n {
+        offset[i + 1] += offset[i];
+    }
+    let mut cursor = offset.clone();
+    let mut grouped = vec![0u32; n];
+    for (i, &l) in labels.iter().enumerate() {
+        grouped[cursor[l as usize] as usize] = i as u32;
+        cursor[l as usize] += 1;
+    }
+
+    // Stated once, and read three times below: to skip the measuring, and in each of the two
+    // masks. The empty slots, which are most of `0..n`, fail it too.
+    let enough = |l: usize| offset[l + 1] - offset[l] >= MIN_COMPONENT_FACES;
+
+    let view = ArrayView2::from_shape((v.len() / 3, 3), v).expect("(V, 3)");
+    // Per component: the volume its closed form encloses, and whether it closed at all.
+    let read: Vec<(f64, bool)> = (0..n)
+        .into_par_iter()
+        .map(|l| {
+            // Under the floor it bounds nothing whatever it measures, so do not measure it.
+            if !enough(l) {
+                return (0.0, true);
             }
-        }
-    }
+            let rows = &grouped[offset[l] as usize..offset[l + 1] as usize];
 
-    let mut volume = vec![0.0f64; n];
-    for (i, l) in labels.iter().enumerate() {
-        let f = &faces[3 * i..3 * i + 3];
-        let o = centroid[*l as usize];
-        let (a, b, c) = (
-            sub(point(v, f[0]), o),
-            sub(point(v, f[1]), o),
-            sub(point(v, f[2]), o),
-        );
-        // The signed volume of the tetrahedron on the component's centroid.
-        volume[*l as usize] += dot(a, cross(b, c)) / 6.0;
-    }
+            let piece: Vec<u32> = rows
+                .iter()
+                .flat_map(|&i| faces[3 * i as usize..3 * i as usize + 3].iter().copied())
+                .collect();
+            let mut shut = piece.clone();
+            shut.extend_from_slice(&cap_holes(view, &piece));
 
-    labels
+            // Ask whether that worked, rather than assume it. Capping adds no vertices, so a
+            // ring it cannot close leaves the component open — and the reading on an open
+            // surface is the cone to the anchor, which is the one thing this function exists
+            // not to be fooled by. A component still carrying boundary is one this cannot
+            // answer for, and saying so is better than answering wrongly.
+            let edges = ArrayView2::from_shape((shut.len() / 3, 3), &shut[..]).expect("(F, 3)");
+            let closed = boundary_halfedges(edges, None).is_empty();
+
+            // The anchor comes off the component as the cut left it; the caps are derived
+            // from it and should not be allowed to move it.
+            let o = faces_centroid(v, &piece);
+            (tet_sum(v, &shut, o), closed)
+        })
+        .collect();
+
+    let unclosed = labels
         .iter()
-        .map(|&l| volume[l as usize] > 0.0 && count[l as usize] >= MIN_COMPONENT_FACES)
-        .collect()
+        .filter(|&&l| enough(l as usize) && !read[l as usize].1)
+        .count();
+    Enclosure {
+        keep: labels
+            .iter()
+            .map(|&l| {
+                let (volume, closed) = read[l as usize];
+                enough(l as usize) && (volume > 0.0 || !closed)
+            })
+            .collect(),
+        big_enough: labels.iter().map(|&l| enough(l as usize)).collect(),
+        unclosed,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -531,6 +634,17 @@ pub struct Pass {
     /// Faces re-cast this pass — the whole mesh on the first, the collar around the last
     /// pass's caps afterwards.
     pub recast: usize,
+    /// Faces dropped for enclosing no volume: the inside-out shreds of pocket wall the cut
+    /// leaves behind.
+    pub dropped: usize,
+    /// Faces that step condemned and did not get, because what it was about to remove came
+    /// to more of the mesh than it was about to keep, and the backstop in [`drop_internals`]
+    /// held it back. Zero on a normal pass.
+    pub spared: usize,
+    /// Faces whose component the capping could not close, and which that step therefore kept
+    /// without judging: an open surface has no volume to read. Zero on a clean mesh; a large
+    /// number means the capping is struggling, not that the mesh is full of cavities.
+    pub unclosed: usize,
     /// Faces added to close the openings the cut left.
     pub capped: usize,
     /// Faces the mesh had coming out.
@@ -549,6 +663,25 @@ pub struct Pass {
 /// carries the field forward and re-casts only within `hops` of the caps, which is ~12% of the
 /// mesh in pass 2. The approximation is in *which faces get a fresh value*, not in the values:
 /// the whole mesh still blocks rays.
+///
+/// # The guard on dropping components
+///
+/// Dropping the components that enclose no volume is the step with the most to go wrong in
+/// it, because a volume is only as good as the closing it was read on. Most of that is
+/// handled where the question is asked: [`enclosing_mask`] closes each component and then
+/// checks that it closed, and keeps the ones it could not, unjudged — see [`Pass::unclosed`].
+///
+/// The backstop here is for the rest. If the reading still condemns more than half of the
+/// surface it judged, it is held back for that pass. A cell is not mostly cavity, so a
+/// reading saying so has gone wrong in some way this cannot name, and a mesh that keeps a few
+/// inside-out scraps is a far better failure than a neuron thrown away. [`Pass::spared`]
+/// counts what it was not allowed to take.
+///
+/// What is held back is the *reading*, and only the reading. A component with too few faces
+/// to bound anything still goes, because that is arithmetic and no doubt about a volume makes
+/// three faces a cell — and for the same reason those components are left out of the count on
+/// both sides of the test, so that a drift of loose scraps cannot decide whether the reading
+/// is believed for the surface around them.
 ///
 /// Arguments
 /// ---------
@@ -675,6 +808,9 @@ pub fn drop_internals(
                     faces_before: n,
                     buried: 0,
                     recast,
+                    dropped: 0,
+                    spared: 0,
+                    unclosed: 0,
                     capped: 0,
                     faces_after: n,
                 });
@@ -690,12 +826,41 @@ pub fn drop_internals(
                 .iter()
                 .flat_map(|&i| f[3 * i..3 * i + 3].iter().copied())
                 .collect();
-            let enclosing = enclosing_mask(&v, &cut);
+            // A volume is only as good as the closing it was read on, and `enclosing_mask`
+            // now says which components it could not close rather than leaving that to be
+            // hoped for: those are kept, unjudged. So most of the way this step can go wrong
+            // is handled where the question is asked, per component.
+            //
+            // The backstop is for the rest. If what survives that still excludes more of the
+            // mesh than it keeps, believe the mesh rather than the reading: a cell is not
+            // mostly cavity, and the inside-out shreds are a rim of pocket wall, not the bulk
+            // of a neuron. Being wrong this way round leaves some scraps in the mesh; being
+            // wrong the other way throws a neuron away, which is what this went looking for.
+            // What the backstop holds back is the *reading*, so `big_enough` still stands —
+            // three faces bound nothing by arithmetic, and no doubt about a volume makes them
+            // a cell.
+            //
+            // Both sides of that test are about the measurement, then: how much of what it
+            // judged did it condemn. Counting the components below the floor on either side
+            // would let a drift of loose triangles decide whether a reading is believed.
+            let e = enclosing_mask(&v, &cut);
+            let judged = e.big_enough.iter().filter(|&&b| b).count();
+            let condemned = e
+                .big_enough
+                .iter()
+                .zip(&e.keep)
+                .filter(|(&big, &keep)| big && !keep)
+                .count();
+            let overruled = 2 * condemned > judged;
+            let verdict = if overruled { &e.big_enough } else { &e.keep };
+            let dropped = verdict.iter().filter(|&&k| !k).count();
+            let spared = if overruled { condemned } else { 0 };
+            let unclosed = e.unclosed;
 
             let mut kept_faces = Vec::with_capacity(cut.len());
             let mut kept_field = Vec::with_capacity(survivors.len());
             for (row, &i) in survivors.iter().enumerate() {
-                if enclosing[row] {
+                if verdict[row] {
                     kept_faces.extend_from_slice(&f[3 * i..3 * i + 3]);
                     kept_field.push(field[i]);
                 }
@@ -741,6 +906,9 @@ pub fn drop_internals(
                 faces_before: n,
                 buried: n_buried,
                 recast,
+                dropped,
+                spared,
+                unclosed,
                 capped: n_after - n_before,
                 faces_after: n_after,
             });
@@ -824,6 +992,53 @@ mod tests {
         }
         f.extend_from_slice(&[p, p + 1, p + 2, p, p + 2, p + 3]);
         (v, f)
+    }
+
+    /// A closed loop of square-section tube: thin-walled, extended, and bent back on itself,
+    /// which is the shape a neurite arbor has and a box has not.
+    ///
+    /// Stations run round a circle of radius `major`; each carries a square cross-section of
+    /// half-width `minor`, cornered outer-top, outer-bottom, inner-bottom, inner-top. The
+    /// eight faces of a station start with the two of its *outer* wall, so a test can take a
+    /// bite out of the part furthest from the centre by index alone.
+    fn tube_loop(stations: usize, major: f64, minor: f64) -> (Vec<f64>, Vec<u32>) {
+        let mut v = Vec::with_capacity(12 * stations);
+        for k in 0..stations {
+            let (sin, cos) = (std::f64::consts::TAU * k as f64 / stations as f64).sin_cos();
+            for (du, dw) in [(1.0, 1.0), (1.0, -1.0), (-1.0, -1.0), (-1.0, 1.0)] {
+                let radius = major + du * minor;
+                v.extend_from_slice(&[radius * cos, radius * sin, dw * minor]);
+            }
+        }
+        let mut f = Vec::with_capacity(24 * stations);
+        for k in 0..stations {
+            let (a, b) = (4 * k as u32, 4 * ((k + 1) % stations) as u32);
+            for i in 0..4u32 {
+                let j = (i + 1) % 4;
+                f.extend_from_slice(&[a + i, a + j, b + j, a + i, b + j, b + i]);
+            }
+        }
+        (v, f)
+    }
+
+    /// A shallow dish of four triangles, wound inward: a scrap that encloses nothing, but
+    /// shallow enough that its rays still get away, so the cut leaves it for the enclosing
+    /// filter to deal with.
+    fn inside_out_dish(x: f64) -> (Vec<f64>, Vec<u32>) {
+        let mut v = Vec::new();
+        for (dx, dy) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
+            v.extend_from_slice(&[x + dx, dy, 0.0]);
+        }
+        v.extend_from_slice(&[x + 0.5, 0.5, 0.2]);
+        let f = (0..4u32)
+            .flat_map(|i| [(i + 1) % 4, i, 4])
+            .collect::<Vec<u32>>();
+        (v, f)
+    }
+
+    /// What `enclosing_mask` would read if it did not close the component first.
+    fn cone_volume(v: &[f64], faces: &[u32]) -> f64 {
+        tet_sum(v, faces, faces_centroid(v, faces))
     }
 
     /// `drop_internals` with the arguments these tests mostly do not vary.
@@ -922,7 +1137,7 @@ mod tests {
         v2.extend_from_slice(&iv);
         both.extend(flip(&iff).iter().map(|i| i + base));
 
-        let mask = enclosing_mask(&v2, &both);
+        let mask = enclosing_mask(&v2, &both).keep;
         assert!(mask[..12].iter().all(|&x| x), "the real box should survive");
         assert!(
             mask[12..].iter().all(|&x| !x),
@@ -938,7 +1153,7 @@ mod tests {
         f2.extend_from_slice(&[0, 1, 2]);
         let mut v2 = v.clone();
         v2.extend_from_slice(&[0.0, 0.0, 0.0]);
-        let mask = enclosing_mask(&v2, &f2);
+        let mask = enclosing_mask(&v2, &f2).keep;
         assert!(!mask[12]);
     }
 
@@ -949,6 +1164,10 @@ mod tests {
         let (v, f) = nested();
         let (nv, nf, keep, passes) = repair(&v, &f, 2, 3);
         assert_eq!(nf.nrows(), 12, "only the outer box should be left");
+        assert_eq!(
+            passes[0].dropped, 0,
+            "the organelle is buried and cut, not dropped for enclosing nothing"
+        );
         assert_eq!(nv.nrows(), 8);
         // The outer box's vertices came first and are untouched.
         assert_eq!(keep.to_vec(), (0..8).collect::<Vec<u32>>());
@@ -1081,19 +1300,19 @@ mod tests {
     fn a_closed_component_reads_the_same_wherever_it_sits() {
         // On a closed surface the anchor cancels, which is what the divergence theorem
         // promises — so a box that does not contain the origin reads positive either way.
-        // The open case, where the anchor is the whole story, is the test below.
+        // The open case, which the closing takes care of, is the test below.
         let (v, f) = box_mesh([100.0, 100.0, 100.0], [101.0, 101.0, 101.0]);
-        assert!(enclosing_mask(&v, &f).iter().all(|&x| x));
+        assert!(enclosing_mask(&v, &f).keep.iter().all(|&x| x));
         let flipped = flip(&f);
-        assert!(enclosing_mask(&v, &flipped).iter().all(|&x| !x));
+        assert!(enclosing_mask(&v, &flipped).keep.iter().all(|&x| !x));
     }
 
     /// The components `enclosing_mask` is handed are the ones the cut has just opened, and an
     /// open surface's tetrahedra sum to the volume of the cone to whatever point they were
     /// taken on. Read on the origin that cone is as big as the mesh is far away — and signed
     /// by which way the opening happens to face, so it is as likely to swallow the real volume
-    /// as to inflate it. Read on the component's own centroid it cannot, so neither where the
-    /// mesh sits nor which way its holes point may change the answer.
+    /// as to inflate it. Closing the component first takes that term out altogether, so
+    /// neither where the mesh sits nor which way its holes point may change the answer.
     #[test]
     fn an_open_component_survives_being_far_from_the_origin() {
         for corner in [[0.0, 0.0, 0.0], [1e6, 1e6, 1e6]] {
@@ -1106,15 +1325,170 @@ mod tests {
                 let mut open = f.clone();
                 open.drain(3 * lid..3 * lid + 6); // the two triangles of one face
                 assert!(
-                    enclosing_mask(&v, &open).iter().all(|&x| x),
+                    enclosing_mask(&v, &open).keep.iter().all(|&x| x),
                     "box at {corner:?} with lid {lid} off should be kept"
                 );
                 assert!(
-                    enclosing_mask(&v, &flip(&open)).iter().all(|&x| !x),
+                    enclosing_mask(&v, &flip(&open)).keep.iter().all(|&x| !x),
                     "and inside out it should not"
                 );
             }
         }
+    }
+
+    /// A component the capping cannot close is kept rather than judged.
+    ///
+    /// [`cap_holes`] may add no vertices, so there are rings it cannot close: here the
+    /// boundary pinches at a vertex and the pieces it splits into are too short to bound a
+    /// face, so nothing is capped at all. What is left on that still-open surface is the
+    /// cone to its anchor — the reading this whole function exists to distrust — and it is
+    /// negative, so a measurement taken anyway would throw the component away. Keeping it is
+    /// the only honest answer; [`Pass::unclosed`] is how the caller hears that it happened.
+    #[test]
+    fn a_component_that_will_not_close_is_kept_rather_than_judged() {
+        #[rustfmt::skip]
+        let v = vec![
+            0.0, 0.0, 0.0,
+            1.0, 0.0, 0.0,
+            0.5, 1.0, 0.5,
+            1.5, 1.0, 0.0,
+            0.0, 1.0, 0.0,
+        ];
+        let f = vec![0, 2, 1, 0, 4, 2, 1, 3, 2, 2, 4, 3];
+
+        assert!(
+            cap_holes(view2(&v, 3), &f).is_empty(),
+            "the premise: this is a boundary the capping cannot do anything with"
+        );
+        assert!(
+            !boundary_halfedges(view2u(&f), None).is_empty(),
+            "and it is a boundary"
+        );
+        assert!(
+            cone_volume(&v, &f) < 0.0,
+            "the premise: measured anyway, it reads as enclosing nothing"
+        );
+
+        let e = enclosing_mask(&v, &f);
+        assert!(
+            e.keep.iter().all(|&k| k),
+            "so it must be kept, not measured"
+        );
+        assert_eq!(e.unclosed, 4, "and reported as unjudged");
+    }
+
+    /// A mouth the cut opens must not get a vote on whether the cell is a cell.
+    ///
+    /// A box cannot show this. Cone a convex shell's holes to a point inside it and the cones
+    /// stay inside, so all they can do is eat the volume down towards zero. A membrane is the
+    /// opposite shape — thin, spread out, and bent back on itself — so its cones reach across
+    /// the whole cell, lie on top of one another, and carry the sum straight past zero. A
+    /// loop of tube is the smallest thing with that shape. On a real neuron it took mouths
+    /// worth 0.6% of the faces to do it.
+    #[test]
+    fn a_mouth_cannot_outvote_the_cell_it_opens() {
+        let stations = 48;
+        let (v, f) = tube_loop(stations, 40.0, 1.0);
+        assert!(
+            enclosing_mask(&v, &f).keep.iter().all(|&x| x),
+            "closed, and the right way out to begin with"
+        );
+
+        // Bite the outer wall off a quarter of the stations — the faces furthest from the
+        // centre, which are the ones carrying the sum. A station is eight faces, its outer
+        // wall the first two.
+        let mut open = f.clone();
+        for k in (0..stations / 4).rev() {
+            open.drain(24 * k..24 * k + 6);
+        }
+        assert!(
+            cone_volume(&v, &open) < 0.0,
+            "the open sum should read this cell as inside out, which is the whole problem"
+        );
+        assert!(
+            enclosing_mask(&v, &open).keep.iter().all(|&x| x),
+            "and closing it first should settle that it is not"
+        );
+        // Inside out it still has to read inside out, or the test proves nothing.
+        assert!(enclosing_mask(&v, &flip(&open)).keep.iter().all(|&x| !x));
+    }
+
+    /// Loose scraps must not vote on whether the volume reading is believed.
+    ///
+    /// The backstop asks how much of what the reading *judged* it condemned. Count the
+    /// components below the floor on either side of that and a drift of stray triangles
+    /// decides the question for surface they have nothing to do with: here the reading
+    /// condemns two dishes out of twenty judged faces — nowhere near half — and the twenty
+    /// loose triangles must not turn that into a reason to keep the dishes.
+    #[test]
+    fn scraps_do_not_trip_the_backstop() {
+        let (mut v, mut f) = nested();
+        for k in 0..2 {
+            let (dv, df) = inside_out_dish(10.0 * (k + 1) as f64);
+            let base = (v.len() / 3) as u32;
+            v.extend_from_slice(&dv);
+            f.extend(df.iter().map(|i| i + base));
+        }
+        for k in 0..20u32 {
+            let base = (v.len() / 3) as u32;
+            let x = 100.0 * (k + 1) as f64;
+            v.extend_from_slice(&[x, 0.0, 0.0, x + 1.0, 0.0, 0.0, x, 1.0, 0.0]);
+            f.extend_from_slice(&[base, base + 1, base + 2]);
+        }
+
+        let (_, nf, _, passes) = repair(&v, &f, 2, 3);
+        assert_eq!(
+            passes[0].spared, 0,
+            "the backstop should stay out of it: {passes:?}"
+        );
+        assert_eq!(
+            passes[0].dropped, 28,
+            "two dishes and twenty triangles, all of them: {passes:?}"
+        );
+        assert_eq!(nf.nrows(), 12, "leaving the cell: {passes:?}");
+    }
+
+    /// The enclosing filter may not eat the mesh. Asked to, it is held back for the pass and
+    /// says so, because a cell is not mostly cavity and the ray cast gets another go.
+    #[test]
+    fn the_enclosing_filter_is_overruled_when_it_asks_for_the_mesh() {
+        // A cell with an organelle in it, so that something is actually buried: a pass with
+        // nothing to cut stops before the enclosing filter is ever reached.
+        let (mut v, mut f) = nested();
+        // Four dishes of four faces each, against the twelve the cut leaves, so the filter
+        // wants more than half of what it is looking at.
+        for k in 0..4 {
+            let (dv, df) = inside_out_dish(10.0 * (k + 1) as f64);
+            let base = (v.len() / 3) as u32;
+            v.extend_from_slice(&dv);
+            f.extend(df.iter().map(|i| i + base));
+        }
+        // And some loose triangles, which the filter wants for a different reason: one face
+        // bounds nothing by arithmetic, not by measurement, so the guard has no say in it.
+        for k in 0..8u32 {
+            let base = (v.len() / 3) as u32;
+            let x = 100.0 * (k + 1) as f64;
+            v.extend_from_slice(&[x, 0.0, 0.0, x + 1.0, 0.0, 0.0, x, 1.0, 0.0]);
+            f.extend_from_slice(&[base, base + 1, base + 2]);
+        }
+
+        let (_, nf, _, passes) = repair(&v, &f, 2, 3);
+        assert_eq!(
+            passes[0].spared, 16,
+            "the filter asked for most of the mesh, so the four dishes stay: {passes:?}"
+        );
+        assert_eq!(
+            passes[0].dropped, 8,
+            "but the loose triangles go regardless: {passes:?}"
+        );
+        // And the cell survives, which is the point of holding the filter back. The scraps go
+        // in the end anyway: capping closes them, and a closed inside-out shell is exactly
+        // what the ray cast is for.
+        assert_eq!(nf.nrows(), 12, "{passes:?}");
+        assert!(
+            passes[1..].iter().all(|p| p.spared == 0),
+            "and once they are gone the filter should be trusted again: {passes:?}"
+        );
     }
 
     /// The same, end to end — and here the pipeline opens the component itself, which is the

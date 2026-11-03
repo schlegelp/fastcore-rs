@@ -110,7 +110,12 @@ pub fn openness_py<'py>(
 /// vertex's index in the input - the repair only ever *removes* vertices, since caps re-use
 /// the ones already on the boundary, so that is all a caller needs to carry a vertex map,
 /// connectors or any per-vertex annotation across. `passes` is one dict per pass run, with
-/// `faces_before`, `buried`, `recast`, `capped` and `faces_after`.
+/// `faces_before`, `buried`, `recast`, `dropped`, `spared`, `unclosed`, `capped` and `faces_after`.
+///
+/// A non-zero `spared` means that pass held back the step that drops components enclosing no
+/// volume, because it asked for more of the mesh than it would have left. The mesh still
+/// comes back repaired, but it may keep inside-out scraps a sound reading would have taken.
+/// The `navis_fastcore` wrapper turns that into a warning.
 #[pyfunction]
 #[pyo3(
     name = "drop_internals",
@@ -145,6 +150,9 @@ pub fn drop_internals_py<'py>(
             d.set_item("faces_before", p.faces_before)?;
             d.set_item("buried", p.buried)?;
             d.set_item("recast", p.recast)?;
+            d.set_item("dropped", p.dropped)?;
+            d.set_item("spared", p.spared)?;
+            d.set_item("unclosed", p.unclosed)?;
             d.set_item("capped", p.capped)?;
             d.set_item("faces_after", p.faces_after)?;
             Ok(d)

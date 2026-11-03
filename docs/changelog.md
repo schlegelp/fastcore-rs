@@ -8,6 +8,58 @@ it is called out.
 Tags, source archives and the original announcements are on
 [GitHub](https://github.com/schlegelp/fastcore-rs/releases).
 
+## 0.13.2 (unreleased)
+
+**`drop_internals` no longer throws most of a neuron away when the cut opens it in many
+places.** 0.13.1 fixed the step that drops components enclosing no volume so that the answer
+no longer depended on where the mesh sat. It did not fix what that reading actually is.
+Summing a surface's tetrahedra on a point gives its volume only when the surface is closed;
+otherwise it gives the volume of that surface *closed by coning every hole to the point*. The
+components this step is handed are exactly the ones the cut has just opened — the mouths are
+not capped until the step after — and coning a pocket mouth to a point is a ruinous way to
+close it, because the cones reach right across the cell and lie on top of one another.
+
+The scale is worse than it sounds, because a membrane encloses very little for its area:
+every face the cut removes takes `(x - p).n dA / 3` out of the sum, which is large wherever
+the surface is far from the anchor. On Aedes meshes a few thousand faces' worth of mouths —
+under 1% of the component — read a neuron's +6.8e10 as -7.5e10 and dropped 558,144 faces, some
+80% of the mesh, with no error raised. 14 of 22,859 meshes in that dataset were affected.
+
+Each component is now closed, with the same capping the pipeline uses a step later, before
+its volume is read. On a closed surface the anchor cancels, so the reading is a property of
+the component and of nothing else. Measured on the six reported meshes, the repair goes from
+keeping 0.10-0.16 of the faces to keeping 0.88-0.91, while eight unaffected meshes are
+unchanged to within 0.001.
+
+**That step now also declines to answer where it cannot.** Capping adds no vertices, so there
+are rings it cannot close — a boundary that pinches on a vertex can split into pieces too
+short to bound a face. A component still carrying boundary has no volume to read, so rather
+than assume the closing worked, the step checks: one it could not close is kept, unjudged, and
+counted in `Pass.unclosed`. On eleven segmented neurons of 0.3 M to 2.4 M faces not one
+component failed to close, so this costs nothing in practice; it is there for the mesh that
+does.
+
+**The same step is now guarded, and says when it was held back.** A volume is only as good as
+the closing it was read on, so when that step is about to condemn more than half of the
+surface it judged, it is skipped for that pass: a cell is not mostly cavity, and a mesh that keeps a few
+inside-out scraps is a much better failure than a neuron thrown away. What is held back is the
+*reading* — a component with too few faces to bound anything still goes, since that is
+arithmetic. Python warns (`UserWarning`) when this happens, and `Pass.spared` counts what was
+held back.
+
+`Pass` also gained three fields: `dropped`, `spared` (what the guard held back) and
+`unclosed` (what could not be closed, and so was never judged). Until now the faces this step
+removed showed up only as a gap between the other fields, which is why a pass that threw away
+80% of a mesh looked like a clean 10% repair in the log.
+
+**`trace_loops` no longer allocates against the vertex space.** It keyed its scratch by the
+largest vertex index it was handed, so tracing one component's boundary — or one small hole's
+— cost arrays as long as the whole mesh's vertex list to find a ring of a dozen, against its
+own documented promise to be proportional to the boundary. It now numbers the vertices its
+half-edges name and walks on those, putting the rings back on the caller's ids at the end.
+Relabelling is a bijection, so the rings it returns are unchanged. This is what lets
+`drop_internals` close components one at a time without paying for the mesh each time.
+
 ## 0.13.1 (2026-11-01)
 
 **`drop_internals` no longer throws the mesh away when it is stored far from the origin.** The

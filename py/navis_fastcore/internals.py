@@ -16,6 +16,8 @@ than the repair — to colour a mesh by it, or to pick a threshold.
 
 """
 
+import warnings
+
 from . import _fastcore
 from .mesh import _prep_mask, _prep_mesh_edit
 
@@ -116,9 +118,12 @@ def drop_internals(
     One pass scores every face by :func:`openness`, diffuses that field over the
     faces, drops what falls below ``threshold``, drops the components left
     enclosing no volume — the inside-out shreds of pocket wall — and caps the
-    holes. Then it repeats, because capping a pocket mouth turns a
-    partially-open neighbour into a fully buried one. Passes converge fast:
-    18.7% of faces buried, then 0.5%, then 0.2%.
+    holes. Each component is closed before its volume is read, since the cut has
+    just opened every one it touched and an open surface has no volume to read —
+    and a component the capping cannot close is kept rather than guessed at.
+    Then it repeats, because capping a pocket mouth turns a partially-open
+    neighbour into a fully buried one. Passes converge fast: 18.7% of faces
+    buried, then 0.5%, then 0.2%.
 
     Only vertices are ever *removed*; caps re-use the ones already on the
     boundary. So ``keep`` is all a caller needs to carry a vertex map,
@@ -184,7 +189,22 @@ def drop_internals(
                 Index of each surviving vertex in the input.
     passes :    list of dict
                 One per pass actually run, with ``faces_before``, ``buried``,
-                ``recast``, ``capped`` and ``faces_after``.
+                ``recast``, ``dropped``, ``spared``, ``unclosed``, ``capped``
+                and ``faces_after``.
+
+    Warns
+    -----
+    UserWarning
+                If a pass kept surface it could not vouch for. Either
+                ``unclosed``, meaning the capping could not close a component
+                and so whether it encloses anything was never decided — an open
+                surface has no volume to read; or ``spared``, meaning the step
+                was about to remove more than half of the surface it judged
+                and was held back, because a cell is not mostly cavity and a mesh
+                that keeps a few scraps beats a neuron thrown away. Both come back
+                repaired, and both are worth looking at: the usual causes are
+                boundary rings that pinch, and faces that are not wound outward
+                or not wound consistently.
 
     Examples
     --------
@@ -212,7 +232,7 @@ def drop_internals(
 
     """
     faces, vertices, _ = _prep_mesh_edit(faces, vertices, None)
-    return _fastcore.drop_internals(
+    out = _fastcore.drop_internals(
         vertices,
         faces,
         threshold=float(threshold),
@@ -223,3 +243,28 @@ def drop_internals(
         seed=int(seed),
         threads=None if threads is None else int(threads),
     )
+    # Both of these mean the same thing to a caller — the repair kept surface it could not
+    # vouch for — but they have different causes and different answers, so they say so
+    # separately. Silence would be the failure mode worth avoiding: the mesh comes back
+    # looking repaired either way.
+    for i, p in enumerate(out[3]):
+        if p["unclosed"]:
+            warnings.warn(
+                f"drop_internals pass {i}: {p['unclosed']:,} faces sit in components the "
+                f"capping could not close, so whether they enclose anything was never "
+                f"decided and they were kept. The mesh is repaired but may keep inside-out "
+                f"surface. This usually means boundary rings that pinch on a vertex.",
+                UserWarning,
+                stacklevel=2,
+            )
+        if p["spared"]:
+            warnings.warn(
+                f"drop_internals pass {i}: the step that drops components enclosing no "
+                f"volume was about to remove {p['spared']:,} faces, more than half of the "
+                f"surface it judged, so it was held back. The mesh is repaired but may keep "
+                f"inside-out scraps. Check that the faces are wound outward and "
+                f"consistently.",
+                UserWarning,
+                stacklevel=2,
+            )
+    return out

@@ -335,7 +335,9 @@ pub fn exposed_halfedges(
 ///
 /// Single-threaded on purpose: the walk is inherently sequential — which target is still
 /// free depends on what earlier walks took — but it is proportional to the *boundary*
-/// rather than to the mesh, so it costs a fraction of finding that boundary in parallel:
+/// rather than to the mesh, scratch included, since it first numbers the vertices the
+/// boundary names and walks on those. So it costs a fraction of finding that boundary in
+/// parallel:
 /// 0.7 ms for the 80k half-edges of a mesh with 23k holes in it, against 9 ms to find them.
 ///
 /// Returns
@@ -346,17 +348,35 @@ pub fn exposed_halfedges(
 /// numpy or R without a per-ring object.
 pub fn trace_loops(halfedges: ArrayView2<u32>) -> (Array1<u32>, Array1<i64>) {
     let storage = halfedges.as_standard_layout();
-    let he: &[u32] = storage.as_slice().expect("standard layout is contiguous");
-    if he.is_empty() {
+    let given: &[u32] = storage.as_slice().expect("standard layout is contiguous");
+    if given.is_empty() {
         return (Array1::from_vec(Vec::new()), Array1::from_vec(vec![0]));
     }
+
+    // Number the vertices the boundary actually names, and walk on those. Everything below
+    // is keyed by vertex id, so on the mesh's own ids the scratch would be as long as the
+    // mesh — which makes tracing one component's boundary, or one small hole's, cost an
+    // array the size of the whole vertex set to find a ring of a dozen. That is what this
+    // function's own promise to be "proportional to the boundary rather than to the mesh"
+    // asks for, and it is what `internals::enclosing_mask` leans on, since it traces one
+    // component at a time. Relabelling is a bijection, so it leaves the walk below
+    // untouched — both the first-appearance order of `tails` and the per-vertex order the
+    // greedy choice depends on survive it — and only the rings have to be put back at the
+    // end.
+    let mut verts: Vec<u32> = given.to_vec();
+    verts.sort_unstable();
+    verts.dedup();
+    let he: Vec<u32> = given
+        .iter()
+        .map(|&x| verts.partition_point(|&y| y < x) as u32)
+        .collect();
 
     // Outgoing targets per tail vertex, as CSR keyed by vertex id directly — the same shape
     // [`crate::mesh::bridges`] builds its adjacency in, and for the same reason. A
     // `HashMap<u32, Vec<u32>>` would hash every half-edge twice (once building, once
     // walking) and put every vertex's targets in its own heap block, which is a pointer
     // chase per step of a walk that is already the one sequential stage here.
-    let n = he.iter().copied().max().expect("non-empty") as usize + 1;
+    let n = verts.len();
 
     // Counts first, then an exclusive prefix sum in place, so `start[v]..start[v + 1]` is
     // `v`'s run. A count still at zero when a half-edge arrives means this is the vertex's
@@ -445,6 +465,11 @@ pub fn trace_loops(halfedges: ArrayView2<u32>) -> (Array1<u32>, Array1<i64>) {
                 where_on_path[u as usize] = NOT_ON_PATH;
             }
         }
+    }
+
+    // Back onto the caller's own vertex ids.
+    for x in rings.iter_mut() {
+        *x = verts[*x as usize];
     }
 
     (Array1::from_vec(rings), Array1::from_vec(offsets))
