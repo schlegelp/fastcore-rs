@@ -16,11 +16,11 @@ name = 'nat_fastcore'
 [dependencies]
 extendr-api = { version = "0.7.0" }
 fastcore = { path = "fastcore" }
-# Must match the ndarray version used by fastcore's dag/mesh public API (0.16),
+# Must match the ndarray version used by fastcore's dag/mesh public API (0.17),
 # otherwise the `ArrayView1`/`Array2` types passed across the boundary don't
 # unify. Matrix <-> R conversion is done via extendr's native `RMatrix`/`RArray`
 # (not the extendr `ndarray` feature, which is pinned to an older ndarray).
-ndarray = { version = "0.16", features = ["rayon"] }
+ndarray = { version = "0.17", features = ["rayon"] }
 
 # Own workspace root: detaches this crate from the monorepo workspace and gives it
 # a self-contained Cargo.lock. The bundled `./fastcore` becomes the second member.
