@@ -26,6 +26,9 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     strategy:
+      # One target failing (e.g. a mirror outage in its container) should not
+      # cancel the others and hide whether they build.
+      fail-fast: false
       matrix:
         target: [x86_64, x86, aarch64, armv7, s390x, ppc64le]
     steps:
