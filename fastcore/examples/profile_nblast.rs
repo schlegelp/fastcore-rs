@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use aann::{graph_from_simplices, PreparedF32, PreparedF64};
 use fastcore::nblast::{build_index, load_smat, score_pair};
-use ndarray_017::Array2;
+use ndarray::Array2;
 use rayon::prelude::*;
 use shull::delaunay4d;
 

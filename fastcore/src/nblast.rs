@@ -27,7 +27,7 @@ use aann::{
 };
 use console::Term;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use ndarray_017::{Array1, Array2, ArrayView2};
+use ndarray::{Array1, Array2, ArrayView2};
 use rayon::prelude::*;
 use shull::delaunay4d;
 use std::sync::atomic::{AtomicBool, Ordering};
