@@ -24,7 +24,13 @@ permissions:
 
 jobs:
   linux:
-    runs-on: ubuntu-latest
+    # x86 (i686) stays on ubuntu-24.04: on ubuntu-26.04 Docker's default seccomp
+    # profile blocks socketcall(2), which 32-bit glibc uses for every socket, so
+    # DNS fails inside the manylinux2014_i686 container ("Could not resolve host:
+    # vault.centos.org"). See https://github.com/PyO3/maturin-action/issues/484
+    # and https://github.com/actions/runner-images/issues/14790. Revisit once
+    # either is fixed.
+    runs-on: ${{ matrix.target == 'x86' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     strategy:
       # One target failing (e.g. a mirror outage in its container) should not
       # cancel the others and hide whether they build.
